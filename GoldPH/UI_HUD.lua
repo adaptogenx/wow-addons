@@ -538,60 +538,60 @@ function GoldPH_HUD:Initialize()
         self:StopMovingOrSizing()
     end)
 
-    -- Pause/Resume button (left of minimize) - same style as collapse/expand: two vertical lines (pause), right arrow (play)
-    local pauseBtn = CreateFrame("Button", nil, hudFrame)
-    pauseBtn:SetSize(16, 16)
-    pauseBtn:SetPoint("TOPRIGHT", -4, -4)
-    -- Same texture style as minMaxBtn (16x16 small button + same highlight)
-    pauseBtn:SetNormalTexture("Interface\\Buttons\\UI-Button-Up")
-    pauseBtn:SetPushedTexture("Interface\\Buttons\\UI-Button-Down")
-    pauseBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
-    -- Symbol on top: two vertical bars (pause) or right arrow (play); updated in Update()
-    local pauseBarLeft = pauseBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    pauseBarLeft:SetPoint("CENTER", -2, 0)
-    pauseBarLeft:SetText("|")
-    pauseBarLeft:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
-    local pauseBarRight = pauseBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    pauseBarRight:SetPoint("CENTER", 2, 0)
-    pauseBarRight:SetText("|")
-    pauseBarRight:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
-    local pausePlayArrow = pauseBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    pausePlayArrow:SetPoint("CENTER", 0, 0)
-    pausePlayArrow:SetText(">")
-    pausePlayArrow:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
-    pausePlayArrow:Hide()
-    hudFrame.pauseBarLeft = pauseBarLeft
-    hudFrame.pauseBarRight = pauseBarRight
-    hudFrame.pausePlayArrow = pausePlayArrow
-    pauseBtn:SetScript("OnClick", function()
-        local session = GoldPH_SessionManager:GetActiveSession()
-        if not session then return end
-        if GoldPH_SessionManager:IsPaused(session) then
-            GoldPH_SessionManager:ResumeSession()
-        else
-            GoldPH_SessionManager:PauseSession()
+    -- Stop button (replaces non-functional pause button)
+    local stopBtn = CreateFrame("Button", nil, hudFrame)
+    stopBtn:SetSize(16, 16)
+    stopBtn:SetPoint("TOPRIGHT", -4, -4)  -- Same position as old pause button
+    stopBtn:SetNormalTexture("Interface\\RAIDFRAME\\ReadyCheck-NotReady")
+    stopBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+
+    stopBtn:SetScript("OnClick", function()
+        local ok, message = GoldPH_SessionManager:StopSession()
+        if ok then
+            print("[pH] " .. message)
+            GoldPH_HUD:Update()
         end
-        GoldPH_HUD:Update()
     end)
-    pauseBtn:SetScript("OnEnter", function(self)
+
+    stopBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        local session = GoldPH_SessionManager:GetActiveSession()
-        if session and GoldPH_SessionManager:IsPaused(session) then
-            GameTooltip:SetText("Resume session")
-        else
-            GameTooltip:SetText("Pause session")
-        end
+        GameTooltip:SetText("Stop session")
         GameTooltip:Show()
     end)
-    pauseBtn:SetScript("OnLeave", function()
+
+    stopBtn:SetScript("OnLeave", function()
         GameTooltip:Hide()
     end)
-    hudFrame.pauseBtn = pauseBtn
+
+    hudFrame.stopBtn = stopBtn
+
+    -- History button (left of stop button)
+    local historyBtn = CreateFrame("Button", nil, hudFrame)
+    historyBtn:SetSize(16, 16)
+    historyBtn:SetPoint("RIGHT", stopBtn, "LEFT", -2, 0)
+    historyBtn:SetNormalTexture("Interface\\QUESTFRAME\\UI-QuestLog-BookIcon")
+    historyBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+
+    historyBtn:SetScript("OnClick", function()
+        GoldPH_History:Toggle()
+    end)
+
+    historyBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("View session history")
+        GameTooltip:Show()
+    end)
+
+    historyBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    hudFrame.historyBtn = historyBtn
 
     -- Minimize/Maximize button (stock WoW +/- buttons)
     local minMaxBtn = CreateFrame("Button", nil, hudFrame)
     minMaxBtn:SetSize(16, 16)
-    minMaxBtn:SetPoint("TOPRIGHT", pauseBtn, "TOPLEFT", -2, 0)
+    minMaxBtn:SetPoint("TOPRIGHT", historyBtn, "TOPLEFT", -2, 0)
     minMaxBtn:SetNormalTexture("Interface\\Buttons\\UI-MinusButton-Up")
     minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
     minMaxBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
@@ -711,6 +711,65 @@ function GoldPH_HUD:Initialize()
     end
 
     --------------------------------------------------
+    -- Start screen (shown when no session active)
+    --------------------------------------------------
+    local startScreen = CreateFrame("Frame", nil, hudFrame)
+    startScreen:SetSize(100, 54)  -- Compact width for minimal screen real estate when inactive
+    startScreen:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, 0)
+    startScreen:SetFrameLevel(hudFrame:GetFrameLevel() + 1)
+
+    -- Logo (pH branding - same position and size as active HUD title)
+    local startLogo = startScreen:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    startLogo:SetPoint("TOPLEFT", startScreen, "TOPLEFT", PADDING, -PADDING)  -- Match active HUD title position
+    startLogo:SetText("pH")
+    startLogo:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
+    startLogo:SetFont("Fonts\\FRIZQT__.TTF", 12, "")  -- Match active HUD title size (12px)
+
+    -- Start button (text button with border, right side)
+    local startBtn = CreateFrame("Button", nil, startScreen, "BackdropTemplate")
+    startBtn:SetSize(50, 20)
+    startBtn:SetPoint("TOPRIGHT", startScreen, "TOPRIGHT", -PADDING, -17)  -- Centered vertically in 54px frame
+    startBtn:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 12,
+        insets = {left = 2, right = 2, top = 2, bottom = 2},
+    })
+    startBtn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.9)
+    startBtn:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+
+    -- Start button text
+    local startBtnText = startBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    startBtnText:SetPoint("CENTER", 0, 0)
+    startBtnText:SetText("Start")
+    startBtnText:SetTextColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3])
+
+    -- Hover effect
+    startBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3], 1.0)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Click here to start a session, or type \"/ph start\" to get started. \"/ph help\" to learn more", nil, nil, nil, nil, true)
+        GameTooltip:Show()
+    end)
+
+    startBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+        GameTooltip:Hide()
+    end)
+
+    startBtn:SetScript("OnClick", function()
+        local ok, message = GoldPH_SessionManager:StartSession()
+        print("[pH] " .. message)
+        if ok then
+            GoldPH_Settings.hudMinimized = true  -- Start minimized
+            GoldPH_HUD:Update()
+        end
+    end)
+
+    startScreen:Hide()  -- Initially hidden
+    hudFrame.startScreen = startScreen
+
+    --------------------------------------------------
     -- Expanded metric cards container
     --------------------------------------------------
     EnsureMetricPanels()
@@ -797,8 +856,16 @@ function GoldPH_HUD:Initialize()
         end
     end)
 
-    -- Initial state: hide until session starts
-    hudFrame:Hide()
+    -- Initial state: show start screen if no session, or active HUD if session exists
+    local session = GoldPH_SessionManager:GetActiveSession()
+    if not session then
+        hudFrame:Show()
+        if hudFrame.startScreen then
+            hudFrame.startScreen:Show()
+        end
+    else
+        hudFrame:Show()
+    end
 end
 
 -- Format money for accounting display (uses parentheses for negatives)
@@ -1357,45 +1424,73 @@ function GoldPH_HUD:Update()
     local session = GoldPH_SessionManager:GetActiveSession()
 
     if not session then
-        hudFrame:Hide()
-        -- Reset metric states on session end
+        -- Show start screen when no session active
+        if hudFrame.startScreen then
+            hudFrame.startScreen:Show()
+        end
+
+        -- Hide active session components
+        if hudFrame.stopBtn then hudFrame.stopBtn:Hide() end
+        if hudFrame.historyBtn then hudFrame.historyBtn:Hide() end
+        if hudFrame.minMaxBtn then hudFrame.minMaxBtn:Hide() end
+        hudFrame.title:Hide()
+        hudFrame.headerTimer:Hide()
+
+        -- Hide metric components
         for _, state in pairs(metricStates) do
+            if state.tile then state.tile:Hide() end
             state.displayRate = 0
             state.peak = 0
             state.lastUpdatedText = ""
         end
+
+        if hudFrame.metricCardContainer then
+            hudFrame.metricCardContainer:Hide()
+        end
+
+        -- Keep HUD frame visible (for start screen)
+        hudFrame:Show()
+        hudFrame:SetSize(100, 54)  -- Compact start screen (minimal screen real estate)
         return
     end
+
+    -- Session is active: show active components, hide start screen
+    if hudFrame.startScreen then
+        hudFrame.startScreen:Hide()
+    end
+
+    if hudFrame.stopBtn then hudFrame.stopBtn:Show() end
+    if hudFrame.historyBtn then hudFrame.historyBtn:Show() end
+    if hudFrame.minMaxBtn then hudFrame.minMaxBtn:Show() end
+    hudFrame.title:Show()
+    hudFrame.headerTimer:Show()
 
     -- Show HUD if session active
     if not hudFrame:IsShown() then
         hudFrame:Show()
     end
 
+    -- Ensure frame is properly sized for active state (minimized or expanded)
+    -- This is critical when transitioning from start screen (100px) to active HUD (266px minimized)
+    local isMinimized = GoldPH_Settings.hudMinimized
+    if isMinimized then
+        -- Minimized: set to micro-bar width
+        hudFrame:SetWidth(266)
+        hudFrame:SetHeight(FRAME_HEIGHT_MINI)
+    else
+        -- Expanded: width will be set by ApplyMinimizeState, but ensure we're not stuck at 100px
+        hudFrame:SetWidth(FRAME_WIDTH_EXPANDED)
+    end
+
     -- Get metrics
     local metrics = GoldPH_SessionManager:GetMetrics(session)
     local isPaused = GoldPH_SessionManager:IsPaused(session)
 
-    -- Pause button: two vertical bars (||) when running, right arrow (>) when paused
-    if hudFrame.pauseBarLeft and hudFrame.pauseBarRight and hudFrame.pausePlayArrow then
-        if isPaused then
-            hudFrame.pauseBarLeft:Hide()
-            hudFrame.pauseBarRight:Hide()
-            hudFrame.pausePlayArrow:Show()
-        else
-            hudFrame.pauseBarLeft:Show()
-            hudFrame.pauseBarRight:Show()
-            hudFrame.pausePlayArrow:Hide()
-        end
-    end
-
     -- Update timers (both collapsed and expanded versions) with pH brand colors
     local timerText = GoldPH_SessionManager:FormatDuration(metrics.durationSec)
-    -- Use pH ACCENT_BAD for paused (red), pH TEXT_MUTED for normal
-    local timerColor = isPaused and {0.78, 0.32, 0.28} or PH_TEXT_MUTED
 
     hudFrame.headerTimer:SetText(timerText)
-    hudFrame.headerTimer:SetTextColor(timerColor[1], timerColor[2], timerColor[3])
+    hudFrame.headerTimer:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
 
     -- Second header line removed - no longer updating headerGold or headerTimer2
 
@@ -1521,6 +1616,12 @@ end
 function GoldPH_HUD:ApplyMinimizeState()
     if not hudFrame then
         return
+    end
+
+    -- Start screen doesn't support minimize/expand (always compact)
+    local session = GoldPH_SessionManager:GetActiveSession()
+    if not session then
+        return  -- No-op when on start screen
     end
 
     local isMinimized = GoldPH_Settings.hudMinimized

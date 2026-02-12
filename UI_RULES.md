@@ -65,3 +65,25 @@ These rules apply to expanded metric focus/detail panels, especially gold breakd
 - Keep labels literal and calm; avoid flashy or promotional language.
 - Preserve high contrast in dark environments and dungeon lighting.
 - Prioritize clear scan order: title -> primary rate -> sparkline -> breakdown rows.
+
+### pH Logo Consistency (Required)
+The pH logo/title must be visually identical across all UI states to maintain brand consistency:
+
+- **Font**: Friz Quadrata (`Fonts\\FRIZQT__.TTF`)
+- **Size**: 12px (always)
+- **Position**: `TOPLEFT` with offsets `(PADDING, -PADDING)` = `(12, -12)`
+- **Color**: `PH_TEXT_PRIMARY` = `{0.92, 0.89, 0.80}`
+- **Text**: "pH" (lowercase p, uppercase H)
+
+**Apply to:**
+- Active HUD title (when session running)
+- Start screen logo (when no session active)
+- Any future states or panels
+
+**Implementation:**
+```lua
+logo:SetPoint("TOPLEFT", parent, "TOPLEFT", PADDING, -PADDING)
+logo:SetText("pH")
+logo:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
+logo:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
+```
