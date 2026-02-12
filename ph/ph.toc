@@ -1,11 +1,11 @@
 ## Interface: 11504
-## Title: GoldPH
+## Title: pH
 ## Notes: Session-based gold-per-hour tracking with double-ledger accounting. Features minimize/maximize HUD, real-time metrics, and conservative item valuation (WoW Classic Anniversary)
 ## Author: Claude Code
-## Version: 0.10.0
-## SavedVariables: GoldPH_DB_Account
-## SavedVariablesPerCharacter: GoldPH_DB
-## SavedVariablesPerCharacter: GoldPH_Settings
+## Version: 0.10.1
+## SavedVariables: pH_DB_Account
+## SavedVariablesPerCharacter: pH_DB
+## SavedVariablesPerCharacter: pH_Settings
 
 # Core modules (load order matters)
 Ledger.lua

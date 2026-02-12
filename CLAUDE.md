@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GoldPH is a World of Warcraft addon (Classic Anniversary) that tracks gold-per-hour earnings using a session-based, **double-ledger accounting model**. It tracks both actual cash (gold gained/spent) and expected inventory value (conservative liquidation value of items acquired during a session).
+pH is a World of Warcraft addon (Classic Anniversary) that tracks gold-per-hour earnings using a session-based, **double-ledger accounting model**. It tracks both actual cash (gold gained/spent) and expected inventory value (conservative liquidation value of items acquired during a session).
 
 **Key Design Philosophy:**
 - **Conservative valuation**: Avoid inflated market pricing
@@ -19,7 +19,7 @@ Follow the guidelines in: PH_UI_DESIGN_BRIEF_AND_RULES.md when creating any comp
 
 ### Component Structure
 
-The addon follows a modular design (see GoldPH_TDD.md §4.1 for full details):
+The addon follows a modular design (see pH_TDD.md §4.1 for full details):
 
 1. **SessionManager** - Start/stop/persist sessions, compute derived metrics
 2. **Ledger** - Account balances using double-entry bookkeeping principles
@@ -32,7 +32,7 @@ The addon follows a modular design (see GoldPH_TDD.md §4.1 for full details):
 
 **All currency values are stored in copper (integers).**
 
-The saved variables structure (`GoldPH_DB`) includes:
+The saved variables structure (`pH_DB`) includes:
 - `meta`: Version, realm, faction, character, lastSessionId
 - `settings`: User preferences
 - `priceOverrides`: Manual item price overrides
@@ -46,7 +46,7 @@ Each **Session** contains:
 - Gathering node counts
 - Pickpocket statistics
 
-See GoldPH_TDD.md §5 for complete data structures.
+See pH_TDD.md §5 for complete data structures.
 
 ## Double-Ledger Accounting System
 
@@ -78,7 +78,7 @@ Final = min(EV, 1.25 * max(V_vendor, V_DE))
 ```
 
 ### AH Price Sources (Priority Order)
-1. Manual override in `GoldPH_DB.priceOverrides[itemID]`
+1. Manual override in `pH_DB.priceOverrides[itemID]`
 2. TSM (if installed): use low-biased figure
 3. Otherwise 0 (better to undercount than guess)
 
@@ -114,7 +114,7 @@ This ensures pricing snapshots remain stable and removals match what was origina
 - **UNIT_SPELLCAST_SUCCEEDED**: Detect pickpocket and gathering spells
 - **UseContainerItem hook**: Detect vendor sales and lockbox opening
 
-See GoldPH_TDD.md §10 for complete event-to-accounting mapping.
+See pH_TDD.md §10 for complete event-to-accounting mapping.
 
 ## Special Cases
 
@@ -168,8 +168,8 @@ See GoldPH_TDD.md §10 for complete event-to-accounting mapping.
 ### Addon Structure
 Typical structure:
 ```
-GoldPH/
-  GoldPH.toc          -- Addon manifest
+ph/
+  ph.toc          -- Addon manifest
   init.lua            -- Entry point
   SessionManager.lua  -- Session lifecycle
   Ledger.lua          -- Double-entry accounting
@@ -183,11 +183,11 @@ GoldPH/
 ### SavedVariables
 - Declared in `.toc` file
 - Persisted across game sessions/reloads
-- Root variable: `GoldPH_DB`
+- Root variable: `pH_DB`
 
 ## Testing Approach
 
-### Manual Testing Scenarios (See GoldPH_TDD.md §14)
+### Manual Testing Scenarios (See pH_TDD.md §14)
 1. Gray loot → vendor (verify no double count)
 2. Loot green, no sale (inventory expected increases only)
 3. Sell pre-session item (cash only, no inventory reversal)
@@ -228,7 +228,7 @@ Prevents attributing value to containers that may never be opened. Only count co
 
 ## Reference Document
 
-For complete technical specifications, see `GoldPH_TDD.md` which contains:
+For complete technical specifications, see `pH_TDD.md` which contains:
 - Detailed data structures (§5)
 - Complete chart of accounts (§6)
 - Valuation formulas (§7)

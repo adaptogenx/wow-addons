@@ -1,14 +1,14 @@
--- Luacheck configuration for GoldPH WoW Addon
+-- Luacheck configuration for pH WoW Addon
 -- WoW Classic Anniversary uses Lua 5.1
 -- Based on Questie's configuration (https://github.com/Questie/Questie/blob/master/.luacheckrc)
--- with GoldPH-specific additions
+-- with pH-specific additions
 
 std = "lua51"
 max_line_length = 140
 
 -- Files to check
 files = {
-    "GoldPH/*.lua",
+    "ph/*.lua",
 }
 
 -- Exclude patterns
@@ -29,34 +29,39 @@ ignore = {
     "631", -- Line is too long
 }
 
--- WoW API globals (from Questie's extensive list + GoldPH-specific additions)
+-- WoW API globals (from Questie's extensive list + pH-specific additions)
 globals = {
-    -- GoldPH-specific globals (must be included)
+    -- pH-specific globals (must be included)
     "_G",
-    "GoldPH_DB",
-    "GoldPH_Ledger",
-    "GoldPH_SessionManager",
-    "GoldPH_Events",
-    "GoldPH_HUD",
-    "GoldPH_Debug",
-    "GoldPH_Valuation",
-    "GoldPH_Holdings",
-    "GoldPH_PriceSources",
+    "pH_DB",
+    "pH_DB_Account",
+    "pH_Settings",
+    "pH_Ledger",
+    "pH_SessionManager",
+    "pH_Events",
+    "pH_HUD",
+    "pH_Debug",
+    "pH_Valuation",
+    "pH_Holdings",
+    "pH_PriceSources",
 
-    -- GoldPH History UI (Phase 1-4)
-    "GoldPH_Index",
-    "GoldPH_History",
-    "GoldPH_History_Filters",
-    "GoldPH_History_List",
-    "GoldPH_History_Detail",
+    -- pH History UI
+    "pH_Index",
+    "pH_History",
+    "pH_History_Filters",
+    "pH_History_List",
+    "pH_History_Detail",
 
-    -- GoldPH-specific WoW API usage
+    -- pH-specific WoW API usage
     "TSM_API",  -- Optional addon, checked at runtime
     "TakeTaxiNode",  -- Taxi API (may not exist in all versions)
     "TaxiNodeCost",  -- Taxi API (may not exist in all versions)
-    "SLASH_GOLDPH1",  -- Slash command registration
-    "SLASH_GOLDPH2",  -- Slash command registration
-    "SLASH_GOLDPH3",  -- Slash command registration
+    "SLASH_PH1",  -- Slash command registration
+    "SLASH_PH2",  -- Slash command registration
+    "SLASH_PH3",  -- Slash command registration
+    "SLASH_GOLDPH1",  -- Legacy /goldph alias (backward compatibility)
+    "SLASH_GOLDPH2",  -- Legacy /goldph alias (backward compatibility)
+    "SLASH_GOLDPH3",  -- Legacy /goldph alias (backward compatibility)
     "SlashCmdList",  -- Slash command system
     
     -- WoW Events (used as strings, but luacheck may check them)

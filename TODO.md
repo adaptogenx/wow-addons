@@ -62,12 +62,12 @@
 ## Critical Bugs (Fix Before Next Phase)
 
 ### 1. HUD Visibility After Relog
-**Issue**: HUD has to be manually shown (`/goldph show`) after a `/reload` or logout/login, even when a session is active.
+**Issue**: HUD has to be manually shown (`/ph show`) after a `/reload` or logout/login, even when a session is active.
 
 **Current Behavior**:
 - Session resumes correctly after relog
 - HUD data is there but frame is hidden
-- User must type `/goldph show` to see it
+- User must type `/ph show` to see it
 
 **Expected Behavior**:
 - If session is active after relog, HUD should auto-show
@@ -75,7 +75,7 @@
 
 **Solution Approach**:
 - Save HUD visibility state to SavedVariables
-- Add `GoldPH_DB.settings.hudVisible = true/false`
+- Add `pH_DB.settings.hudVisible = true/false`
 - On `PLAYER_ENTERING_WORLD`, check if active session + hudVisible flag
 - Automatically show HUD if both conditions met
 
@@ -160,7 +160,7 @@ Session = {
 ### 4. HUD Scaling/Font Size Options
 **Issue**: HUD might be too small/large for some users
 
-**Solution**: Add `/goldph hud scale <0.5-2.0>` command to adjust HUD size
+**Solution**: Add `/ph hud scale <0.5-2.0>` command to adjust HUD size
 
 **Files**: `UI_HUD.lua`, `init.lua`
 
@@ -185,7 +185,7 @@ Session = {
 ### 6. Session History Browser
 **Issue**: No way to view past sessions except via debug dump
 
-**Solution**: Add `/goldph sessions` command to list recent sessions with summary
+**Solution**: Add `/ph sessions` command to list recent sessions with summary
 
 **Files**: New `UI_Sessions.lua` or add to `init.lua`
 
@@ -196,11 +196,11 @@ Session = {
 ## Quality of Life
 
 ### 7. Auto-Start Session on Login (Optional)
-**Issue**: User must remember to `/goldph start` every time
+**Issue**: User must remember to `/ph start` every time
 
 **Solution**:
-- Add setting: `GoldPH_DB.settings.autoStart = true/false`
-- Add command: `/goldph autostart on|off`
+- Add setting: `pH_DB.settings.autoStart = true/false`
+- Add command: `/ph autostart on|off`
 - If enabled, automatically start session on PLAYER_ENTERING_WORLD (only if no active session)
 
 **Files**: `init.lua`, SavedVariables
@@ -213,7 +213,7 @@ Session = {
 **Issue**: User might want to pause session (AFK, taking a break) without stopping it
 
 **Solution**:
-- Add `/goldph pause` and `/goldph resume` commands
+- Add `/ph pause` and `/ph resume` commands
 - Store `pausedAt` timestamp
 - Don't count time while paused
 - Show "PAUSED" in HUD
@@ -228,8 +228,8 @@ Session = {
 **Issue**: Hard to remember what each session was for
 
 **Solution**:
-- Add `/goldph note <text>` to add note to current session
-- Add `/goldph tag <tag>` to tag session (e.g., "farming", "dungeons", "questing")
+- Add `/ph note <text>` to add note to current session
+- Add `/ph tag <tag>` to tag session (e.g., "farming", "dungeons", "questing")
 - Show in session history
 
 **Files**: `SessionManager.lua`, `init.lua`
@@ -244,7 +244,7 @@ Session = {
 **Issue**: Sessions are currently account-wide (shared across all characters). Character A's farming session appears in Character B's history.
 
 **Current Behavior**:
-- `GoldPH_DB` uses `SavedVariables` (account-wide)
+- `pH_DB` uses `SavedVariables` (account-wide)
 - All characters on the account share the same session history
 - Active session from one character persists when switching to another
 
@@ -256,7 +256,7 @@ Session = {
 **Solution Approach**:
 - Use `SavedVariablesPerCharacter` in `.toc` instead of `SavedVariables`
 - Or: Manually scope data by character name + realm in SavedVariables structure
-- Structure: `GoldPH_DB[realmName][characterName] = { sessions, activeSession, ... }`
+- Structure: `pH_DB[realmName][characterName] = { sessions, activeSession, ... }`
 
 **Files to Modify**:
 - `GoldPH.toc` - Change to `SavedVariablesPerCharacter` (simplest)
@@ -265,7 +265,7 @@ Session = {
 
 **Priority**: HIGH (architectural issue, easier to fix now than later)
 
-**Note**: SavedVariablesPerCharacter is the cleanest solution. Each character gets their own `GoldPH_DB`.
+**Note**: SavedVariablesPerCharacter is the cleanest solution. Each character gets their own `pH_DB`.
 
 ---
 
@@ -288,7 +288,7 @@ Session = {
 **Solution**:
 - On session stop, create backup entry
 - Keep last N sessions in backup
-- Add `/goldph restore` command
+- Add `/ph restore` command
 
 **Files**: `SessionManager.lua`, `init.lua`
 
@@ -302,7 +302,7 @@ Session = {
 **Solution**:
 - Validate repair cost is reasonable (< player's gold, > 0)
 - Add warning if repair cost seems wrong
-- Option to manually override via `/goldph repair <cost>`
+- Option to manually override via `/ph repair <cost>`
 
 **Files**: `Events.lua`
 
@@ -342,7 +342,7 @@ Session = {
 **Issue**: Test injections pollute active session data
 
 **Solution**:
-- Add `/goldph test reset` to reset session to clean state
+- Add `/ph test reset` to reset session to clean state
 - Or: Add "test mode" that uses separate session
 
 **Files**: `Debug.lua`, `init.lua`
@@ -397,10 +397,10 @@ Session = {
 ## Documentation
 
 ### 20. In-Game Help Improvements
-**Issue**: `/goldph help` is long, hard to read
+**Issue**: `/ph help` is long, hard to read
 
 **Solution**:
-- Add categories: `/goldph help session`, `/goldph help debug`, `/goldph help test`
+- Add categories: `/ph help session`, `/ph help debug`, `/ph help test`
 - Add examples for each command
 - Colorize output
 

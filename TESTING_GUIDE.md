@@ -3,13 +3,13 @@
 ## Quick Start
 
 1. **Reload UI** in game: `/reload`
-2. **Open history**: `/goldph history` or `/gph history`
+2. **Open history**: `/ph history` or `/gph history`
 3. **Create test sessions** (if none exist):
    ```
-   /goldph start
-   /goldph test loot 500000   (50 gold)
-   /goldph test lootitem 3404 5   (loot 5x Buzzard Wing)
-   /goldph stop
+   /ph start
+   /ph test loot 500000   (50 gold)
+   /ph test lootitem 3404 5   (loot 5x Buzzard Wing)
+   /ph stop
    ```
 
 ## Testing Checklist
@@ -18,11 +18,11 @@
 - [ ] Open history with 0 sessions → Shows "No sessions" message
 - [ ] Open history with 1+ sessions → Index builds quickly (<500ms)
 - [ ] Check console for build time: Should print "[GoldPH Index] Built index with N sessions in X.XXXs"
-- [ ] Enable debug: `/goldph debug verbose on`
+- [ ] Enable debug: `/ph debug verbose on`
 - [ ] Verify no errors in console
 
 ### Phase 2: Main Frame + List
-- [ ] `/goldph history` opens centered frame (640x480)
+- [ ] `/ph history` opens centered frame (640x480)
 - [ ] Frame is draggable (click+drag title area)
 - [ ] Sessions display in list (left pane, 240px width)
 - [ ] Each row shows: gold/hr, zone, duration, character, badges
@@ -107,7 +107,7 @@
 - [ ] Stop active session → Index marked stale
 - [ ] Reopen history → Index rebuilds automatically
 - [ ] New session appears in list after stop
-- [ ] Metrics match `/goldph status` output
+- [ ] Metrics match `/ph status` output
 - [ ] Metrics match HUD display
 - [ ] Close history → HUD still works
 - [ ] Open history while HUD visible → Both work together
@@ -130,30 +130,30 @@
 **Solution:** Check session count. 100+ sessions should still be <500ms. If slower, check for nil references.
 
 ### Issue: Filters don't work
-**Solution:** Check console for errors. Verify GoldPH_Index is not nil.
+**Solution:** Check console for errors. Verify pH_Index is not nil.
 
 ### Issue: Frame position not persisting
-**Solution:** Check GoldPH_DB.settings.historyPosition is being saved on close.
+**Solution:** Check pH_DB.settings.historyPosition is being saved on close.
 
 ### Issue: Summary tab shows wrong data
 **Solution:** Verify SessionManager:GetMetrics is being called correctly. Check session ID matches.
 
 ### Issue: Dropdowns don't populate
-**Solution:** Check GoldPH_Index:GetZones() and GetCharacters() return valid arrays.
+**Solution:** Check pH_Index:GetZones() and GetCharacters() return valid arrays.
 
 ## Debug Commands
 
 Enable verbose logging to see detailed output:
 ```
-/goldph debug verbose on
-/goldph history
+/ph debug verbose on
+/ph history
 ```
 
 Check index state:
 ```
-/dump GoldPH_Index.stale
-/dump GoldPH_Index.sessions
-/dump GoldPH_Index.summaries[1]
+/dump pH_Index.stale
+/dump pH_Index.sessions
+/dump pH_Index.summaries[1]
 ```
 
 Check filter state:
@@ -181,11 +181,11 @@ Generate test sessions for performance testing:
 ```lua
 -- In-game Lua
 for i = 1, 50 do
-  GoldPH_SessionManager:StartSession()
+  pH_SessionManager:StartSession()
   GoldPH_Events:InjectLootedCoin(math.random(100000, 500000))
   GoldPH_Events:InjectLootItem(3404, math.random(1, 10))  -- Buzzard Wing
   C_Timer.After(1, function()
-    GoldPH_SessionManager:StopSession()
+    pH_SessionManager:StopSession()
   end)
 end
 ```
@@ -194,7 +194,7 @@ end
 
 When reporting issues, include:
 1. WoW version (Classic Anniversary)
-2. Addon version (`/goldph` shows v0.7.0)
+2. Addon version (`/ph` shows v0.7.0)
 3. Steps to reproduce
 4. Console errors (if any)
 5. Number of sessions in history

@@ -1,4 +1,4 @@
-# GoldPH - Gold Per Hour Tracker for WoW Classic Anniversary
+# pH - Gold Per Hour Tracker for WoW Classic Anniversary
 
 A session-based gold tracking addon for World of Warcraft Classic Anniversary using double-ledger accounting to prevent double counting.
 
@@ -30,21 +30,21 @@ The script will:
 
 ### Manual Installation (macOS & Windows)
 
-1. Copy the `GoldPH/` directory to your WoW AddOns folder:
+1. Copy the `ph/` directory to your WoW AddOns folder:
    - **Windows**: `World of Warcraft/_anniversary_/Interface/AddOns/`
    - **Mac**: `/Applications/World of Warcraft/_anniversary_/Interface/AddOns/`
 
 
 2. Restart WoW or type `/reload` if already in-game
 
-3. You should see: `[GoldPH] Version 0.1.0-phase1 loaded`
+3. You should see: `[pH] Version 0.1.0-phase1 loaded`
 
 ## Quick Start
 
 ```
-/goldph start          # Start tracking session
+/ph start          # Start tracking session
                        # Go farm gold!
-/goldph stop           # Stop and save session
+/ph stop           # Stop and save session
 ```
 
 The HUD will display:
@@ -59,27 +59,27 @@ The HUD will display:
 ## Commands
 
 ### Session Commands
-- `/goldph start` - Start a new session
-- `/goldph stop` - Stop the active session
-- `/goldph show` - Show/hide the HUD
-- `/goldph status` - Show current session status
-- `/goldph help` - Show all commands
+- `/ph start` - Start a new session
+- `/ph stop` - Stop the active session
+- `/ph show` - Show/hide the HUD
+- `/ph status` - Show current session status
+- `/ph help` - Show all commands
 
 ### Debug Commands
-- `/goldph debug on|off` - Enable/disable debug mode (auto-run invariants)
-- `/goldph debug verbose on|off` - Enable/disable verbose logging
-- `/goldph debug dump` - Dump current session state
-- `/goldph debug ledger` - Show ledger balances
-- `/goldph debug holdings` - Show holdings (Phase 3+)
+- `/ph debug on|off` - Enable/disable debug mode (auto-run invariants)
+- `/ph debug verbose on|off` - Enable/disable verbose logging
+- `/ph debug dump` - Dump current session state
+- `/ph debug ledger` - Show ledger balances
+- `/ph debug holdings` - Show holdings (Phase 3+)
 
 ### Test Commands
-- `/goldph test run` - Run automated test suite
-- `/goldph test loot <copper>` - Inject test gold (e.g., `/goldph test loot 500`)
-- `/goldph test repair <copper>` - Inject test repair cost (e.g., `/goldph test repair 250`)
+- `/ph test run` - Run automated test suite
+- `/ph test loot <copper>` - Inject test gold (e.g., `/ph test loot 500`)
+- `/ph test repair <copper>` - Inject test repair cost (e.g., `/ph test repair 250`)
 
 ## Architecture
 
-GoldPH uses **double-ledger accounting** to ensure accurate tracking without double counting. When you loot gold:
+pH uses **double-ledger accounting** to ensure accurate tracking without double counting. When you loot gold:
 
 ```
 Dr Assets:Cash         +500 copper
@@ -95,7 +95,7 @@ See [CLAUDE.md](CLAUDE.md) for architecture details and [GoldPH_TDD.md](GoldPH_T
 See [TODO.md](TODO.md) for a complete list of improvements and known issues.
 
 **Critical bugs to fix before Phase 3**:
-1. HUD visibility after relog (must manually `/goldph show`)
+1. HUD visibility after relog (must manually `/ph show`)
 2. Session time continues counting when logged out
 
 ## Development Phases
@@ -115,17 +115,17 @@ Each phase is implemented as a separate PR for review. See the [multi-phase plan
 ## Testing
 
 ### Manual Testing
-1. Start a session: `/goldph start`
+1. Start a session: `/ph start`
 2. Loot gold from mobs
 3. Check HUD updates in real-time
 4. Reload UI: `/reload`
 5. Verify session continues
-6. Stop session: `/goldph stop`
+6. Stop session: `/ph stop`
 
 ### Automated Testing
 ```
-/goldph debug on
-/goldph test run
+/ph debug on
+/ph test run
 ```
 
 All tests should pass (green). The test suite includes:
@@ -136,17 +136,17 @@ All tests should pass (green). The test suite includes:
 
 ### Test Injection (No In-Game Actions Required)
 ```
-/goldph start
-/goldph test loot 1000   # Inject 1000 copper
-/goldph test loot 500    # Inject 500 copper
-/goldph status           # Should show 1500 copper total
+/ph start
+/ph test loot 1000   # Inject 1000 copper
+/ph test loot 500    # Inject 500 copper
+/ph status           # Should show 1500 copper total
 ```
 
 ## Files Structure
 
 ```
-GoldPH/
-├── GoldPH.toc          - Addon manifest
+ph/
+├── ph.toc          - Addon manifest
 ├── init.lua            - Entry point, slash commands
 ├── Ledger.lua          - Double-entry bookkeeping
 ├── SessionManager.lua  - Session lifecycle
@@ -158,26 +158,26 @@ GoldPH/
 ## Technical Details
 
 - **Currency Format**: All values stored in copper (integers)
-- **Persistence**: Uses SavedVariables (`GoldPH_DB`)
+- **Persistence**: Uses SavedVariables (`pH_DB`)
 - **WoW Version**: Classic Anniversary (Interface 11504)
 - **Lua Version**: 5.1
 
 ## Troubleshooting
 
 **HUD not showing?**
-- Ensure session is active: `/goldph start`
-- Try: `/goldph show`
+- Ensure session is active: `/ph start`
+- Try: `/ph show`
 
 **Session not persisting after reload?**
 - Check SavedVariables are enabled in WoW settings
-- Verify `GoldPH_DB` exists: `/dump GoldPH_DB`
+- Verify `pH_DB` exists: `/dump pH_DB`
 
 **Want to test without looting?**
-- Use test injection: `/goldph test loot 500`
+- Use test injection: `/ph test loot 500`
 
 **Debug an issue?**
-- Enable verbose mode: `/goldph debug verbose on`
-- Check session state: `/goldph debug dump`
+- Enable verbose mode: `/ph debug verbose on`
+- Check session state: `/ph debug dump`
 
 ## Development
 
@@ -196,7 +196,7 @@ brew install luacheck
 
 **Run linting manually:**
 ```bash
-luacheck GoldPH/
+luacheck ph/
 ```
 
 The `.luacheckrc` configuration file is configured for WoW Classic Anniversary's Lua 5.1 environment and includes common WoW API globals.
