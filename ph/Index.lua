@@ -577,6 +577,37 @@ function pH_Index:GetZoneAggregates()
 end
 
 --------------------------------------------------
+-- API: Get Zone Stats (for start panel context)
+--------------------------------------------------
+function pH_Index:GetZoneStats(zoneName)
+    if self.stale then
+        self:Build()
+    end
+    
+    local zoneAgg = self.zoneAgg[zoneName]
+    if not zoneAgg then
+        return nil  -- No data for this zone
+    end
+    
+    -- Get last session in this zone (sorted by date descending)
+    -- QuerySessions returns session IDs, so we need to fetch the actual session object
+    local zoneSessions = self:QuerySessions({zone = zoneName, sort = "date"})
+    local lastSession = nil
+    if zoneSessions and zoneSessions[1] then
+        local lastSessionId = zoneSessions[1]
+        lastSession = pH_DB_Account.sessions[lastSessionId]
+    end
+    
+    return {
+        avgPerHour = zoneAgg.avgTotalPerHour,
+        bestPerHour = zoneAgg.bestTotalPerHour,
+        sessionCount = zoneAgg.sessionCount,
+        lastSession = lastSession,  -- Now a session object, not an ID
+        bestSessionId = zoneAgg.bestSessionId
+    }
+end
+
+--------------------------------------------------
 -- API: Mark Stale
 --------------------------------------------------
 function pH_Index:MarkStale()

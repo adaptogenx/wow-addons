@@ -4,7 +4,7 @@
     Shows real-time session metrics in accounting-style layout.
 ]]
 
--- luacheck: globals pH_Settings
+-- luacheck: globals pH_Settings pH_History pH_Ledger pH_SessionManager pH_Index SlashCmdList
 
 local pH_HUD = {}
 
@@ -19,12 +19,12 @@ local FRAME_WIDTH = 180
 local FRAME_HEIGHT = 180
 -- Calculate minimized height for horizontal bar:
 -- Top padding: 12px (PADDING)
--- Title row: ~14px (12px font + line height)
--- Gap between title and tiles: 6px
+-- Header row: ~20px (Stop button + icon row height)
+-- Gap between header and tiles: 6px
 -- Tile height: 18px (icon/text row 12px + 2px gap + bar 4px)
--- Bottom padding: 4px (reduced for compact layout)
--- Total: 12 + 14 + 6 + 18 + 4 = 54px
-local FRAME_HEIGHT_MINI = 54  -- Minimized height with horizontal micro-bars
+-- Bottom padding: 4px
+-- Total: 12 + 20 + 6 + 18 + 4 = 60px
+local FRAME_HEIGHT_MINI = 60  -- Minimized height with horizontal micro-bars
 local SECTION_GAP = 4
 
 -- Rectangular panel layout (PRD-aligned)
@@ -45,6 +45,7 @@ local PH_BG_PARCHMENT = {0.18, 0.16, 0.13, 0.85}
 local PH_BORDER_BRONZE = {0.52, 0.42, 0.28}
 
 -- Additional pH brand tokens
+local PH_ACCENT_BAD = {0.85, 0.38, 0.32}  -- Red for stop/warnings
 local PH_ACCENT_WARNING = {0.90, 0.65, 0.20}  -- Warm amber for expenses/warnings
 local PH_ACCENT_GOLD_INCOME = {1.00, 0.82, 0.00}  -- Classic gold for income highlights
 local PH_TEXT_DISABLED = {0.45, 0.42, 0.38}  -- Darker muted for disabled/inactive
@@ -85,6 +86,15 @@ local METRIC_LABELS = {
     rep = "REP / HOUR",
     honor = "HONOR / HOUR",
 }
+
+-- Header icon textures (Classic-safe, order: pause/resume, history, min/max)
+local HEADER_ICON_PAUSE = "Interface\\TimeManager\\PauseButton"
+local HEADER_ICON_PLAY = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up"
+local HEADER_ICON_HISTORY = "Interface\\QUESTFRAME\\UI-QuestLog-BookIcon"
+local HEADER_ICON_MINUS = "Interface\\Buttons\\UI-MinusButton-Up"
+local HEADER_ICON_PLUS = "Interface\\Buttons\\UI-PlusButton-Up"
+local ICON_GAP = 2
+local ICON_SIZE = 16
 
 -- Color keys mapping for micro-bar colors
 local colorKeys = { gold = "GOLD", xp = "XP", rep = "REP", honor = "HONOR" }
@@ -180,10 +190,10 @@ local function RepositionTiles(isCollapsed)
     if tileCount == 0 then return end
 
     if isCollapsed then
-        -- Horizontal layout: position tiles starting from left edge, below title row
+        -- Horizontal layout: position tiles below header (Stop button + icons row)
         -- Anchor to hudFrame.TOPLEFT to prevent UI jumping when collapsing/expanding
-        -- Calculate header height: top padding (12px) + title height (~14px) + gap (6px) = 32px
-        local headerHeight = PADDING + 14 + 6  -- 32px total
+        -- Header: padding 12px + control row 20px + gap 6px = 38px
+        local headerHeight = PADDING + 20 + 6  -- 38px total
         local headerYOffset = -headerHeight
 
         for i, state in ipairs(orderedTiles) do
@@ -506,6 +516,80 @@ local function EnsureMetricPanels()
     end
 end
 
+--------------------------------------------------
+-- CreateHeaderIcons - Consistent icon row for all three HUD states
+-- Order (right to left): Expand/Collapse | History | Pause | Start/Stop (left of pause)
+--------------------------------------------------
+local function CreateHeaderIcons(parent)
+    if not parent then return end
+
+    -- Minimize/Maximize (rightmost)
+    local minMaxBtn = CreateFrame("Button", nil, parent)
+    minMaxBtn:SetSize(ICON_SIZE, ICON_SIZE)
+    minMaxBtn:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -PADDING, -PADDING)
+    minMaxBtn:SetNormalTexture(HEADER_ICON_MINUS)
+    minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
+    minMaxBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
+    minMaxBtn:SetScript("OnClick", function()
+        pH_HUD:ToggleMinimize()
+    end)
+    minMaxBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(pH_Settings.hudMinimized and "Expand" or "Minimize")
+        GameTooltip:Show()
+    end)
+    minMaxBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    parent.minMaxBtn = minMaxBtn
+
+    -- History (middle)
+    local historyBtn = CreateFrame("Button", nil, parent)
+    historyBtn:SetSize(ICON_SIZE, ICON_SIZE)
+    historyBtn:SetPoint("RIGHT", minMaxBtn, "LEFT", -ICON_GAP, 0)
+    historyBtn:SetNormalTexture(HEADER_ICON_HISTORY)
+    historyBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+    historyBtn:SetScript("OnClick", function()
+        pH_History:Toggle()
+    end)
+    historyBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("View session history")
+        GameTooltip:Show()
+    end)
+    historyBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    parent.historyBtn = historyBtn
+
+    -- Pause/Resume (leftmost of icons, Start/Stop button anchors to its left)
+    local pauseResumeBtn = CreateFrame("Button", nil, parent)
+    pauseResumeBtn:SetSize(ICON_SIZE, ICON_SIZE)
+    pauseResumeBtn:SetPoint("RIGHT", historyBtn, "LEFT", -ICON_GAP, 0)
+    pauseResumeBtn:SetNormalTexture(HEADER_ICON_PAUSE)
+    pauseResumeBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+    pauseResumeBtn:SetScript("OnClick", function()
+        local session = pH_SessionManager:GetActiveSession()
+        if not session then return end
+        if pH_SessionManager:IsPaused(session) then
+            pH_SessionManager:ResumeSession()
+        else
+            pH_SessionManager:PauseSession()
+        end
+        pH_HUD:Update()
+    end)
+    pauseResumeBtn:SetScript("OnEnter", function(self)
+        local session = pH_SessionManager:GetActiveSession()
+        if session and pH_SessionManager:IsPaused(session) then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Resume session")
+            GameTooltip:Show()
+        else
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Pause session")
+            GameTooltip:Show()
+        end
+    end)
+    pauseResumeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    parent.pauseResumeBtn = pauseResumeBtn
+end
+
 -- Initialize HUD
 function pH_HUD:Initialize()
     -- Create main frame with BackdropTemplate for border support
@@ -538,67 +622,27 @@ function pH_HUD:Initialize()
         self:StopMovingOrSizing()
     end)
 
-    -- Stop button (replaces non-functional pause button)
-    local stopBtn = CreateFrame("Button", nil, hudFrame)
-    stopBtn:SetSize(16, 16)
-    stopBtn:SetPoint("TOPRIGHT", -4, -4)  -- Same position as old pause button
-    stopBtn:SetNormalTexture("Interface\\RAIDFRAME\\ReadyCheck-NotReady")
-    stopBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+    -- Header icon row (pause/resume, history, minimize/maximize) - visible in all three states
+    CreateHeaderIcons(hudFrame)
 
-    stopBtn:SetScript("OnClick", function()
-        local ok, message = pH_SessionManager:StopSession()
-        if ok then
-            print("[pH] " .. message)
-            pH_HUD:Update()
-        end
-    end)
-
-    stopBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Stop session")
-        GameTooltip:Show()
-    end)
-
-    stopBtn:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
-
+    -- Start/Stop button (dual purpose: Start when no session, Stop when active)
+    local stopBtn = CreateFrame("Button", nil, hudFrame, "BackdropTemplate")
+    stopBtn:SetSize(56, 20)
+    stopBtn:SetPoint("RIGHT", hudFrame.pauseResumeBtn, "LEFT", -ICON_GAP, 0)
+    stopBtn:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 10,
+        insets = {left = 2, right = 2, top = 2, bottom = 2},
+    })
+    stopBtn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.9)
+    stopBtn:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+    local stopBtnText = stopBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    stopBtnText:SetPoint("CENTER", 0, 0)
+    stopBtnText:SetText("Stop")
+    stopBtnText:SetTextColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3])
+    stopBtn.textObj = stopBtnText  -- for Update() to switch Start/Stop
     hudFrame.stopBtn = stopBtn
-
-    -- History button (left of stop button)
-    local historyBtn = CreateFrame("Button", nil, hudFrame)
-    historyBtn:SetSize(16, 16)
-    historyBtn:SetPoint("RIGHT", stopBtn, "LEFT", -2, 0)
-    historyBtn:SetNormalTexture("Interface\\QUESTFRAME\\UI-QuestLog-BookIcon")
-    historyBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
-
-    historyBtn:SetScript("OnClick", function()
-        pH_History:Toggle()
-    end)
-
-    historyBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("View session history")
-        GameTooltip:Show()
-    end)
-
-    historyBtn:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
-
-    hudFrame.historyBtn = historyBtn
-
-    -- Minimize/Maximize button (stock WoW +/- buttons)
-    local minMaxBtn = CreateFrame("Button", nil, hudFrame)
-    minMaxBtn:SetSize(16, 16)
-    minMaxBtn:SetPoint("TOPRIGHT", historyBtn, "TOPLEFT", -2, 0)
-    minMaxBtn:SetNormalTexture("Interface\\Buttons\\UI-MinusButton-Up")
-    minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
-    minMaxBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
-    minMaxBtn:SetScript("OnClick", function()
-        pH_HUD:ToggleMinimize()
-    end)
-    hudFrame.minMaxBtn = minMaxBtn
 
     --------------------------------------------------
     -- Header (always visible in both collapsed and expanded states)
@@ -712,62 +756,171 @@ function pH_HUD:Initialize()
 
     --------------------------------------------------
     -- Start screen (shown when no session active)
+    -- Single line: logo | Help | Start | icons (Help lives in header row)
     --------------------------------------------------
-    local startScreen = CreateFrame("Frame", nil, hudFrame)
-    startScreen:SetSize(100, 54)  -- Compact width for minimal screen real estate when inactive
-    startScreen:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, 0)
-    startScreen:SetFrameLevel(hudFrame:GetFrameLevel() + 1)
+    local HEADER_HEIGHT = 38  -- PADDING + control row 20 + gap 6
+    local GAP = 6
 
-    -- Logo (pH branding - same position and size as active HUD title)
-    local startLogo = startScreen:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    startLogo:SetPoint("TOPLEFT", startScreen, "TOPLEFT", PADDING, -PADDING)  -- Match active HUD title position
-    startLogo:SetText("pH")
-    startLogo:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
-    startLogo:SetFont("Fonts\\FRIZQT__.TTF", 12, "")  -- Match active HUD title size (12px)
-
-    -- Start button (text button with border, right side)
-    local startBtn = CreateFrame("Button", nil, startScreen, "BackdropTemplate")
-    startBtn:SetSize(50, 20)
-    startBtn:SetPoint("TOPRIGHT", startScreen, "TOPRIGHT", -PADDING, -17)  -- Centered vertically in 54px frame
-    startBtn:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 12,
-        insets = {left = 2, right = 2, top = 2, bottom = 2},
-    })
-    startBtn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.9)
-    startBtn:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
-
-    -- Start button text
-    local startBtnText = startBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    startBtnText:SetPoint("CENTER", 0, 0)
-    startBtnText:SetText("Start")
-    startBtnText:SetTextColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3])
-
-    -- Hover effect
-    startBtn:SetScript("OnEnter", function(self)
-        self:SetBackdropBorderColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3], 1.0)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Click here to start a session, or type \"/ph start\" to get started. \"/ph help\" to learn more", nil, nil, nil, nil, true)
-        GameTooltip:Show()
-    end)
-
-    startBtn:SetScript("OnLeave", function(self)
-        self:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
-        GameTooltip:Hide()
-    end)
-
-    startBtn:SetScript("OnClick", function()
-        local ok, message = pH_SessionManager:StartSession()
-        print("[pH] " .. message)
-        if ok then
-            pH_Settings.hudMinimized = true  -- Start minimized
-            pH_HUD:Update()
+    -- Help link (in header row, between logo and Start button - shown only when no session)
+    local helpLink = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    helpLink:SetPoint("LEFT", hudFrame.title, "RIGHT", GAP, 0)
+    helpLink:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -GAP, 0)
+    helpLink:SetText("Help")
+    helpLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+    local helpLinkBtn = CreateFrame("Button", nil, hudFrame)
+    helpLinkBtn:SetAllPoints(helpLink)
+    helpLinkBtn:SetScript("OnClick", function()
+        if SlashCmdList["GOLDPH"] then
+            SlashCmdList["GOLDPH"]("help")
+        else
+            print("[pH] Type /ph help for commands")
         end
     end)
+    helpLinkBtn:SetScript("OnEnter", function()
+        helpLink:SetTextColor(1, 1, 1)
+        GameTooltip:SetOwner(helpLink, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Type /ph help for commands")
+        GameTooltip:Show()
+    end)
+    helpLinkBtn:SetScript("OnLeave", function()
+        helpLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+        GameTooltip:Hide()
+    end)
+    helpLinkBtn:Hide()
+    hudFrame.startHelpLink = helpLink
+    hudFrame.startHelpLinkBtn = helpLinkBtn
 
-    startScreen:Hide()  -- Initially hidden
+    -- Placeholder startScreen (empty - expanded panel uses startExpanded; collapsed uses header row only)
+    local startScreen = CreateFrame("Frame", nil, hudFrame)
+    startScreen:SetSize(1, 1)
+    startScreen:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, -HEADER_HEIGHT)
+    startScreen:Hide()
     hudFrame.startScreen = startScreen
+
+    --------------------------------------------------
+    -- Expanded start panel content (Option D - Smart Context)
+    --------------------------------------------------
+    local START_EXPANDED_WIDTH = 340
+    local START_EXPANDED_HEIGHT = 120  -- Will adjust based on content
+    
+    local startExpanded = CreateFrame("Frame", nil, hudFrame)
+    startExpanded:SetSize(START_EXPANDED_WIDTH, START_EXPANDED_HEIGHT)
+    startExpanded:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, -HEADER_HEIGHT)
+    startExpanded:SetFrameLevel(hudFrame:GetFrameLevel() + 1)
+    startExpanded:Hide()
+    
+    -- Zone/Context title
+    local zoneTitle = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    zoneTitle:SetPoint("TOPLEFT", startExpanded, "TOPLEFT", PADDING, -8)
+    zoneTitle:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
+    zoneTitle:SetJustifyH("LEFT")
+    zoneTitle:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
+    
+    -- Main content text (stats or tips)
+    local contentLine1 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    contentLine1:SetPoint("TOPLEFT", zoneTitle, "BOTTOMLEFT", 0, -8)
+    contentLine1:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    contentLine1:SetJustifyH("LEFT")
+    contentLine1:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
+    
+    local contentLine2 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    contentLine2:SetPoint("TOPLEFT", contentLine1, "BOTTOMLEFT", 0, -4)
+    contentLine2:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    contentLine2:SetJustifyH("LEFT")
+    contentLine2:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
+    
+    local contentLine3 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    contentLine3:SetPoint("TOPLEFT", contentLine2, "BOTTOMLEFT", 0, -4)
+    contentLine3:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    contentLine3:SetJustifyH("LEFT")
+    contentLine3:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
+    
+    local contentLine4 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    contentLine4:SetPoint("TOPLEFT", contentLine3, "BOTTOMLEFT", 0, -4)
+    contentLine4:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    contentLine4:SetJustifyH("LEFT")
+    contentLine4:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
+    
+    -- Tip section (with icon)
+    local tipIcon = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tipIcon:SetPoint("TOPLEFT", contentLine4, "BOTTOMLEFT", 0, -12)
+    tipIcon:SetText("")  -- Will be set to emoji or bullet
+    tipIcon:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+    
+    local tipText1 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tipText1:SetPoint("LEFT", tipIcon, "RIGHT", 4, 0)
+    tipText1:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    tipText1:SetJustifyH("LEFT")
+    tipText1:SetWidth(START_EXPANDED_WIDTH - 2*PADDING - 20)
+    
+    local tipText2 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tipText2:SetPoint("TOPLEFT", tipText1, "BOTTOMLEFT", 0, -4)
+    tipText2:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    tipText2:SetJustifyH("LEFT")
+    tipText2:SetWidth(START_EXPANDED_WIDTH - 2*PADDING - 20)
+    
+    -- Bottom links (History | Help)
+    local bottomLinks = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    bottomLinks:SetPoint("TOPLEFT", tipText2, "BOTTOMLEFT", 0, -12)
+    bottomLinks:SetText("History")
+    bottomLinks:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+    
+    local bottomHistoryBtn = CreateFrame("Button", nil, startExpanded)
+    bottomHistoryBtn:SetSize(50, 14)
+    bottomHistoryBtn:SetPoint("TOPLEFT", bottomLinks, "TOPLEFT", 0, 0)
+    bottomHistoryBtn:SetScript("OnClick", function() pH_History:Toggle() end)
+    bottomHistoryBtn:SetScript("OnEnter", function()
+        bottomLinks:SetTextColor(1, 1, 1)
+        GameTooltip:SetOwner(bottomLinks, "ANCHOR_RIGHT")
+        GameTooltip:SetText("View past sessions")
+        GameTooltip:Show()
+    end)
+    bottomHistoryBtn:SetScript("OnLeave", function()
+        bottomLinks:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+        GameTooltip:Hide()
+    end)
+    
+    local bottomSep = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    bottomSep:SetPoint("LEFT", bottomLinks, "RIGHT", 2, 0)
+    bottomSep:SetText(" | ")
+    bottomSep:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    
+    local bottomHelp = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    bottomHelp:SetPoint("LEFT", bottomSep, "RIGHT", 2, 0)
+    bottomHelp:SetText("Help")
+    bottomHelp:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+    
+    local bottomHelpBtn = CreateFrame("Button", nil, startExpanded)
+    bottomHelpBtn:SetSize(30, 14)
+    bottomHelpBtn:SetPoint("TOPLEFT", bottomHelp, "TOPLEFT", 0, 0)
+    bottomHelpBtn:SetScript("OnClick", function()
+        if SlashCmdList["GOLDPH"] then
+            SlashCmdList["GOLDPH"]("help")
+        end
+    end)
+    bottomHelpBtn:SetScript("OnEnter", function()
+        bottomHelp:SetTextColor(1, 1, 1)
+        GameTooltip:SetOwner(bottomHelp, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Type /ph help for commands")
+        GameTooltip:Show()
+    end)
+    bottomHelpBtn:SetScript("OnLeave", function()
+        bottomHelp:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+        GameTooltip:Hide()
+    end)
+    
+    hudFrame.startExpanded = startExpanded
+    hudFrame.startExpandedContent = {
+        zoneTitle = zoneTitle,
+        contentLine1 = contentLine1,
+        contentLine2 = contentLine2,
+        contentLine3 = contentLine3,
+        contentLine4 = contentLine4,
+        tipIcon = tipIcon,
+        tipText1 = tipText1,
+        tipText2 = tipText2,
+        bottomLinks = bottomLinks,
+    }
 
     --------------------------------------------------
     -- Expanded metric cards container
@@ -853,6 +1006,18 @@ function pH_HUD:Initialize()
         if updateTimer >= interval then
             pH_HUD:Update()
             updateTimer = 0
+        end
+    end)
+    
+    -- Zone change event handling (for start panel content updates)
+    hudFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+    hudFrame:SetScript("OnEvent", function(self, event, ...)
+        if event == "ZONE_CHANGED_NEW_AREA" then
+            -- Only update if no active session and start panel is expanded
+            local session = pH_SessionManager:GetActiveSession()
+            if not session and pH_Settings.startPanelExpanded then
+                UpdateStartPanelContent()
+            end
         end
     end)
 
@@ -1415,6 +1580,118 @@ local function RenderFocusPanel(metricKey)
     end
 end
 
+--------------------------------------------------
+-- Update Start Panel Content (Option D - Smart Context)
+--------------------------------------------------
+local function UpdateStartPanelContent()
+    if not hudFrame or not hudFrame.startExpandedContent then
+        return
+    end
+    
+    local content = hudFrame.startExpandedContent
+    local currentZone = GetZoneText() or "Unknown"
+    
+    -- Get zone stats and overall session count
+    local zoneStats = pH_Index:GetZoneStats(currentZone)
+    local allSessions = pH_SessionManager:ListSessions(100)  -- Get up to 100 sessions
+    local totalSessionCount = #allSessions
+    
+    -- Option D Logic: Adaptive content based on context
+    if zoneStats and zoneStats.sessionCount > 0 then
+        -- Case 1: You have sessions in current zone
+        content.zoneTitle:SetText("Welcome back to " .. currentZone)
+        
+        local avgGold = pH_Ledger:FormatMoneyShort(zoneStats.avgPerHour)
+        local bestGold = pH_Ledger:FormatMoneyShort(zoneStats.bestPerHour)
+        content.contentLine1:SetText("You usually make " .. avgGold .. "/hr here")
+        
+        if zoneStats.lastSession then
+            local metrics = pH_SessionManager:GetMetrics(zoneStats.lastSession)
+            local lastGold = pH_Ledger:FormatMoneyShort(metrics.totalPerHour or 0)
+            local lastTime = zoneStats.lastSession.endedAt or zoneStats.lastSession.startedAt
+            local timeDiff = time() - lastTime
+            local timeAgo = ""
+            if timeDiff < 3600 then
+                timeAgo = math.floor(timeDiff / 60) .. "m ago"
+            elseif timeDiff < 86400 then
+                timeAgo = math.floor(timeDiff / 3600) .. "h ago"
+            else
+                timeAgo = math.floor(timeDiff / 86400) .. "d ago"
+            end
+            
+            local sessionInfo = lastGold .. "/hr"
+            if zoneStats.lastSession.gathering and zoneStats.lastSession.gathering.totalNodes then
+                sessionInfo = sessionInfo .. " - " .. zoneStats.lastSession.gathering.totalNodes .. " nodes"
+            end
+            
+            content.contentLine2:SetText("Last session: " .. timeAgo .. " - " .. sessionInfo)
+        else
+            content.contentLine2:SetText("")
+        end
+        
+        content.contentLine3:SetText("")
+        content.contentLine4:SetText("")
+        
+        -- Tip: Best performance
+        content.tipIcon:SetText(">")
+        content.tipText1:SetText("Tip: Your best here was " .. bestGold .. "/hr")
+        content.tipText2:SetText("    Use /ph pause to pause tracking anytime")
+        
+    elseif totalSessionCount > 0 then
+        -- Case 2: First time in this zone, but have sessions elsewhere
+        content.zoneTitle:SetText("First time tracking in " .. currentZone .. "!")
+        
+        -- Find best zones
+        local zoneAgg = pH_Index:GetZoneAggregates()
+        local bestZones = {}
+        for zone, stats in pairs(zoneAgg) do
+            table.insert(bestZones, {zone = zone, perHour = stats.avgTotalPerHour, count = stats.sessionCount})
+        end
+        table.sort(bestZones, function(a, b) return a.perHour > b.perHour end)
+        
+        if bestZones[1] then
+            local zone1 = bestZones[1].zone
+            local gold1 = pH_Ledger:FormatMoneyShort(bestZones[1].perHour)
+            local count1 = bestZones[1].count
+            content.contentLine1:SetText("Your best zones so far:")
+            content.contentLine2:SetText("  " .. zone1 .. ": " .. gold1 .. "/hr (" .. count1 .. " sessions)")
+            
+            if bestZones[2] then
+                local zone2 = bestZones[2].zone
+                local gold2 = pH_Ledger:FormatMoneyShort(bestZones[2].perHour)
+                local count2 = bestZones[2].count
+                content.contentLine3:SetText("  " .. zone2 .. ": " .. gold2 .. "/hr (" .. count2 .. " sessions)")
+            else
+                content.contentLine3:SetText("")
+            end
+        else
+            content.contentLine1:SetText("")
+            content.contentLine2:SetText("")
+            content.contentLine3:SetText("")
+        end
+        
+        content.contentLine4:SetText("")
+        
+        -- Tip: Pause reminder
+        content.tipIcon:SetText(">")
+        content.tipText1:SetText("Tip: Pause anytime with /ph pause")
+        content.tipText2:SetText("    Resume with /ph resume")
+        
+    else
+        -- Case 3: Brand new user, no sessions at all
+        content.zoneTitle:SetText("Ready to track your earnings!")
+        content.contentLine1:SetText("")
+        content.contentLine2:SetText("pH tracks gold, XP, rep, and honor per hour")
+        content.contentLine3:SetText("while you farm, quest, or gather.")
+        content.contentLine4:SetText("")
+        
+        -- Tips for getting started
+        content.tipIcon:SetText(">")
+        content.tipText1:SetText("Tips: Click Start, then go about your usual activities")
+        content.tipText2:SetText("      View History to see detailed breakdowns")
+    end
+end
+
 -- Update HUD display
 function pH_HUD:Update()
     if not hudFrame then
@@ -1424,17 +1701,110 @@ function pH_HUD:Update()
     local session = pH_SessionManager:GetActiveSession()
 
     if not session then
-        -- Show start screen when no session active
-        if hudFrame.startScreen then
-            hudFrame.startScreen:Show()
+        -- No active session: show start panel (collapsed or expanded)
+        local isExpanded = pH_Settings.startPanelExpanded
+        
+        -- Toggle expand/collapse behavior for start panel
+        hudFrame.minMaxBtn:SetScript("OnClick", function()
+            pH_Settings.startPanelExpanded = not pH_Settings.startPanelExpanded
+            pH_HUD:Update()
+        end)
+        
+        if isExpanded then
+            -- Expanded start panel
+            if hudFrame.startScreen then
+                hudFrame.startScreen:Hide()
+            end
+            if hudFrame.startHelpLink then
+                hudFrame.startHelpLink:Hide()
+            end
+            if hudFrame.startHelpLinkBtn then
+                hudFrame.startHelpLinkBtn:Hide()
+            end
+            if hudFrame.startExpanded then
+                hudFrame.startExpanded:Show()
+                UpdateStartPanelContent()
+            end
+            
+            -- Update expand button icon
+            hudFrame.minMaxBtn:SetNormalTexture(HEADER_ICON_MINUS)
+            hudFrame.minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
+            hudFrame.minMaxBtn:SetScript("OnEnter", function(self)
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText("Collapse start panel")
+                GameTooltip:Show()
+            end)
+            
+            -- Frame size: 340x178 (expanded with content)
+            hudFrame:Show()
+            hudFrame:SetSize(340, 178)
+            
+        else
+            -- Collapsed start panel (single line: logo | Help | Start | icons)
+            if hudFrame.startScreen then
+                hudFrame.startScreen:Hide()
+            end
+            if hudFrame.startExpanded then
+                hudFrame.startExpanded:Hide()
+            end
+            if hudFrame.startHelpLink then
+                hudFrame.startHelpLink:Show()
+            end
+            if hudFrame.startHelpLinkBtn then
+                hudFrame.startHelpLinkBtn:Show()
+            end
+            
+            -- Update expand button icon
+            hudFrame.minMaxBtn:SetNormalTexture(HEADER_ICON_PLUS)
+            hudFrame.minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-PlusButton-Down")
+            hudFrame.minMaxBtn:SetScript("OnEnter", function(self)
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText("Expand start panel")
+                GameTooltip:Show()
+            end)
+            
+            -- Frame size: single line (logo Help Start icons), ~210x44
+            hudFrame:Show()
+            hudFrame:SetSize(210, 44)
+        end
+        
+        -- Header: show title, Help link, Start button, icon row; hide timer
+        hudFrame.title:Show()
+        hudFrame.headerTimer:Hide()
+        if hudFrame.stopBtn then
+            hudFrame.stopBtn:Show()
+            hudFrame.stopBtn.textObj:SetText("Start")
+            hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3])
+            hudFrame.stopBtn:SetScript("OnClick", function()
+                local ok, message = pH_SessionManager:StartSession()
+                print("[pH] " .. message)
+                if ok then
+                    pH_Settings.hudMinimized = true
+                    pH_HUD:Update()
+                end
+            end)
+            hudFrame.stopBtn:SetScript("OnEnter", function(self)
+                self:SetBackdropBorderColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3], 1.0)
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText("Start tracking gold, XP, rep, and honor per hour", nil, nil, nil, nil, true)
+                GameTooltip:Show()
+            end)
+            hudFrame.stopBtn:SetScript("OnLeave", function(self)
+                self:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+                GameTooltip:Hide()
+            end)
         end
 
-        -- Hide active session components
-        if hudFrame.stopBtn then hudFrame.stopBtn:Hide() end
-        if hudFrame.historyBtn then hudFrame.historyBtn:Hide() end
-        if hudFrame.minMaxBtn then hudFrame.minMaxBtn:Hide() end
-        hudFrame.title:Hide()
-        hudFrame.headerTimer:Hide()
+        -- Icon row: pause invisible (keeps space), history and minMax enabled
+        hudFrame.pauseResumeBtn:Show()
+        hudFrame.pauseResumeBtn:Disable()
+        hudFrame.pauseResumeBtn:SetAlpha(0)
+        hudFrame.historyBtn:Show()
+        hudFrame.historyBtn:Enable()
+        hudFrame.historyBtn:SetAlpha(1)
+        hudFrame.minMaxBtn:Show()
+        hudFrame.minMaxBtn:Enable()
+        hudFrame.minMaxBtn:SetAlpha(1)
 
         -- Hide metric components
         for _, state in pairs(metricStates) do
@@ -1448,22 +1818,79 @@ function pH_HUD:Update()
             hudFrame.metricCardContainer:Hide()
         end
 
-        -- Keep HUD frame visible (for start screen)
-        hudFrame:Show()
-        hudFrame:SetSize(100, 54)  -- Compact start screen (minimal screen real estate)
         return
     end
 
-    -- Session is active: show active components, hide start screen
+    -- Session is active: hide start screen and Help link, show active components
     if hudFrame.startScreen then
         hudFrame.startScreen:Hide()
     end
+    if hudFrame.startHelpLink then
+        hudFrame.startHelpLink:Hide()
+    end
+    if hudFrame.startHelpLinkBtn then
+        hudFrame.startHelpLinkBtn:Hide()
+    end
 
-    if hudFrame.stopBtn then hudFrame.stopBtn:Show() end
-    if hudFrame.historyBtn then hudFrame.historyBtn:Show() end
-    if hudFrame.minMaxBtn then hudFrame.minMaxBtn:Show() end
     hudFrame.title:Show()
     hudFrame.headerTimer:Show()
+    if hudFrame.stopBtn then
+        hudFrame.stopBtn:Show()
+        hudFrame.stopBtn.textObj:SetText("Stop")
+        hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3])
+        hudFrame.stopBtn:SetScript("OnClick", function()
+            local ok, message = pH_SessionManager:StopSession()
+            if ok then
+                print("[pH] " .. message)
+                pH_HUD:Update()
+            end
+        end)
+        hudFrame.stopBtn:SetScript("OnEnter", function(self)
+            self:SetBackdropBorderColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3], 1.0)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Stop session and save results")
+            GameTooltip:Show()
+        end)
+        hudFrame.stopBtn:SetScript("OnLeave", function(self)
+            self:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+            GameTooltip:Hide()
+        end)
+    end
+
+    -- Icon row: all active
+    hudFrame.pauseResumeBtn:Show()
+    hudFrame.pauseResumeBtn:Enable()
+    hudFrame.pauseResumeBtn:SetAlpha(1)
+    hudFrame.historyBtn:Show()
+    hudFrame.minMaxBtn:Show()
+    hudFrame.minMaxBtn:Enable()
+    hudFrame.minMaxBtn:SetAlpha(1)
+    hudFrame.minMaxBtn:SetScript("OnClick", function()
+        pH_HUD:ToggleMinimize()
+    end)
+    hudFrame.minMaxBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(pH_Settings.hudMinimized and "Expand" or "Minimize")
+        GameTooltip:Show()
+    end)
+
+    -- Update pause/resume icon based on paused state
+    local isPaused = pH_SessionManager:IsPaused(session)
+    if isPaused then
+        hudFrame.pauseResumeBtn:SetNormalTexture(HEADER_ICON_PLAY)
+    else
+        hudFrame.pauseResumeBtn:SetNormalTexture(HEADER_ICON_PAUSE)
+    end
+
+    -- Update minimize/maximize icon (handled in ApplyMinimizeState when toggled)
+    local isMin = pH_Settings.hudMinimized
+    if isMin then
+        hudFrame.minMaxBtn:SetNormalTexture(HEADER_ICON_PLUS)
+        hudFrame.minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-PlusButton-Down")
+    else
+        hudFrame.minMaxBtn:SetNormalTexture(HEADER_ICON_MINUS)
+        hudFrame.minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
+    end
 
     -- Show HUD if session active
     if not hudFrame:IsShown() then
@@ -1484,7 +1911,6 @@ function pH_HUD:Update()
 
     -- Get metrics
     local metrics = pH_SessionManager:GetMetrics(session)
-    local isPaused = pH_SessionManager:IsPaused(session)
 
     -- Update timers (both collapsed and expanded versions) with pH brand colors
     local timerText = pH_SessionManager:FormatDuration(metrics.durationSec)

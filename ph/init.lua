@@ -58,6 +58,7 @@ local function InitializeSavedVariables()
             trackZone = true,
             hudVisible = true,
             hudMinimized = false,
+            startPanelExpanded = false,  -- Start panel collapsed by default
             historyVisible = false,
             historyMinimized = false,
             historyPosition = nil,
@@ -113,6 +114,10 @@ local function InitializeSavedVariables()
     -- Migration: add useGridLayout to existing settings
     if pH_Settings.metricCards.useGridLayout == nil then
         pH_Settings.metricCards.useGridLayout = true
+    end
+    -- Migration: add startPanelExpanded to existing settings
+    if pH_Settings.startPanelExpanded == nil then
+        pH_Settings.startPanelExpanded = false
     end
 
     -- Rest of addon uses pH_DB_Account (see SessionManager, Index, Events, UI_*, etc.)
