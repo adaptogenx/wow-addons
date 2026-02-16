@@ -11,6 +11,7 @@ local pH_HUD = {}
 local hudFrame = nil
 local updateTimer = 0
 local UPDATE_INTERVAL = 1.0 -- Update every 1 second
+local UpdateStartPanelContent  -- Forward declaration (defined after Initialize)
 
 -- Layout constants
 local PADDING = 12
@@ -1532,7 +1533,7 @@ end
 --------------------------------------------------
 -- Update Start Panel Content (Option D - Smart Context)
 --------------------------------------------------
-local function UpdateStartPanelContent()
+UpdateStartPanelContent = function()
     if not hudFrame or not hudFrame.startExpandedContent then
         return
     end
