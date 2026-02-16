@@ -141,7 +141,7 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
 
         local charName = UnitName("player") or "Unknown"
         local realm = GetRealmName() or "Unknown"
-        print("[pH] Version 0.10.1 loaded. Type /ph help for commands (legacy /goldph still works).")
+        print("[pH] Version 0.11.0 loaded. Type /ph help for commands (legacy /goldph still works).")
 
         -- Check for duplicate sessions (delayed to avoid login spam)
         C_Timer.After(2, WarnIfDuplicatesExist)
