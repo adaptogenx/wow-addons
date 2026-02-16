@@ -58,7 +58,7 @@ local function InitializeSavedVariables()
             trackZone = true,
             hudVisible = true,
             hudMinimized = false,
-            startPanelExpanded = false,  -- Start panel collapsed by default
+            startPanelExpanded = true,  -- Expanded on first load (shows tips/zone context)
             historyVisible = false,
             historyMinimized = false,
             historyPosition = nil,
@@ -115,9 +115,9 @@ local function InitializeSavedVariables()
     if pH_Settings.metricCards.useGridLayout == nil then
         pH_Settings.metricCards.useGridLayout = true
     end
-    -- Migration: add startPanelExpanded to existing settings
+    -- Migration: add startPanelExpanded to existing settings (nil = first load or upgrade)
     if pH_Settings.startPanelExpanded == nil then
-        pH_Settings.startPanelExpanded = false
+        pH_Settings.startPanelExpanded = true
     end
 
     -- Rest of addon uses pH_DB_Account (see SessionManager, Index, Events, UI_*, etc.)

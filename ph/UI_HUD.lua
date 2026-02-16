@@ -762,7 +762,7 @@ function pH_HUD:Initialize()
     local GAP = 6
 
     -- Help link (in header row, between logo and Start button - shown only when no session)
-    local helpLink = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local helpLink = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     helpLink:SetPoint("LEFT", hudFrame.title, "RIGHT", GAP, 0)
     helpLink:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -GAP, 0)
     helpLink:SetText("Help")
@@ -811,33 +811,33 @@ function pH_HUD:Initialize()
     
     -- Zone/Context title
     local zoneTitle = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    zoneTitle:SetPoint("TOPLEFT", startExpanded, "TOPLEFT", PADDING, -8)
+    zoneTitle:SetPoint("TOPLEFT", startExpanded, "TOPLEFT", PADDING, -2)
     zoneTitle:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
     zoneTitle:SetJustifyH("LEFT")
     zoneTitle:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
     
-    -- Main content text (stats or tips)
+    -- Main content text (stats or tips) - PH_TEXT_PRIMARY for readability
     local contentLine1 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     contentLine1:SetPoint("TOPLEFT", zoneTitle, "BOTTOMLEFT", 0, -8)
-    contentLine1:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    contentLine1:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
     contentLine1:SetJustifyH("LEFT")
     contentLine1:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
     
     local contentLine2 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     contentLine2:SetPoint("TOPLEFT", contentLine1, "BOTTOMLEFT", 0, -4)
-    contentLine2:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    contentLine2:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
     contentLine2:SetJustifyH("LEFT")
     contentLine2:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
     
     local contentLine3 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     contentLine3:SetPoint("TOPLEFT", contentLine2, "BOTTOMLEFT", 0, -4)
-    contentLine3:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    contentLine3:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
     contentLine3:SetJustifyH("LEFT")
     contentLine3:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
     
     local contentLine4 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     contentLine4:SetPoint("TOPLEFT", contentLine3, "BOTTOMLEFT", 0, -4)
-    contentLine4:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    contentLine4:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
     contentLine4:SetJustifyH("LEFT")
     contentLine4:SetWidth(START_EXPANDED_WIDTH - 2*PADDING)
     
@@ -849,65 +849,15 @@ function pH_HUD:Initialize()
     
     local tipText1 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     tipText1:SetPoint("LEFT", tipIcon, "RIGHT", 4, 0)
-    tipText1:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    tipText1:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
     tipText1:SetJustifyH("LEFT")
     tipText1:SetWidth(START_EXPANDED_WIDTH - 2*PADDING - 20)
     
     local tipText2 = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     tipText2:SetPoint("TOPLEFT", tipText1, "BOTTOMLEFT", 0, -4)
-    tipText2:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    tipText2:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
     tipText2:SetJustifyH("LEFT")
     tipText2:SetWidth(START_EXPANDED_WIDTH - 2*PADDING - 20)
-    
-    -- Bottom links (History | Help)
-    local bottomLinks = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    bottomLinks:SetPoint("TOPLEFT", tipText2, "BOTTOMLEFT", 0, -12)
-    bottomLinks:SetText("History")
-    bottomLinks:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
-    
-    local bottomHistoryBtn = CreateFrame("Button", nil, startExpanded)
-    bottomHistoryBtn:SetSize(50, 14)
-    bottomHistoryBtn:SetPoint("TOPLEFT", bottomLinks, "TOPLEFT", 0, 0)
-    bottomHistoryBtn:SetScript("OnClick", function() pH_History:Toggle() end)
-    bottomHistoryBtn:SetScript("OnEnter", function()
-        bottomLinks:SetTextColor(1, 1, 1)
-        GameTooltip:SetOwner(bottomLinks, "ANCHOR_RIGHT")
-        GameTooltip:SetText("View past sessions")
-        GameTooltip:Show()
-    end)
-    bottomHistoryBtn:SetScript("OnLeave", function()
-        bottomLinks:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
-        GameTooltip:Hide()
-    end)
-    
-    local bottomSep = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    bottomSep:SetPoint("LEFT", bottomLinks, "RIGHT", 2, 0)
-    bottomSep:SetText(" | ")
-    bottomSep:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
-    
-    local bottomHelp = startExpanded:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    bottomHelp:SetPoint("LEFT", bottomSep, "RIGHT", 2, 0)
-    bottomHelp:SetText("Help")
-    bottomHelp:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
-    
-    local bottomHelpBtn = CreateFrame("Button", nil, startExpanded)
-    bottomHelpBtn:SetSize(30, 14)
-    bottomHelpBtn:SetPoint("TOPLEFT", bottomHelp, "TOPLEFT", 0, 0)
-    bottomHelpBtn:SetScript("OnClick", function()
-        if SlashCmdList["GOLDPH"] then
-            SlashCmdList["GOLDPH"]("help")
-        end
-    end)
-    bottomHelpBtn:SetScript("OnEnter", function()
-        bottomHelp:SetTextColor(1, 1, 1)
-        GameTooltip:SetOwner(bottomHelp, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Type /ph help for commands")
-        GameTooltip:Show()
-    end)
-    bottomHelpBtn:SetScript("OnLeave", function()
-        bottomHelp:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
-        GameTooltip:Hide()
-    end)
     
     hudFrame.startExpanded = startExpanded
     hudFrame.startExpandedContent = {
@@ -919,7 +869,6 @@ function pH_HUD:Initialize()
         tipIcon = tipIcon,
         tipText1 = tipText1,
         tipText2 = tipText2,
-        bottomLinks = bottomLinks,
     }
 
     --------------------------------------------------
@@ -1690,6 +1639,24 @@ local function UpdateStartPanelContent()
         content.tipText1:SetText("Tips: Click Start, then go about your usual activities")
         content.tipText2:SetText("      View History to see detailed breakdowns")
     end
+    
+    -- Compute adaptive width based on actual text content
+    local maxTextWidth = 0
+    local measuredLines = {content.zoneTitle, content.contentLine1, content.contentLine2,
+                           content.contentLine3, content.contentLine4, content.tipText1, content.tipText2}
+    for _, line in ipairs(measuredLines) do
+        local w = line:GetStringWidth()
+        if w > maxTextWidth then maxTextWidth = w end
+    end
+    -- Clamp between collapsed width (210) and max (340), add padding + margin
+    local adaptiveWidth = math.max(210, math.min(maxTextWidth + 2 * PADDING + 20, 340))
+    hudFrame.startExpanded:SetSize(adaptiveWidth, 120)
+    -- Update text width constraints to match new width
+    for _, line in ipairs(measuredLines) do
+        line:SetWidth(adaptiveWidth - 2 * PADDING)
+    end
+    content.zoneTitle:SetWidth(adaptiveWidth - 2 * PADDING)
+    hudFrame.startExpandedWidth = adaptiveWidth
 end
 
 -- Update HUD display
@@ -1715,11 +1682,12 @@ function pH_HUD:Update()
             if hudFrame.startScreen then
                 hudFrame.startScreen:Hide()
             end
+            -- Help link stays visible in header for both states
             if hudFrame.startHelpLink then
-                hudFrame.startHelpLink:Hide()
+                hudFrame.startHelpLink:Show()
             end
             if hudFrame.startHelpLinkBtn then
-                hudFrame.startHelpLinkBtn:Hide()
+                hudFrame.startHelpLinkBtn:Show()
             end
             if hudFrame.startExpanded then
                 hudFrame.startExpanded:Show()
@@ -1735,9 +1703,11 @@ function pH_HUD:Update()
                 GameTooltip:Show()
             end)
             
-            -- Frame size: 340x178 (expanded with content)
+            -- Frame size: expanded with content (width set by adaptive calc, fallback 340)
+            local expWidth = hudFrame.startExpandedWidth or 340
             hudFrame:Show()
-            hudFrame:SetSize(340, 178)
+            hudFrame:SetSize(expWidth, 150)
+            hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], 0.95)
             
         else
             -- Collapsed start panel (single line: logo | Help | Start | icons)
@@ -1766,6 +1736,7 @@ function pH_HUD:Update()
             -- Frame size: single line (logo Help Start icons), ~210x44
             hudFrame:Show()
             hudFrame:SetSize(210, 44)
+            hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], PH_BG_PARCHMENT[4])
         end
         
         -- Header: show title, Help link, Start button, icon row; hide timer
@@ -1825,12 +1796,17 @@ function pH_HUD:Update()
     if hudFrame.startScreen then
         hudFrame.startScreen:Hide()
     end
+    if hudFrame.startExpanded then
+        hudFrame.startExpanded:Hide()
+    end
     if hudFrame.startHelpLink then
         hudFrame.startHelpLink:Hide()
     end
     if hudFrame.startHelpLinkBtn then
         hudFrame.startHelpLinkBtn:Hide()
     end
+    -- Restore normal bg opacity
+    hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], PH_BG_PARCHMENT[4])
 
     hudFrame.title:Show()
     hudFrame.headerTimer:Show()
