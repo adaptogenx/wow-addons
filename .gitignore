@@ -14,3 +14,5 @@ Thumbs.db
 
 # Addon installation
 .install_info
+
+./releases/
