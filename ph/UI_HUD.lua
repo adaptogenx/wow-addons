@@ -23,9 +23,9 @@ local FRAME_HEIGHT = 180
 -- Header row: ~20px (Stop button + icon row height)
 -- Gap between header and tiles: 6px
 -- Tile height: 18px (icon/text row 12px + 2px gap + bar 4px)
--- Bottom padding: 4px
--- Total: 12 + 20 + 6 + 18 + 4 = 60px
-local FRAME_HEIGHT_MINI = 60  -- Minimized height with horizontal micro-bars
+-- Bottom padding: 2px
+-- Total: 12 + 20 + 6 + 18 + 2 = 58px
+local FRAME_HEIGHT_MINI = 58  -- Minimized height with horizontal micro-bars
 local SECTION_GAP = 4
 
 -- Rectangular panel layout (PRD-aligned)
