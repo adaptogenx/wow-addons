@@ -131,6 +131,11 @@ function pH_Events:OnEvent(event, ...)
     if type(pH_SessionManager) ~= "table" then
         return
     end
+
+    -- Auto-session: may auto-start or auto-resume
+    if type(pH_AutoSession) == "table" then
+        pH_AutoSession:HandleEvent(event)
+    end
     
     -- Do not record any events while session is paused (keeps gold/hr accurate)
     local session = pH_SessionManager:GetActiveSession()

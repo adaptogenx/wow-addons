@@ -119,6 +119,18 @@ local function InitializeSavedVariables()
     if pH_Settings.startPanelExpanded == nil then
         pH_Settings.startPanelExpanded = true
     end
+    -- Migration: add autoSession settings (Phase 12: Auto session management)
+    if pH_Settings.autoSession == nil then
+        pH_Settings.autoSession = {
+            enabled = true,
+            autoStart = true,
+            instanceStart = true,
+            afkPause = true,
+            inactivityPromptMin = 5,
+            inactivityPauseMin = 10,
+            autoResume = true,
+        }
+    end
 
     -- Rest of addon uses pH_DB_Account (see SessionManager, Index, Events, UI_*, etc.)
 end
@@ -139,9 +151,14 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
         -- Initialize event system (registers additional events)
         pH_Events:Initialize(pH_MainFrame)
 
+        -- Initialize auto-session management
+        if pH_AutoSession then
+            pH_AutoSession:Initialize()
+        end
+
         local charName = UnitName("player") or "Unknown"
         local realm = GetRealmName() or "Unknown"
-        print("[pH] Version 0.11.0 loaded. Type /ph help for commands (legacy /goldph still works).")
+        print("[pH] Version 0.12.0 loaded. Type /ph help for commands (legacy /goldph still works).")
 
         -- Check for duplicate sessions (delayed to avoid login spam)
         C_Timer.After(2, WarnIfDuplicatesExist)
@@ -241,6 +258,11 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
                 pH_HUD:Update()
             end
         end
+
+        -- Check for instance entry (auto-start paused session)
+        if pH_AutoSession then
+            pH_AutoSession:OnPlayerEnteringWorld()
+        end
     elseif event == "PLAYER_LOGOUT" then
         -- Fold the current login segment into the session accumulator on logout (only for this character's session)
         local session = pH_SessionManager:GetActiveSession()
@@ -281,6 +303,7 @@ local function ShowHelp()
     print("|cffffff00/ph show|r - Show/hide the HUD")
     print("|cffffff00/ph status|r - Show current session status")
     print("|cffffff00/ph history|r - Open session history")
+    print("|cffffff00/ph auto [on|off]|r - Enable/disable auto-session management or show settings")
     print("")
     print("|cff00ff00=== Debug Commands ===|r")
     print("|cffffff00/ph debug on|off|r - Enable/disable debug mode (auto-run invariants)")
@@ -505,6 +528,32 @@ local function HandleCommand(msg)
             end
         else
             print("[pH] Test commands: run, hud, reset, loot <copper>, repair <copper>, lootitem <itemID> <count>, vendoritem <itemID> <count>, gathernode <name> [count] [copperValueEach]")
+        end
+
+    elseif cmd == "auto" then
+        local subCmd = (args[2] or ""):lower()
+        if not pH_Settings.autoSession then
+            print("[pH] Auto-session settings not initialized")
+            return
+        end
+        if subCmd == "on" then
+            pH_Settings.autoSession.enabled = true
+            print("[pH] Auto-session management enabled")
+        elseif subCmd == "off" then
+            pH_Settings.autoSession.enabled = false
+            print("[pH] Auto-session management disabled")
+        elseif subCmd == "" then
+            local cfg = pH_Settings.autoSession
+            print("[pH] Auto-session settings:")
+            print(string.format("  Enabled: %s", cfg.enabled and "Yes" or "No"))
+            print(string.format("  Auto-start: %s", cfg.autoStart and "Yes" or "No"))
+            print(string.format("  Instance start: %s", cfg.instanceStart and "Yes" or "No"))
+            print(string.format("  AFK pause: %s", cfg.afkPause and "Yes" or "No"))
+            print(string.format("  Inactivity prompt: %d min", cfg.inactivityPromptMin or 5))
+            print(string.format("  Inactivity auto-pause: %d min", cfg.inactivityPauseMin or 10))
+            print(string.format("  Auto-resume: %s", cfg.autoResume and "Yes" or "No"))
+        else
+            print("[pH] Usage: /ph auto [on|off]")
         end
 
     elseif cmd == "help" then
