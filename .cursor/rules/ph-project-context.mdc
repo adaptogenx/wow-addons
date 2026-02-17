@@ -1,0 +1,102 @@
+---
+description: Core project context for pH WoW addon. Auto-attached to every conversation.
+globs:
+  - "ph/**/*.lua"
+  - "ph/*.toc"
+alwaysApply: true
+---
+
+# pH Project Context
+
+## What Is This
+
+pH is a WoW Classic Anniversary addon (Lua 5.1) that tracks gold/XP/rep/honor per hour using double-entry accounting. All currency in copper (integers). Conservative valuation — undercount rather than overestimate.
+
+## File Map
+
+```
+ph/ph.toc              -- Manifest (load order, version)
+ph/init.lua             -- Entry point, saved variables, slash commands
+ph/SessionManager.lua   -- Session lifecycle, metrics computation
+ph/Ledger.lua           -- Double-entry bookkeeping (debits/credits)
+ph/Holdings.lua         -- FIFO lot management (no double counting)
+ph/Valuation.lua        -- Item bucket classification and EV formulas
+ph/PriceSources.lua     -- TSM integration, manual overrides
+ph/Events.lua           -- WoW event routing to accounting actions
+ph/Index.lua            -- Session indexing, zone/char aggregates, queries
+ph/pH_Colors.lua        -- Shared color constants
+ph/UI_HUD.lua           -- Main HUD (collapsed micro-bars, expanded cards, start panel)
+ph/UI_History.lua       -- History panel container
+ph/UI_History_List.lua  -- Session list view
+ph/UI_History_Detail.lua -- Session detail view
+ph/UI_History_Filters.lua -- Filter/sort controls
+ph/Debug.lua            -- Debug tools
+ph/Debug_XP.lua         -- XP-related debug helpers
+```
+
+## Key Globals
+
+- `pH_DB_Account` — Account-wide saved data (sessions, meta, priceOverrides)
+- `pH_Settings` — Per-character UI state (hudVisible, hudMinimized, startPanelExpanded, microBars, metricCards)
+- `pH_SessionManager` — Session API (StartSession, StopSession, PauseSession, ResumeSession, GetActiveSession, GetMetrics, ListSessions, IsPaused, FormatDuration)
+- `pH_Ledger` — Accounting API (Post, Balance, FormatMoney, FormatMoneyShort)
+- `pH_Index` — Query API (Build, QuerySessions, GetZoneAggregates, GetZoneStats, GetSummary, GetZones)
+- `pH_HUD` — HUD API (Initialize, Update, Show, Hide, Toggle, ToggleMinimize, ApplyMinimizeState)
+- `pH_History` — History panel API (Toggle, Show, Hide)
+
+## HUD States
+
+The HUD has 5 distinct visual states:
+
+1. **Start Collapsed** — No session, single header line: logo | Help | Start | icons (210x44)
+2. **Start Expanded** — No session, zone-aware context panel with tips/stats (adaptive width 210-340, height 150)
+3. **Active Minimized** — Session running, micro-bars below header (266x58)
+4. **Active Expanded** — Session running, 2x2 metric card grid with sparklines (340xVariable)
+5. **Focus Panel** — Modal overlay for metric drill-down (380x240, DIALOG strata)
+
+## UI Design Tokens
+
+Defined in `UI_RULES.md` and implemented in `UI_HUD.lua` locals:
+
+```lua
+PH_TEXT_PRIMARY   = {0.86, 0.82, 0.70}  -- Headers, readable body text
+PH_TEXT_MUTED     = {0.62, 0.58, 0.50}  -- Secondary text (low contrast — avoid on transparent bg)
+PH_ACCENT_GOOD    = {0.25, 0.78, 0.42}  -- Start button, positive values
+PH_ACCENT_BAD     = {0.85, 0.38, 0.32}  -- Stop button, negative values
+PH_ACCENT_GOLD_INCOME = {1.00, 0.82, 0.00}  -- Links, gold highlights
+PH_BG_PARCHMENT   = {0.18, 0.16, 0.13, 0.85}  -- Main frame bg
+PH_BG_DARK         = {0.08, 0.07, 0.06, 0.85}  -- Panel/button bg
+PH_BORDER_BRONZE   = {0.52, 0.42, 0.28}  -- Frame borders
+```
+
+pH logo: 12px Friz Quadrata, TOPLEFT (12, -12), PH_TEXT_PRIMARY, text "pH".
+
+## Header Button Order (Right to Left)
+
+Expand/Collapse → History → Pause/Resume → Start/Stop
+
+All anchored via `TOPRIGHT` chain. Stop button is a `BackdropTemplate` with text; icons are 16x16 texture buttons.
+
+## Version Tracking
+
+Version lives in two places — both must be updated together:
+- `ph/ph.toc` line: `## Version: X.Y.Z`
+- `ph/init.lua` print line: `Version X.Y.Z loaded`
+
+**Bump patch (Z) on every commit/push. Bump minor (Y) for new features.**
+
+## Critical Patterns
+
+- **Forward declarations**: If a `local function` is referenced in `Initialize()` but defined later, add `local FuncName` at file top and use `FuncName = function()` at definition.
+- **QuerySessions returns IDs**: `pH_Index:QuerySessions()` returns session ID numbers, not objects. Fetch objects via `pH_DB_Account.sessions[id]`.
+- **GetMetrics expects objects**: `pH_SessionManager:GetMetrics(session)` takes a session table, not an ID.
+- **UI anchoring**: Always anchor to `hudFrame TOPLEFT` with calculated offsets. Never chain through intermediate elements. See `.cursor/rules/ui-anchoring.md`.
+- **Lua 5.1 only**: No goto, no bitwise ops, no integer division. See `.cursor/rules/lua-5.1-syntax.md`.
+
+## Accounting Invariant
+
+```
+Net Worth Change = ΔCash + ΔInventoryExpected
+```
+
+When items are vendored, consume FIFO lots to reverse the exact expected value that was booked at loot time. Pre-session items (not in holdings) only record cash proceeds.
