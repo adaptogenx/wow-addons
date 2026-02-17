@@ -56,20 +56,8 @@ The HUD has 5 distinct visual states:
 
 ## UI Design Tokens
 
-Defined in `UI_RULES.md` and implemented in `UI_HUD.lua` locals:
+Defined in `UI_RULES.md` and implemented in `UI_HUD.lua` locals. Refer to that for all UI and design rules when working with an UI element.
 
-```lua
-PH_TEXT_PRIMARY   = {0.86, 0.82, 0.70}  -- Headers, readable body text
-PH_TEXT_MUTED     = {0.62, 0.58, 0.50}  -- Secondary text (low contrast — avoid on transparent bg)
-PH_ACCENT_GOOD    = {0.25, 0.78, 0.42}  -- Start button, positive values
-PH_ACCENT_BAD     = {0.85, 0.38, 0.32}  -- Stop button, negative values
-PH_ACCENT_GOLD_INCOME = {1.00, 0.82, 0.00}  -- Links, gold highlights
-PH_BG_PARCHMENT   = {0.18, 0.16, 0.13, 0.85}  -- Main frame bg
-PH_BG_DARK         = {0.08, 0.07, 0.06, 0.85}  -- Panel/button bg
-PH_BORDER_BRONZE   = {0.52, 0.42, 0.28}  -- Frame borders
-```
-
-pH logo: 12px Friz Quadrata, TOPLEFT (12, -12), PH_TEXT_PRIMARY, text "pH".
 
 ## Header Button Order (Right to Left)
 
