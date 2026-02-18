@@ -82,8 +82,20 @@ function pH_AutoSession:Initialize()
     -- Will be created in CreateToastUI() when needed
 end
 
+-- Returns true if this event+message should NOT trigger auto-start/resume (AH, mail)
+local function ShouldSkipAutoStartForMessage(event, message)
+    if event ~= "CHAT_MSG_MONEY" and event ~= "CHAT_MSG_LOOT" then
+        return false
+    end
+    if not message or type(message) ~= "string" then
+        return false
+    end
+    local lower = message:lower()
+    return lower:find("auction") or lower:find("mail")
+end
+
 -- Handle an event - may auto-start or auto-resume session
-function pH_AutoSession:HandleEvent(event)
+function pH_AutoSession:HandleEvent(event, ...)
     -- Early return if disabled
     if not pH_Settings.autoSession or not pH_Settings.autoSession.enabled then
         return
@@ -99,6 +111,10 @@ function pH_AutoSession:HandleEvent(event)
     -- Case 1: No active session - auto-start only on clear earning events
     if not session then
         if pH_Settings.autoSession.autoStart and AUTO_START_EVENTS[event] then
+            local msg = select(1, ...)
+            if ShouldSkipAutoStartForMessage(event, msg) then
+                return
+            end
             local ok, message = pH_SessionManager:StartSession()
             if ok then
                 state.lastActivityAt = GetTime()
@@ -117,6 +133,10 @@ function pH_AutoSession:HandleEvent(event)
     if session.pausedAt then
         -- Only auto-resume if it was auto-paused (not manually paused)
         if pH_Settings.autoSession.autoResume and state.autoPausedReason then
+            local msg = select(1, ...)
+            if ShouldSkipAutoStartForMessage(event, msg) then
+                return
+            end
             local ok, message = pH_SessionManager:ResumeSession()
             if ok then
                 state.lastActivityAt = GetTime()

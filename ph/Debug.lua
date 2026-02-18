@@ -4,7 +4,7 @@
     Provides invariant checks, test injection, and debugging tools.
 ]]
 
--- luacheck: globals pH_DB_Account
+-- luacheck: globals pH_DB_Account pH_SessionManager pH_Index GetRealmName UnitName UnitFactionGroup
 
 local pH_Debug = {}
 
@@ -1077,6 +1077,57 @@ local function BuildSessionSignature(session)
     -- Build a pipe-separated signature
     return string.format("%d|%s|%s|%s|%d|%d",
         startedAt, zone, character, realm, durationSec, cash)
+end
+
+-- Show data summary (session counts, active session, per-char breakdown)
+function pH_Debug:ShowData()
+    if not pH_DB_Account then
+        print(COLOR_RED .. "[pH] pH_DB_Account is nil - addon not fully loaded" .. COLOR_RESET)
+        return
+    end
+
+    local sessions = pH_DB_Account.sessions or {}
+    local count = 0
+    for _ in pairs(sessions) do count = count + 1 end
+
+    local active = pH_DB_Account.activeSession
+    local currentChar = UnitName("player") or "Unknown"
+    local currentRealm = GetRealmName() or "Unknown"
+    local currentFaction = UnitFactionGroup("player") or "Unknown"
+    local currentCharKey = currentChar .. "-" .. currentRealm .. "-" .. currentFaction
+
+    print(COLOR_YELLOW .. "=== pH Data Summary ===" .. COLOR_RESET)
+    print(string.format("  Sessions in DB: %d", count))
+    if active then
+        local owner = (active.character or "?") .. "-" .. (active.realm or "?") .. "-" .. (active.faction or "?")
+        local isCurrent = (active.character == currentChar and active.realm == currentRealm and active.faction == currentFaction)
+        print(string.format("  Active session: #%d (owner: %s) %s",
+            active.id, owner, isCurrent and COLOR_GREEN .. "(this char)" .. COLOR_RESET or COLOR_YELLOW .. "(other char)" .. COLOR_RESET))
+    else
+        print("  Active session: none")
+    end
+    print(string.format("  Current char: %s", currentCharKey))
+
+    -- Per-char session counts (sessions table + active if different)
+    local byChar = {}
+    for _, session in pairs(sessions) do
+        local ck = (session.character or "?") .. "-" .. (session.realm or "?") .. "-" .. (session.faction or "?")
+        byChar[ck] = (byChar[ck] or 0) + 1
+    end
+    if active and not sessions[active.id] then
+        local ck = (active.character or "?") .. "-" .. (active.realm or "?") .. "-" .. (active.faction or "?")
+        byChar[ck] = (byChar[ck] or 0) + 1
+    end
+
+    if next(byChar) then
+        print("  Per-character sessions:")
+        for ck, n in pairs(byChar) do
+            local marker = (ck == currentCharKey) and " <- you" or ""
+            print(string.format("    %s: %d%s", ck, n, marker))
+        end
+    end
+    print("  Use Char: All dropdown in History to see all characters.")
+    print(COLOR_RESET)
 end
 
 -- Scan database for duplicate sessions

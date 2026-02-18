@@ -72,6 +72,15 @@ function pH_History_List:Initialize(parent, historyController)
         local newValue = math.max(min, math.min(max, current - delta))
         pH_History_List.scrollBar:SetValue(newValue)
     end)
+
+    -- Empty state message (when no sessions match filters)
+    local emptyLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    emptyLabel:SetPoint("CENTER", contentFrame, "CENTER", 0, 0)
+    emptyLabel:SetTextColor(TEXT_MUTED[1], TEXT_MUTED[2], TEXT_MUTED[3])
+    emptyLabel:SetText("No sessions found.\nTry Char: All or /ph debug data")
+    emptyLabel:SetJustifyH("CENTER")
+    emptyLabel:Hide()
+    self.emptyLabel = emptyLabel
 end
 
 --------------------------------------------------
@@ -183,6 +192,10 @@ end
 --------------------------------------------------
 function pH_History_List:SetSessions(sessionIds)
     self.sessionIds = sessionIds
+
+    if self.emptyLabel then
+        self.emptyLabel:SetShown(#sessionIds == 0)
+    end
 
     -- Update scroll bar range
     local maxScroll = math.max(0, #sessionIds - self.numVisibleRows)

@@ -134,7 +134,7 @@ function pH_Events:OnEvent(event, ...)
 
     -- Auto-session: may auto-start or auto-resume
     if type(pH_AutoSession) == "table" then
-        pH_AutoSession:HandleEvent(event)
+        pH_AutoSession:HandleEvent(event, ...)
     end
     
     -- Do not record any events while session is paused (keeps gold/hr accurate)

@@ -172,24 +172,28 @@ function pH_History:Show()
         self.frame:SetPoint(pos.point, UIParent, pos.relativePoint, pos.x, pos.y)
     end
 
-    -- Restore filter state
+    -- Restore filter state (but not charKeys - see below)
     if pH_Settings.historyFilters then
         for k, v in pairs(pH_Settings.historyFilters) do
-            self.filterState[k] = v
+            if k ~= "charKeys" then
+                self.filterState[k] = v
+            end
         end
     end
 
-    -- Default character filter to current character (if not already set)
-    if self.filterState.charKeys == nil then
-        local charName = UnitName("player") or "Unknown"
-        local realm = GetRealmName() or "Unknown"
-        local faction = UnitFactionGroup("player") or "Unknown"
-        local currentCharKey = charName .. "-" .. realm .. "-" .. faction
-        self.filterState.charKeys = { [currentCharKey] = true }
-    end
+    -- Always set character filter to current character when opening.
+    -- Prevents showing another character's sessions (e.g. persisted from previous char).
+    local charName = UnitName("player") or "Unknown"
+    local realm = GetRealmName() or "Unknown"
+    local faction = UnitFactionGroup("player") or "Unknown"
+    local currentCharKey = charName .. "-" .. realm .. "-" .. faction
+    self.filterState.charKeys = { [currentCharKey] = true }
 
     -- Sync char dropdown label to filter state
     pH_History_Filters:UpdateCharDropdownLabel()
+
+    -- Force index rebuild so we have fresh data (e.g. sessions persisted on char switch)
+    pH_Index:MarkStale()
 
     -- Apply filters and refresh list
     self:RefreshList()

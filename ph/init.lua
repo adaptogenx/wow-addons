@@ -163,6 +163,9 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
         -- Check for duplicate sessions (delayed to avoid login spam)
         C_Timer.After(2, WarnIfDuplicatesExist)
     elseif event == "PLAYER_ENTERING_WORLD" then
+        -- Persist any active session that belongs to another character (e.g. after char switch)
+        pH_SessionManager:PersistOrphanedActiveSession()
+
         -- Ensure settings exist
         if not pH_Settings then
             pH_Settings = {
@@ -314,6 +317,7 @@ local function ShowHelp()
     print("|cffffff00/ph debug prices|r - Show available price sources (TSM, Custom AH)")
     print("|cffffff00/ph debug pickpocket|r - Show pickpocket statistics (Phase 6)")
     print("|cffffff00/ph debug gathering|r - Show gathering node statistics")
+    print("|cffffff00/ph debug data|r - Show session counts and per-character breakdown")
     print("|cffffff00/ph debug dupes|r - Scan for duplicate sessions in database")
     print("|cffffff00/ph debug purge-dupes [confirm]|r - Remove duplicate sessions (backup first!)")
     print("")
@@ -340,7 +344,7 @@ local function HandleCommand(msg)
 
     local debugShortcuts = {
         dump = true, ledger = true, holdings = true, prices = true, pickpocket = true,
-        gathering = true, on = true, off = true, verbose = true,
+        gathering = true, data = true, on = true, off = true, verbose = true,
     }
     if debugShortcuts[cmd] then
         table.insert(args, 1, "debug")
@@ -427,13 +431,15 @@ local function HandleCommand(msg)
             pH_Debug:ShowPickpocket()
         elseif subCmd == "gathering" then
             pH_Debug:ShowGathering()
+        elseif subCmd == "data" then
+            pH_Debug:ShowData()
         elseif subCmd == "dupes" then
             pH_Debug:ShowDuplicates()
         elseif subCmd == "purge-dupes" then
             local confirm = (args[3] or ""):lower() == "confirm"
             pH_Debug:PurgeDuplicates(confirm)
         else
-            print("[pH] Debug commands: on, off, verbose, dump, ledger, holdings, prices, pickpocket, gathering, dupes, purge-dupes")
+            print("[pH] Debug commands: on, off, verbose, dump, ledger, holdings, prices, pickpocket, gathering, data, dupes, purge-dupes")
         end
 
     elseif cmd == "test" then
