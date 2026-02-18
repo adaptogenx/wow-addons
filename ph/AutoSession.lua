@@ -17,6 +17,7 @@ local state = {
     lastActivityAt = nil,           -- Timestamp of last meaningful activity
     autoPausedReason = nil,         -- nil, "afk", or "inactivity" (tracks why session was auto-paused)
     inactivityToastShown = false,   -- Whether we've shown the 5-min inactivity prompt
+    wasPausedLastCheck = nil,       -- True if session was paused last CheckInactivity (so we detect resume)
     toastFrame = nil,               -- Toast notification UI frame
     timerFrame = nil,               -- OnUpdate frame for inactivity checking
     afkFrame = nil,                 -- Frame for PLAYER_FLAGS_CHANGED event
@@ -183,9 +184,24 @@ function pH_AutoSession:CheckInactivity()
     end
 
     local session = pH_SessionManager:GetActiveSession()
-    if not session or session.pausedAt then
+    if not session then
+        state.wasPausedLastCheck = nil
         return
     end
+
+    -- Just resumed (was paused last check, now not paused): reset activity and don't show toast
+    if session.pausedAt then
+        state.wasPausedLastCheck = true
+        return
+    end
+    if state.wasPausedLastCheck then
+        state.lastActivityAt = GetTime()
+        state.inactivityToastShown = false
+        state.wasPausedLastCheck = false
+        self:HideToast()
+        return
+    end
+    state.wasPausedLastCheck = false
 
     -- If no activity timestamp yet, initialize it
     if not state.lastActivityAt then
@@ -272,7 +288,7 @@ local function CreateToastUI()
     end
 
     local toast = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    toast:SetSize(280, 80)
+    toast:SetSize(300, 100)
     toast:SetFrameStrata("DIALOG")
     toast:SetFrameLevel(1000)
     toast:SetMovable(false)
@@ -292,20 +308,22 @@ local function CreateToastUI()
     })
     toast:SetBackdropBorderColor(unpack(pH_Colors.BORDER_BRONZE))
 
-    -- Message text
+    -- Message text (anchored above button row so it never overlaps)
     local messageText = toast:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     messageText:SetPoint("TOP", toast, "TOP", 0, -12)
     messageText:SetPoint("LEFT", toast, "LEFT", 12, 0)
     messageText:SetPoint("RIGHT", toast, "RIGHT", -12, 0)
+    messageText:SetPoint("BOTTOM", toast, "BOTTOM", 0, 44)
     messageText:SetJustifyH("CENTER")
     messageText:SetJustifyV("TOP")
     messageText:SetTextColor(unpack(pH_Colors.TEXT_PRIMARY))
+    messageText:SetWordWrap(true)
     toast.messageText = messageText
 
     -- Action button (e.g., "Pause" or "Start")
     local actionBtn = CreateFrame("Button", nil, toast, "UIPanelButtonTemplate")
-    actionBtn:SetSize(80, 24)
-    actionBtn:SetPoint("BOTTOMLEFT", toast, "BOTTOM", -50, 12)
+    actionBtn:SetSize(90, 24)
+    actionBtn:SetPoint("BOTTOMLEFT", toast, "BOTTOM", 12, 10)
     actionBtn:SetText("Pause")
     actionBtn:SetScript("OnClick", function()
         toast.actionCallback()
@@ -315,8 +333,8 @@ local function CreateToastUI()
 
     -- Dismiss button
     local dismissBtn = CreateFrame("Button", nil, toast, "UIPanelButtonTemplate")
-    dismissBtn:SetSize(80, 24)
-    dismissBtn:SetPoint("BOTTOMRIGHT", toast, "BOTTOM", 50, 12)
+    dismissBtn:SetSize(90, 24)
+    dismissBtn:SetPoint("BOTTOMRIGHT", toast, "BOTTOM", -12, 10)
     dismissBtn:SetText("Dismiss")
     dismissBtn:SetScript("OnClick", function()
         pH_AutoSession:HideToast()

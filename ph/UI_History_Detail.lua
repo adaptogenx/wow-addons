@@ -4,7 +4,7 @@
     Shows session details across 4 tabs: Summary, Items, Gathering, Compare
 ]]
 
--- luacheck: globals pH_Settings
+-- luacheck: globals pH_Settings pH_Index pH_History pH_SessionManager pH_Ledger date time
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -372,6 +372,65 @@ function pH_History_Detail:RenderSummaryTab()
     subText:SetTextColor(pH_Colors.TEXT_MUTED[1], pH_Colors.TEXT_MUTED[2], pH_Colors.TEXT_MUTED[3])
     subText:Show()
     yOffset = yOffset - 20
+
+    -- Rename zone button
+    local renameBtn = scrollChild.zoneRenameBtn
+    if not renameBtn then
+        renameBtn = CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate")
+        renameBtn:SetSize(90, 22)
+        renameBtn:SetText("Rename zone")
+        renameBtn:SetScript("OnClick", function()
+            local detail = pH_History_Detail
+            local sess = detail.currentSession
+            if not sess then return end
+            local editBox = scrollChild.zoneEditBox
+            if editBox then
+                editBox:SetText(sess.zone or "Unknown")
+                editBox:Show()
+                editBox:SetFocus()
+            end
+        end)
+        scrollChild.zoneRenameBtn = renameBtn
+    end
+    renameBtn:ClearAllPoints()
+    renameBtn:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 10, yOffset)
+    renameBtn:Show()
+    yOffset = yOffset - 26
+
+    -- Zone edit box (hidden until Rename zone is clicked)
+    local zoneEditBox = scrollChild.zoneEditBox
+    if not zoneEditBox then
+        zoneEditBox = CreateFrame("EditBox", nil, scrollChild, "InputBoxTemplate")
+        zoneEditBox:SetSize(200, 22)
+        zoneEditBox:SetAutoFocus(false)
+        zoneEditBox:SetScript("OnEnterPressed", function(self)
+            self:ClearFocus()
+            local detail = pH_History_Detail
+            local sess = detail.currentSession
+            if not sess then self:Hide() return end
+            local text = self:GetText()
+            if text and text ~= "" then
+                sess.zone = text:gsub("^%s+", ""):gsub("%s+$", "") or "Unknown"
+                if sess.zone == "" then sess.zone = "Unknown" end
+            else
+                sess.zone = "Unknown"
+            end
+            if pH_Index then pH_Index:MarkStale() end
+            if pH_History then pH_History:RefreshList() end
+            detail:SetSession(detail.currentSessionId)
+            self:Hide()
+        end)
+        zoneEditBox:SetScript("OnEscapePressed", function(self)
+            self:ClearFocus()
+            self:Hide()
+            pH_History_Detail:RenderSummaryTab()
+        end)
+        scrollChild.zoneEditBox = zoneEditBox
+    end
+    zoneEditBox:ClearAllPoints()
+    zoneEditBox:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 10, yOffset)
+    zoneEditBox:Hide()
+    yOffset = yOffset - 26
 
     local metricContainer = scrollChild.metricContainer
     if not metricContainer then

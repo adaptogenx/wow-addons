@@ -4,6 +4,7 @@
     Displays sessions in a scrollable list with row pooling for performance.
 ]]
 
+-- luacheck: globals time date pH_Index pH_Ledger
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -224,8 +225,10 @@ function pH_History_List:RenderVisibleRows(offset)
                 end
                 row.zoneText:SetText(zoneName)
 
-                -- Duration
-                row.durationText:SetText(self:FormatDurationShort(summary.durationSec))
+                -- Duration and how long ago
+                local durationStr = self:FormatDurationShort(summary.durationSec)
+                local agoStr = self:FormatTimeAgo(summary.endedAt or summary.startedAt)
+                row.durationText:SetText(durationStr .. (agoStr ~= "" and "  ·  " .. agoStr or ""))
 
                 -- Character (show only character name, not full key)
                 local charName = summary.charKey:match("^([^-]+)")
@@ -312,6 +315,29 @@ function pH_History_List:FormatDurationShort(seconds)
         return string.format("%dh %dm", hours, mins)
     else
         return string.format("%dm", mins)
+    end
+end
+
+--------------------------------------------------
+-- Helper: Format "how long ago" for a timestamp
+--------------------------------------------------
+function pH_History_List:FormatTimeAgo(epoch)
+    if not epoch then return "" end
+    local now = time()
+    local diff = now - epoch
+    if diff < 60 then
+        return "Just now"
+    elseif diff < 3600 then
+        local m = math.floor(diff / 60)
+        return m .. "m ago"
+    elseif diff < 86400 then
+        local h = math.floor(diff / 3600)
+        return h .. "h ago"
+    elseif diff < 604800 then
+        local d = math.floor(diff / 86400)
+        return d .. "d ago"
+    else
+        return date("%b %d", epoch)
     end
 end
 
