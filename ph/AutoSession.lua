@@ -22,7 +22,7 @@ local state = {
     afkFrame = nil,                 -- Frame for PLAYER_FLAGS_CHANGED event
 }
 
--- Events that trigger auto-start or auto-resume
+-- Events that may update activity timestamp or trigger auto-resume (broad)
 local TRIGGER_EVENTS = {
     CHAT_MSG_MONEY = true,
     CHAT_MSG_LOOT = true,
@@ -31,6 +31,16 @@ local TRIGGER_EVENTS = {
     CHAT_MSG_COMBAT_HONOR_GAIN = true,
     QUEST_TURNED_IN = true,
     MERCHANT_SHOW = true,  -- Resume only, not start
+}
+
+-- Events that are allowed to auto-start a session (narrow: only clear earning activity)
+-- Excludes UNIT_SPELLCAST_SUCCEEDED (fires on every spell: mount, buff, etc.) and
+-- PLAYER_XP_UPDATE (can fire on login/sync). MERCHANT_SHOW never starts, only resumes.
+local AUTO_START_EVENTS = {
+    CHAT_MSG_MONEY = true,           -- Looted coin
+    CHAT_MSG_LOOT = true,             -- Looted item
+    QUEST_TURNED_IN = true,          -- Quest reward
+    CHAT_MSG_COMBAT_HONOR_GAIN = true,-- Honor gain
 }
 
 -- Initialize the auto-session system
@@ -85,10 +95,9 @@ function pH_AutoSession:HandleEvent(event)
 
     local session = pH_SessionManager:GetActiveSession()
 
-    -- Case 1: No active session - auto-start if enabled
+    -- Case 1: No active session - auto-start only on clear earning events
     if not session then
-        if pH_Settings.autoSession.autoStart and event ~= "MERCHANT_SHOW" then
-            -- MERCHANT_SHOW doesn't trigger auto-start, only resume
+        if pH_Settings.autoSession.autoStart and AUTO_START_EVENTS[event] then
             local ok, message = pH_SessionManager:StartSession()
             if ok then
                 state.lastActivityAt = GetTime()
@@ -110,12 +119,17 @@ function pH_AutoSession:HandleEvent(event)
             local ok, message = pH_SessionManager:ResumeSession()
             if ok then
                 state.lastActivityAt = GetTime()
+                local reason = state.autoPausedReason
                 state.autoPausedReason = nil
                 state.inactivityToastShown = false
                 if pH_HUD then
                     pH_HUD:Update()
                 end
-                print("[pH] Auto-resumed session: " .. (message or ""))
+                if reason == "instance" then
+                    print("[pH] Session resumed (first activity in instance).")
+                else
+                    print("[pH] Auto-resumed session: " .. (message or ""))
+                end
             end
         end
         return
@@ -148,18 +162,17 @@ function pH_AutoSession:OnPlayerEnteringWorld()
         return
     end
 
-    -- Start session paused
+    -- Start session paused; will auto-resume on first activity (loot, XP, honor, etc.)
     local ok, message = pH_SessionManager:StartSession()
     if ok then
-        -- Immediately pause it
         pH_SessionManager:PauseSession()
         state.lastActivityAt = GetTime()
-        state.autoPausedReason = "instance"  -- Special case: instance entry pause
+        state.autoPausedReason = "instance"
         state.inactivityToastShown = false
         if pH_HUD then
             pH_HUD:Update()
         end
-        print("[pH] Auto-started paused session in instance: " .. (message or ""))
+        print("[pH] Session started (paused in instance). It will resume when you loot, gain XP, complete a quest, or earn honor.")
     end
 end
 
