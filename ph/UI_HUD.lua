@@ -13,19 +13,23 @@ local updateTimer = 0
 local UPDATE_INTERVAL = 1.0 -- Update every 1 second
 local UpdateStartPanelContent  -- Forward declaration (defined after Initialize)
 
--- Layout constants
-local PADDING = 12
+-- Layout constants (single source of truth)
+local PADDING = 12              -- Inner padding on all sides
+local HEADER_HEIGHT = 20        -- Header row height (logo, buttons, icons)
+local BODY_GAP = 6              -- Gap between header and body
+local TILE_HEIGHT = 18          -- Micro-bar tile (icon 12 + gap 2 + bar 4)
+
+-- Frame heights computed from content
+local function ComputeMicroFrameHeight()
+    return PADDING + HEADER_HEIGHT + BODY_GAP + TILE_HEIGHT + PADDING  -- 68
+end
+local function ComputeStartCollapsedHeight()
+    return PADDING + HEADER_HEIGHT + PADDING  -- 44, no body
+end
+
 local FRAME_WIDTH = 180
--- Base expanded height; actual height is dynamically adjusted based on visible rows
-local FRAME_HEIGHT = 180
--- Calculate minimized height for horizontal bar:
--- Top padding: 12px (PADDING)
--- Header row: ~20px (Stop button + icon row height)
--- Gap between header and tiles: 6px
--- Tile height: 18px (icon/text row 12px + 2px gap + bar 4px)
--- Bottom padding: 2px
--- Total: 12 + 20 + 6 + 18 + 2 = 58px
-local FRAME_HEIGHT_MINI = 58  -- Minimized height with horizontal micro-bars
+local FRAME_HEIGHT = 180        -- Base; expanded height computed dynamically
+local FRAME_HEIGHT_MINI = ComputeMicroFrameHeight()
 local SECTION_GAP = 4
 
 -- Rectangular panel layout (PRD-aligned)
@@ -95,7 +99,7 @@ local HEADER_ICON_HISTORY = "Interface\\QUESTFRAME\\UI-QuestLog-BookIcon"
 local HEADER_ICON_MINUS = "Interface\\Buttons\\UI-MinusButton-Up"
 local HEADER_ICON_PLUS = "Interface\\Buttons\\UI-PlusButton-Up"
 local ICON_GAP = 2
-local ICON_SIZE = 16
+local ICON_SIZE = 20  -- Match stop button height (20px)
 
 -- Color keys mapping for micro-bar colors
 local colorKeys = { gold = "GOLD", xp = "XP", rep = "REP", honor = "HONOR" }
@@ -191,18 +195,11 @@ local function RepositionTiles(isCollapsed)
     if tileCount == 0 then return end
 
     if isCollapsed then
-        -- Horizontal layout: position tiles below header (Stop button + icons row)
-        -- Anchor to hudFrame.TOPLEFT to prevent UI jumping when collapsing/expanding
-        -- Header: padding 12px + control row 20px + gap 6px = 38px
-        local headerHeight = PADDING + 20 + 6  -- 38px total
-        local headerYOffset = -headerHeight
-
+        -- Horizontal layout: tiles in bodyContainer (below header)
         for i, state in ipairs(orderedTiles) do
             state.tile:ClearAllPoints()
             if i == 1 then
-                -- First tile: anchor TOPLEFT to hudFrame.TOPLEFT (same coordinate as HUD frame)
-                -- This ensures no visual jumping when frame size changes
-                state.tile:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", PADDING, headerYOffset)
+                state.tile:SetPoint("TOPLEFT", hudFrame.bodyContainer, "TOPLEFT", 0, 0)
             else
                 -- Subsequent tiles: align top with first tile, position to right
                 state.tile:SetPoint("TOP", orderedTiles[1].tile, "TOP", 0, 0)
@@ -439,12 +436,12 @@ local function EnsureMetricPanels()
         return
     end
 
-    -- Always ensure container exists first
+    -- Always ensure container exists first (child of bodyContainer)
     if not hudFrame.metricCardContainer then
-        local metricCardContainer = CreateFrame("Frame", nil, hudFrame)
-        -- Position below header timer (headerContainer removed, so -38 instead of -52)
-        metricCardContainer:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", PADDING, -38)
-        metricCardContainer:SetSize(PANEL_FULL_WIDTH, 160)
+        local metricCardContainer = CreateFrame("Frame", nil, hudFrame.bodyContainer)
+        metricCardContainer:SetPoint("TOPLEFT", hudFrame.bodyContainer, "TOPLEFT", 0, 0)
+        metricCardContainer:SetPoint("RIGHT", hudFrame.bodyContainer, "RIGHT", 0, 0)
+        metricCardContainer:SetHeight(160)
         metricCardContainer:Hide()
         hudFrame.metricCardContainer = metricCardContainer
     end
@@ -646,13 +643,22 @@ function pH_HUD:Initialize()
     hudFrame.stopBtn = stopBtn
 
     --------------------------------------------------
-    -- Header (always visible in both collapsed and expanded states)
+    -- Header row (fixed height, all elements vertically centered)
     --------------------------------------------------
-    local headerYPos = -PADDING
+    local HEADER_ROW_HEIGHT = 20
+    local headerRow = CreateFrame("Frame", nil, hudFrame)
+    headerRow:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, -PADDING)
+    headerRow:SetPoint("TOPRIGHT", hudFrame, "TOPRIGHT", 0, -PADDING)
+    headerRow:SetHeight(HEADER_ROW_HEIGHT)
+    hudFrame.headerRow = headerRow
+
+    -- Reposition icons to center in header row
+    hudFrame.minMaxBtn:ClearAllPoints()
+    hudFrame.minMaxBtn:SetPoint("RIGHT", headerRow, "RIGHT", -PADDING, 0)
 
     -- Title (always visible) - "pH" branding (lowercase p, uppercase H)
     local title = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", PADDING, headerYPos)
+    title:SetPoint("LEFT", headerRow, "LEFT", PADDING, 0)
     title:SetText("pH")
     title:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])  -- pH brand primary text
     -- Apply Friz Quadrata font per brand brief (WoW's built-in font)
@@ -667,10 +673,10 @@ function pH_HUD:Initialize()
     headerTimer:SetText("0m")
     hudFrame.headerTimer = headerTimer
 
-    -- Header container (for backward compatibility, positioned below title row for expanded state)
+    -- Header container (for backward compatibility, positioned below header row)
     -- Hidden - second line removed per user request
     local headerContainer = CreateFrame("Frame", nil, hudFrame)
-    headerContainer:SetPoint("TOP", title, "BOTTOM", 0, -4)
+    headerContainer:SetPoint("TOP", headerRow, "BOTTOM", 0, -4)
     headerContainer:SetSize(FRAME_WIDTH, 14)  -- Height for one line
     headerContainer:Hide()  -- Hidden by default - second line removed
     hudFrame.headerContainer = headerContainer
@@ -698,16 +704,25 @@ function pH_HUD:Initialize()
     hudFrame.headerTimer2 = headerTimer2
 
     --------------------------------------------------
+    -- Body region (all body content goes here - tiles, panels, start content)
+    --------------------------------------------------
+    local bodyYOffset = -(PADDING + HEADER_HEIGHT + BODY_GAP)
+    local bodyContainer = CreateFrame("Frame", nil, hudFrame)
+    bodyContainer:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", PADDING, bodyYOffset)
+    bodyContainer:SetPoint("RIGHT", hudFrame, "RIGHT", -PADDING, 0)
+    -- Height set per-state; micro uses TILE_HEIGHT, expanded uses dynamic
+    bodyContainer:SetHeight(TILE_HEIGHT)
+    hudFrame.bodyContainer = bodyContainer
+
+    --------------------------------------------------
     -- Micro-bar metric tiles (for collapsed state - single horizontal line)
     --------------------------------------------------
     local tileWidth = 50
-    -- Tile height: 18px (icon/text row 12px + 2px gap + bar 4px)
-    local tileHeight = 18
 
     for metricKey, state in pairs(metricStates) do
-        -- Create tile container
-        local tile = CreateFrame("Frame", nil, hudFrame)
-        tile:SetSize(tileWidth, tileHeight)
+        -- Create tile container (child of bodyContainer)
+        local tile = CreateFrame("Frame", nil, bodyContainer)
+        tile:SetSize(tileWidth, TILE_HEIGHT)
         state.tile = tile
 
         -- Icon (compact, positioned at top left) - 12px for ultra-compact
@@ -759,11 +774,12 @@ function pH_HUD:Initialize()
     -- Start screen (shown when no session active)
     -- Single line: logo | Help | Start | icons (Help lives in header row)
     --------------------------------------------------
-    local HEADER_HEIGHT = 38  -- PADDING + control row 20 + gap 6
+    local bodyTopOffset = -(PADDING + HEADER_HEIGHT + BODY_GAP)
     local GAP = 6
 
     -- Help link (in header row, between logo and Start button - shown only when no session)
     local helpLink = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    helpLink:SetFont("Fonts\\FRIZQT__.TTF", 12, "")  -- Same font as title for vertical alignment
     helpLink:SetPoint("LEFT", hudFrame.title, "RIGHT", GAP, 0)
     helpLink:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -GAP, 0)
     helpLink:SetText("Help")
@@ -794,7 +810,7 @@ function pH_HUD:Initialize()
     -- Placeholder startScreen (empty - expanded panel uses startExpanded; collapsed uses header row only)
     local startScreen = CreateFrame("Frame", nil, hudFrame)
     startScreen:SetSize(1, 1)
-    startScreen:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, -HEADER_HEIGHT)
+    startScreen:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, bodyTopOffset)
     startScreen:Hide()
     hudFrame.startScreen = startScreen
 
@@ -806,7 +822,7 @@ function pH_HUD:Initialize()
     
     local startExpanded = CreateFrame("Frame", nil, hudFrame)
     startExpanded:SetSize(START_EXPANDED_WIDTH, START_EXPANDED_HEIGHT)
-    startExpanded:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, -HEADER_HEIGHT)
+    startExpanded:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", PADDING, bodyTopOffset)
     startExpanded:SetFrameLevel(hudFrame:GetFrameLevel() + 1)
     startExpanded:Hide()
     
@@ -1706,8 +1722,10 @@ function pH_HUD:Update()
             
             -- Frame size: expanded with content (width set by adaptive calc, fallback 340)
             local expWidth = hudFrame.startExpandedWidth or 340
+            local startBodyHeight = 120  -- Zone context + tips content
+            local expHeight = PADDING + HEADER_HEIGHT + BODY_GAP + startBodyHeight + PADDING
             hudFrame:Show()
-            hudFrame:SetSize(expWidth, 150)
+            hudFrame:SetSize(expWidth, expHeight)
             hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], 0.95)
             
         else
@@ -1734,9 +1752,9 @@ function pH_HUD:Update()
                 GameTooltip:Show()
             end)
             
-            -- Frame size: single line (logo Help Start icons), ~210x44
+            -- Frame size: header only (logo Help Start icons)
             hudFrame:Show()
-            hudFrame:SetSize(210, 44)
+            hudFrame:SetSize(210, ComputeStartCollapsedHeight())
             hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], PH_BG_PARCHMENT[4])
         end
         
@@ -1945,14 +1963,10 @@ function pH_HUD:Update()
 
         hudFrame.metricCardContainer:SetHeight(containerHeight)
         hudFrame.metricCardContainer:Show()
+        hudFrame.bodyContainer:SetHeight(containerHeight)
 
-        -- Update HUD frame height to fit panels + padding
-        -- Top: PADDING (12) + title/timer row (~14) + gap to container (12) = 38px
-        -- Content: containerHeight (gold 140 + optional middle row 6+80 + optional honor 6+90)
-        -- Bottom: padding + backdrop inset so content isn't clipped
-        local expandedHeaderHeight = 38
-        local bottomPadding = 12 + 4  -- padding + backdrop bottom inset
-        local totalHeight = expandedHeaderHeight + containerHeight + bottomPadding
+        -- Frame height: padding + header + gap + body + padding
+        local totalHeight = PADDING + HEADER_HEIGHT + BODY_GAP + containerHeight + PADDING
         hudFrame:SetHeight(totalHeight)
 
         -- Sample metric history for future use (sparklines, etc.)
@@ -2061,7 +2075,7 @@ function pH_HUD:ApplyMinimizeState()
     -- When minimized: tiles are always shown (grayed out if inactive)
     -- When expanded: hide tiles (expanded view shows full details)
     if isMinimized then
-        -- Tiles will be positioned and updated by UpdateMicroBars
+        hudFrame.bodyContainer:SetHeight(TILE_HEIGHT)
         RepositionTiles(true)
     else
         -- Expanded: hide microbar tiles (full expanded view is shown instead)
