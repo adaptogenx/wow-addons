@@ -4,7 +4,7 @@
     Provides invariant checks, test injection, and debugging tools.
 ]]
 
--- luacheck: globals pH_DB_Account
+-- luacheck: globals pH_DB_Account pH_SessionManager pH_Index GetRealmName UnitName UnitFactionGroup
 
 local pH_Debug = {}
 
@@ -1077,6 +1077,76 @@ local function BuildSessionSignature(session)
     -- Build a pipe-separated signature
     return string.format("%d|%s|%s|%s|%d|%d",
         startedAt, zone, character, realm, durationSec, cash)
+end
+
+-- Show data summary (session counts, active session, per-char breakdown)
+function pH_Debug:ShowData()
+    if not pH_DB_Account then
+        print(COLOR_RED .. "[pH] pH_DB_Account is nil - addon not fully loaded" .. COLOR_RESET)
+        return
+    end
+
+    local sessions = pH_DB_Account.sessions or {}
+    local count = 0
+    for _ in pairs(sessions) do count = count + 1 end
+
+    local active = pH_DB_Account.activeSession
+    local currentChar = UnitName("player") or "Unknown"
+    local currentRealm = GetRealmName() or "Unknown"
+    local currentFaction = UnitFactionGroup("player") or "Unknown"
+    local currentCharKey = (pH_Index and pH_Index.GetCurrentCharKey) and pH_Index:GetCurrentCharKey()
+        or (currentChar .. "-" .. currentRealm .. "-" .. currentFaction)
+
+    print(COLOR_YELLOW .. "=== pH Data Summary ===" .. COLOR_RESET)
+    print(string.format("  Sessions in DB: %d", count))
+
+    -- Index diagnostic (does Index have sessions? does Query return them?)
+    if pH_Index then
+        local queryAll = pH_Index:QuerySessions({ charKeys = nil })
+        local idxCount = pH_Index.sessions and #pH_Index.sessions or 0
+        local queryCount = queryAll and #queryAll or 0
+        print(string.format("  Index sessions: %d | Query(All): %d", idxCount, queryCount))
+        if count > 0 and idxCount == 0 then
+            print(COLOR_RED .. "  -> DB has sessions but Index is empty (Build skipping all?)" .. COLOR_RESET)
+        elseif idxCount > 0 and queryCount == 0 then
+            print(COLOR_RED .. "  -> Index has data but Query returns 0 (filter bug?)" .. COLOR_RESET)
+        end
+    end
+    if active then
+        local owner = (active.character or "?") .. "-" .. (active.realm or "?") .. "-" .. (active.faction or "?")
+        local isCurrent = (active.character == currentChar and active.realm == currentRealm and active.faction == currentFaction)
+        print(string.format("  Active session: #%d (owner: %s) %s",
+            active.id, owner, isCurrent and COLOR_GREEN .. "(this char)" .. COLOR_RESET or COLOR_YELLOW .. "(other char)" .. COLOR_RESET))
+    else
+        print("  Active session: none")
+    end
+    print(string.format("  Current char: %s", currentCharKey))
+
+    -- Per-char session counts (use same charKey format as Index for consistency)
+    local byChar = {}
+    local getCharKey = (pH_Index and pH_Index.GetCharKeyForSession) and function(s)
+        return pH_Index:GetCharKeyForSession(s)
+    end or function(s)
+        return (s.character or "?") .. "-" .. (s.realm or "?") .. "-" .. (s.faction or "?")
+    end
+    for _, session in pairs(sessions) do
+        local ck = getCharKey(session)
+        byChar[ck] = (byChar[ck] or 0) + 1
+    end
+    if active and not sessions[active.id] then
+        local ck = getCharKey(active)
+        byChar[ck] = (byChar[ck] or 0) + 1
+    end
+
+    if next(byChar) then
+        print("  Per-character sessions:")
+        for ck, n in pairs(byChar) do
+            local marker = (ck == currentCharKey) and " <- you" or ""
+            print(string.format("    %s: %d%s", ck, n, marker))
+        end
+    end
+    print("  Use Char: All dropdown in History to see all characters.")
+    print(COLOR_RESET)
 end
 
 -- Scan database for duplicate sessions

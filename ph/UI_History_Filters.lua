@@ -323,6 +323,42 @@ function pH_History_Filters:UpdateFlagsLabel()
 end
 
 --------------------------------------------------
+-- Sync all filter UI from filterState (e.g. after reset on open)
+--------------------------------------------------
+function pH_History_Filters:SyncFromFilterState()
+    local fs = self.historyController.filterState
+    if self.searchBox then
+        self.searchBox:SetText(fs.search or "")
+    end
+    if self.zoneDropdown then
+        if fs.zone then
+            local zoneName = fs.zone
+            if #zoneName > 12 then
+                zoneName = zoneName:sub(1, 9) .. "..."
+            end
+            self.zoneDropdown.text:SetText("Zone: " .. zoneName)
+        else
+            self.zoneDropdown.text:SetText("Zone: All")
+        end
+    end
+    self:UpdateCharDropdownLabel()
+    self:UpdateFlagsLabel()
+    -- Sort dropdown label from sort field
+    local sortLabels = {
+        totalPerHour = "Total g/hr",
+        cashPerHour = "Gold g/hr",
+        expectedPerHour = "Expected g/hr",
+        date = "Date",
+        xpPerHour = "XP/Hour",
+        repPerHour = "Rep/Hour",
+        honorPerHour = "Honor/Hour",
+    }
+    if self.sortDropdown then
+        self.sortDropdown.text:SetText(sortLabels[fs.sort] or "Total g/hr")
+    end
+end
+
+--------------------------------------------------
 -- Show Flags Menu (Gather/Pickpocket/XP/Rep/Honor)
 --------------------------------------------------
 function pH_History_Filters:ShowFlagsMenu(button)

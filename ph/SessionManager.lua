@@ -183,6 +183,27 @@ function pH_SessionManager:StopSession()
                  self:FormatDuration(session.durationSec) .. ")"
 end
 
+-- Persist an active session that belongs to another character (e.g. after switching chars).
+-- Call on PLAYER_ENTERING_WORLD so orphaned sessions are saved immediately.
+function pH_SessionManager:PersistOrphanedActiveSession()
+    local other = pH_DB_Account.activeSession
+    if not other or SessionOwnedByCurrentPlayer(other) then
+        return
+    end
+    local now = time()
+    if other.currentLoginAt then
+        other.accumulatedDuration = (other.accumulatedDuration or 0) + (now - other.currentLoginAt)
+        other.currentLoginAt = nil
+    end
+    other.endedAt = now
+    other.durationSec = other.accumulatedDuration or 0
+    pH_DB_Account.sessions[other.id] = other
+    pH_DB_Account.activeSession = nil
+    if pH_Index then
+        pH_Index:MarkStale()
+    end
+end
+
 -- Get the active session for the current character only (or nil if none or owned by another character)
 function pH_SessionManager:GetActiveSession()
     local session = pH_DB_Account.activeSession

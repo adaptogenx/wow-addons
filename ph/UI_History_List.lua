@@ -4,6 +4,7 @@
     Displays sessions in a scrollable list with row pooling for performance.
 ]]
 
+-- luacheck: globals time date pH_Index pH_Ledger
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -36,8 +37,9 @@ function pH_History_List:Initialize(parent, historyController)
     self.historyController = historyController
 
     -- Calculate number of visible rows based on parent height
-    local availableHeight = parent:GetHeight() - 10  -- 5px padding top/bottom
-    self.numVisibleRows = math.floor(availableHeight / self.rowHeight)
+    -- Clamp to at least 1: parent may have 0 height before layout (e.g. before Show)
+    local availableHeight = math.max(0, (parent:GetHeight() or 0) - 10)  -- 5px padding top/bottom
+    self.numVisibleRows = math.max(1, math.floor(availableHeight / self.rowHeight))
 
     -- Create content frame (holds all rows) - simple Frame, not ScrollFrame
     local contentFrame = CreateFrame("Frame", nil, parent)
@@ -71,6 +73,15 @@ function pH_History_List:Initialize(parent, historyController)
         local newValue = math.max(min, math.min(max, current - delta))
         pH_History_List.scrollBar:SetValue(newValue)
     end)
+
+    -- Empty state message (when no sessions match filters)
+    local emptyLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    emptyLabel:SetPoint("CENTER", contentFrame, "CENTER", 0, 0)
+    emptyLabel:SetTextColor(TEXT_MUTED[1], TEXT_MUTED[2], TEXT_MUTED[3])
+    emptyLabel:SetText("No sessions found.\nTry Char: All or /ph debug data")
+    emptyLabel:SetJustifyH("CENTER")
+    emptyLabel:Hide()
+    self.emptyLabel = emptyLabel
 end
 
 --------------------------------------------------
@@ -183,6 +194,10 @@ end
 function pH_History_List:SetSessions(sessionIds)
     self.sessionIds = sessionIds
 
+    if self.emptyLabel then
+        self.emptyLabel:SetShown(#sessionIds == 0)
+    end
+
     -- Update scroll bar range
     local maxScroll = math.max(0, #sessionIds - self.numVisibleRows)
     self.scrollBar:SetMinMaxValues(0, maxScroll)
@@ -224,8 +239,10 @@ function pH_History_List:RenderVisibleRows(offset)
                 end
                 row.zoneText:SetText(zoneName)
 
-                -- Duration
-                row.durationText:SetText(self:FormatDurationShort(summary.durationSec))
+                -- Duration and how long ago
+                local durationStr = self:FormatDurationShort(summary.durationSec)
+                local agoStr = self:FormatTimeAgo(summary.endedAt or summary.startedAt)
+                row.durationText:SetText(durationStr .. (agoStr ~= "" and "  ·  " .. agoStr or ""))
 
                 -- Character (show only character name, not full key)
                 local charName = summary.charKey:match("^([^-]+)")
@@ -312,6 +329,29 @@ function pH_History_List:FormatDurationShort(seconds)
         return string.format("%dh %dm", hours, mins)
     else
         return string.format("%dm", mins)
+    end
+end
+
+--------------------------------------------------
+-- Helper: Format "how long ago" for a timestamp
+--------------------------------------------------
+function pH_History_List:FormatTimeAgo(epoch)
+    if not epoch then return "" end
+    local now = time()
+    local diff = now - epoch
+    if diff < 60 then
+        return "Just now"
+    elseif diff < 3600 then
+        local m = math.floor(diff / 60)
+        return m .. "m ago"
+    elseif diff < 86400 then
+        local h = math.floor(diff / 3600)
+        return h .. "h ago"
+    elseif diff < 604800 then
+        local d = math.floor(diff / 86400)
+        return d .. "d ago"
+    else
+        return date("%b %d", epoch)
     end
 end
 

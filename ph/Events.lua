@@ -93,6 +93,8 @@ function pH_Events:Initialize(frame)
     frame:RegisterEvent("PLAYER_XP_UPDATE") -- Phase 9 (XP tracking)
     frame:RegisterEvent("UPDATE_FACTION") -- Phase 9 (Reputation tracking)
     frame:RegisterEvent("CHAT_MSG_COMBAT_HONOR_GAIN") -- Phase 9 (Honor tracking)
+    frame:RegisterEvent("MAIL_SHOW")   -- AutoSession: skip auto-start while mailbox open
+    frame:RegisterEvent("MAIL_CLOSED")
 
     -- Note: We do NOT set OnEvent handler here - init.lua maintains control
     -- and will route events to us via pH_Events:OnEvent()
@@ -130,6 +132,22 @@ function pH_Events:OnEvent(event, ...)
     -- Use type() check to avoid indexing nil value errors
     if type(pH_SessionManager) ~= "table" then
         return
+    end
+
+    -- Mailbox state for AutoSession (skip auto-start/resume when taking gold/items from mail)
+    if event == "MAIL_SHOW" then
+        if type(pH_AutoSession) == "table" then
+            pH_AutoSession:SetMailboxOpen(true)
+        end
+    elseif event == "MAIL_CLOSED" then
+        if type(pH_AutoSession) == "table" then
+            pH_AutoSession:SetMailboxOpen(false)
+        end
+    end
+
+    -- Auto-session: may auto-start or auto-resume
+    if type(pH_AutoSession) == "table" then
+        pH_AutoSession:HandleEvent(event, ...)
     end
     
     -- Do not record any events while session is paused (keeps gold/hr accurate)
