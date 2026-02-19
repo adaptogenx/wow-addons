@@ -4,7 +4,7 @@
     Manages the session history window with filters, list, and detail panes.
 ]]
 
--- luacheck: globals pH_Settings UnitName GetRealmName UnitFactionGroup
+-- luacheck: globals pH_Settings pH_Index UnitName GetRealmName UnitFactionGroup
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -149,6 +149,11 @@ function pH_History:Show()
     -- Show frame first
     self.frame:Show()
 
+    if not pH_Index then
+        print("|cffff8000[pH]|r pH_Index not ready. Retry opening History.")
+        return
+    end
+
     -- Build index if stale (with loading message)
     if pH_Index.stale then
         -- Show loading message
@@ -172,25 +177,25 @@ function pH_History:Show()
         self.frame:SetPoint(pos.point, UIParent, pos.relativePoint, pos.x, pos.y)
     end
 
-    -- Restore filter state (but not charKeys - see below)
+    -- Restore only sort (does not exclude sessions)
     if pH_Settings.historyFilters then
-        for k, v in pairs(pH_Settings.historyFilters) do
-            if k ~= "charKeys" then
-                self.filterState[k] = v
-            end
-        end
+        self.filterState.sort = pH_Settings.historyFilters.sort or "totalPerHour"
+        self.filterState.sortDesc = pH_Settings.historyFilters.sortDesc ~= false
     end
 
-    -- Always set character filter to current character when opening.
-    -- Prevents showing another character's sessions (e.g. persisted from previous char).
-    local charName = UnitName("player") or "Unknown"
-    local realm = GetRealmName() or "Unknown"
-    local faction = UnitFactionGroup("player") or "Unknown"
-    local currentCharKey = charName .. "-" .. realm .. "-" .. faction
-    self.filterState.charKeys = { [currentCharKey] = true }
+    -- Reset all exclusion filters so sessions always show on open
+    self.filterState.charKeys = nil
+    self.filterState.zone = nil
+    self.filterState.search = ""
+    self.filterState.minPerHour = 0
+    self.filterState.hasGathering = false
+    self.filterState.hasPickpocket = false
+    self.filterState.onlyXP = false
+    self.filterState.onlyRep = false
+    self.filterState.onlyHonor = false
 
-    -- Sync char dropdown label to filter state
-    pH_History_Filters:UpdateCharDropdownLabel()
+    -- Sync filter UI to match
+    pH_History_Filters:SyncFromFilterState()
 
     -- Force index rebuild so we have fresh data (e.g. sessions persisted on char switch)
     pH_Index:MarkStale()

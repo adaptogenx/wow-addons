@@ -112,7 +112,7 @@ end
 
 -- Get current balance for an account
 function pH_Ledger:GetBalance(session, account)
-    if not session or not session.ledger then
+    if not session or not session.ledger or not session.ledger.balances then
         return 0
     end
     return session.ledger.balances[account] or 0

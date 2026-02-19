@@ -1094,10 +1094,24 @@ function pH_Debug:ShowData()
     local currentChar = UnitName("player") or "Unknown"
     local currentRealm = GetRealmName() or "Unknown"
     local currentFaction = UnitFactionGroup("player") or "Unknown"
-    local currentCharKey = currentChar .. "-" .. currentRealm .. "-" .. currentFaction
+    local currentCharKey = (pH_Index and pH_Index.GetCurrentCharKey) and pH_Index:GetCurrentCharKey()
+        or (currentChar .. "-" .. currentRealm .. "-" .. currentFaction)
 
     print(COLOR_YELLOW .. "=== pH Data Summary ===" .. COLOR_RESET)
     print(string.format("  Sessions in DB: %d", count))
+
+    -- Index diagnostic (does Index have sessions? does Query return them?)
+    if pH_Index then
+        local queryAll = pH_Index:QuerySessions({ charKeys = nil })
+        local idxCount = pH_Index.sessions and #pH_Index.sessions or 0
+        local queryCount = queryAll and #queryAll or 0
+        print(string.format("  Index sessions: %d | Query(All): %d", idxCount, queryCount))
+        if count > 0 and idxCount == 0 then
+            print(COLOR_RED .. "  -> DB has sessions but Index is empty (Build skipping all?)" .. COLOR_RESET)
+        elseif idxCount > 0 and queryCount == 0 then
+            print(COLOR_RED .. "  -> Index has data but Query returns 0 (filter bug?)" .. COLOR_RESET)
+        end
+    end
     if active then
         local owner = (active.character or "?") .. "-" .. (active.realm or "?") .. "-" .. (active.faction or "?")
         local isCurrent = (active.character == currentChar and active.realm == currentRealm and active.faction == currentFaction)
@@ -1108,14 +1122,19 @@ function pH_Debug:ShowData()
     end
     print(string.format("  Current char: %s", currentCharKey))
 
-    -- Per-char session counts (sessions table + active if different)
+    -- Per-char session counts (use same charKey format as Index for consistency)
     local byChar = {}
+    local getCharKey = (pH_Index and pH_Index.GetCharKeyForSession) and function(s)
+        return pH_Index:GetCharKeyForSession(s)
+    end or function(s)
+        return (s.character or "?") .. "-" .. (s.realm or "?") .. "-" .. (s.faction or "?")
+    end
     for _, session in pairs(sessions) do
-        local ck = (session.character or "?") .. "-" .. (session.realm or "?") .. "-" .. (session.faction or "?")
+        local ck = getCharKey(session)
         byChar[ck] = (byChar[ck] or 0) + 1
     end
     if active and not sessions[active.id] then
-        local ck = (active.character or "?") .. "-" .. (active.realm or "?") .. "-" .. (active.faction or "?")
+        local ck = getCharKey(active)
         byChar[ck] = (byChar[ck] or 0) + 1
     end
 

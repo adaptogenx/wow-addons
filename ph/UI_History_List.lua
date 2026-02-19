@@ -4,7 +4,7 @@
     Displays sessions in a scrollable list with row pooling for performance.
 ]]
 
--- luacheck: globals time date pH_Index pH_Ledger
+-- luacheck: globals time date pH_Index pH_Ledger pH_DB_Account
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -37,8 +37,9 @@ function pH_History_List:Initialize(parent, historyController)
     self.historyController = historyController
 
     -- Calculate number of visible rows based on parent height
-    local availableHeight = parent:GetHeight() - 10  -- 5px padding top/bottom
-    self.numVisibleRows = math.floor(availableHeight / self.rowHeight)
+    -- Clamp to at least 1: parent may have 0 height before layout (e.g. before Show)
+    local availableHeight = math.max(0, (parent:GetHeight() or 0) - 10)  -- 5px padding top/bottom
+    self.numVisibleRows = math.max(1, math.floor(availableHeight / self.rowHeight))
 
     -- Create content frame (holds all rows) - simple Frame, not ScrollFrame
     local contentFrame = CreateFrame("Frame", nil, parent)
@@ -193,6 +194,17 @@ end
 function pH_History_List:SetSessions(sessionIds)
     self.sessionIds = sessionIds
 
+    if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
+        print(string.format("[pH History] SetSessions: received %d IDs", #sessionIds))
+        if #sessionIds > 0 then
+            local sample = {}
+            for i = 1, math.min(3, #sessionIds) do
+                sample[i] = tostring(sessionIds[i])
+            end
+            print(string.format("[pH History] Sample IDs: %s", table.concat(sample, ", ")))
+        end
+    end
+
     if self.emptyLabel then
         self.emptyLabel:SetShown(#sessionIds == 0)
     end
@@ -218,6 +230,21 @@ end
 --------------------------------------------------
 function pH_History_List:RenderVisibleRows(offset)
     offset = math.floor(offset)
+
+    if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose and offset == 0 then
+        local filled = 0
+        for i = 1, self.numVisibleRows do
+            local dataIndex = offset + i
+            if dataIndex <= #self.sessionIds then
+                local sid = self.sessionIds[dataIndex]
+                if pH_Index and pH_Index:GetSummary(sid) then
+                    filled = filled + 1
+                end
+            end
+        end
+        print(string.format("[pH History] RenderVisibleRows: numRows=%d, total=%d, filled=%d",
+            self.numVisibleRows, #self.sessionIds, filled))
+    end
 
     for i = 1, self.numVisibleRows do
         local row = self.rows[i]

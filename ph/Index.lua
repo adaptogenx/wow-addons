@@ -43,10 +43,26 @@ local pH_Index = {
 }
 
 --------------------------------------------------
--- Helper: Get character key
+-- Helper: Normalize character name for key (strip "Name-Realm" to "Name" if present)
+-- WoW/other code may store character as "Bob-MyRealm"; we need just "Bob" for charKey.
+--------------------------------------------------
+local function NormalizeCharForKey(character, realm)
+    if not character or character == "" then return "Unknown" end
+    if not realm or realm == "" then return character end
+    -- If character ends with "-Realm", strip it (realm is added separately in charKey)
+    local suffix = "-" .. realm
+    if #character > #suffix and character:sub(-#suffix) == suffix then
+        return character:sub(1, -(#suffix + 1))
+    end
+    return character
+end
+
+--------------------------------------------------
+-- Helper: Get character key (format: "Name-Realm-Faction")
 --------------------------------------------------
 local function GetCharKey(character, realm, faction)
-    return character .. "-" .. realm .. "-" .. faction
+    local name = NormalizeCharForKey(character or "Unknown", realm)
+    return name .. "-" .. (realm or "Unknown") .. "-" .. (faction or "Unknown")
 end
 
 --------------------------------------------------
@@ -102,26 +118,41 @@ function pH_Index:Build()
 
     -- Scan all sessions (skip active session)
     for sessionId, session in pairs(pH_DB_Account.sessions) do
+        -- Normalize key: WoW SavedVariables may use string keys ("165"); use numeric for consistency
+        local key = (type(sessionId) == "number") and sessionId or tonumber(sessionId)
+        key = key or sessionId  -- fallback for non-numeric keys
+
         -- Skip if already processed (prevent duplicates)
-        if processedSessions[sessionId] then
+        if processedSessions[key] then
             if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
-                print(string.format("[pH Index] Warning: Duplicate session ID %d detected, skipping", sessionId))
+                print(string.format("[pH Index] Warning: Duplicate session ID %s detected, skipping", tostring(sessionId)))
             end
         else
-            processedSessions[sessionId] = true
-            
+            processedSessions[key] = true
+
             -- Skip if this is the active session (should not be in history)
             local shouldProcess = true
-            if pH_DB_Account.activeSession and pH_DB_Account.activeSession.id == sessionId then
-                shouldProcess = false
+            if pH_DB_Account.activeSession then
+                local activeId = pH_DB_Account.activeSession.id
+                if activeId == key or activeId == sessionId or tostring(activeId) == tostring(sessionId) then
+                    shouldProcess = false
+                end
             end
 
             -- Get metrics using SessionManager (source of truth)
+            -- Wrap in pcall; skip sessions that error (e.g. legacy/malformed data)
             local metrics
             if shouldProcess then
-                metrics = pH_SessionManager:GetMetrics(session)
-                if not metrics then
+                local ok, result = pcall(function()
+                    return pH_SessionManager:GetMetrics(session)
+                end)
+                if ok and result then
+                    metrics = result
+                else
                     shouldProcess = false
+                    if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose and not ok then
+                        print(string.format("[pH Index] Skip session %s: %s", tostring(key), tostring(result)))
+                    end
                 end
             end
 
@@ -160,7 +191,7 @@ function pH_Index:Build()
 
             -- Build summary
             local summary = {
-                id = sessionId,
+                id = key,
                 charKey = charKey,
                 zone = session.zone or "Unknown",
                 startedAt = session.startedAt,
@@ -194,22 +225,22 @@ function pH_Index:Build()
                 topItemValue = topItemValue,
             }
 
-            -- Store summary
-            self.summaries[sessionId] = summary
-            table.insert(self.sessions, sessionId)
+            -- Store summary (use normalized key for consistent lookups)
+            self.summaries[key] = summary
+            table.insert(self.sessions, key)
 
             -- Build byZone index
             local zone = summary.zone
             if not self.byZone[zone] then
                 self.byZone[zone] = {}
             end
-            table.insert(self.byZone[zone], sessionId)
+            table.insert(self.byZone[zone], key)
 
             -- Build byChar index
             if not self.byChar[charKey] then
                 self.byChar[charKey] = {}
             end
-            table.insert(self.byChar[charKey], sessionId)
+            table.insert(self.byChar[charKey], key)
 
             -- Aggregate items
             if session.items then
@@ -295,7 +326,7 @@ function pH_Index:Build()
 
             if summary.totalPerHour > zt.bestPerHour then
                 zt.bestPerHour = summary.totalPerHour
-                zt.bestSessionId = sessionId
+                zt.bestSessionId = key
             end
 
             if hasGathering then
@@ -440,6 +471,16 @@ function pH_Index:QuerySessions(filters)
         self:Build()
     end
 
+    -- Sanity: if we have sessions in DB but index is empty, force rebuild once
+    if #self.sessions == 0 and pH_DB_Account and pH_DB_Account.sessions then
+        local dbCount = 0
+        for _ in pairs(pH_DB_Account.sessions) do dbCount = dbCount + 1 end
+        if dbCount > 0 then
+            self.stale = true
+            self:Build()
+        end
+    end
+
     -- Default filters
     filters = filters or {}
     local sort = filters.sort or "totalPerHour"
@@ -454,8 +495,11 @@ function pH_Index:QuerySessions(filters)
     local onlyRep = filters.onlyRep or false
     local onlyHonor = filters.onlyHonor or false
 
-    -- Start with pre-sorted base list
+    -- Start with pre-sorted base list (fallback to self.sessions if sort array empty)
     local candidates = self.sorted[sort] or self.sorted.totalPerHour
+    if not candidates or #candidates == 0 then
+        candidates = self.sessions or {}
+    end
 
     -- Single-pass filtering
     local results = {}
@@ -467,9 +511,19 @@ function pH_Index:QuerySessions(filters)
             passesFilters = false
         end
 
-        -- Filter: character
-        if passesFilters and charKeys and not charKeys[summary.charKey] then
-            passesFilters = false
+        -- Filter: character (case-insensitive match for realm/name variations)
+        if passesFilters and charKeys then
+            local summaryKeyLower = string.lower(summary.charKey)
+            local matched = false
+            for k, _ in pairs(charKeys) do
+                if k == summary.charKey or (type(k) == "string" and string.lower(k) == summaryKeyLower) then
+                    matched = true
+                    break
+                end
+            end
+            if not matched then
+                passesFilters = false
+            end
         end
 
         -- Filter: zone
@@ -541,7 +595,14 @@ function pH_Index:GetSummary(sessionId)
     if self.stale then
         self:Build()
     end
-    return self.summaries[sessionId]
+    local s = self.summaries[sessionId]
+    -- WoW SavedVariables may use string keys; try tonumber if lookup fails
+    if not s and type(sessionId) == "string" then
+        s = self.summaries[tonumber(sessionId)]
+    elseif not s and type(sessionId) == "number" then
+        s = self.summaries[tostring(sessionId)]
+    end
+    return s
 end
 
 --------------------------------------------------
@@ -605,6 +666,28 @@ function pH_Index:GetZoneStats(zoneName)
         lastSession = lastSession,  -- Now a session object, not an ID
         bestSessionId = zoneAgg.bestSessionId
     }
+end
+
+--------------------------------------------------
+-- API: Get charKey for a session (same format as Index uses for filtering)
+--------------------------------------------------
+function pH_Index:GetCharKeyForSession(session)
+    if not session then return "Unknown" end
+    return GetCharKey(
+        session.character or UnitName("player") or "Unknown",
+        session.realm or GetRealmName() or "Unknown",
+        session.faction or UnitFactionGroup("player") or "Unknown"
+    )
+end
+
+--------------------------------------------------
+-- API: Get current character key (same format as session charKeys)
+--------------------------------------------------
+function pH_Index:GetCurrentCharKey()
+    local char = UnitName("player") or "Unknown"
+    local realm = GetRealmName() or "Unknown"
+    local faction = UnitFactionGroup("player") or "Unknown"
+    return GetCharKey(char, realm, faction)
 end
 
 --------------------------------------------------
