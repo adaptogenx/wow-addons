@@ -8,7 +8,7 @@
     - Instance entry detection (start paused, resume on first activity)
 ]]
 
--- luacheck: globals pH_SessionManager pH_Settings pH_HUD pH_Colors UnitIsAFK IsInInstance GetTime time
+-- luacheck: globals pH_SessionManager pH_Settings pH_HUD pH_Colors UnitIsAFK IsInInstance GetTime time MailFrame
 
 local pH_AutoSession = {}
 
@@ -93,6 +93,12 @@ local function ShouldSkipAutoStartForMessage(event, message)
     if event ~= "CHAT_MSG_MONEY" and event ~= "CHAT_MSG_LOOT" then
         return false
     end
+
+    -- If the mailbox UI is open, treat money/loot as coming from mail
+    if MailFrame and MailFrame:IsShown() then
+        return true
+    end
+
     if not message or type(message) ~= "string" then
         return false
     end
@@ -117,9 +123,6 @@ function pH_AutoSession:HandleEvent(event, ...)
     -- Case 1: No active session - auto-start only on clear earning events
     if not session then
         if pH_Settings.autoSession.autoStart and AUTO_START_EVENTS[event] then
-            if (event == "CHAT_MSG_MONEY" or event == "CHAT_MSG_LOOT") and state.mailboxOpen then
-                return
-            end
             local msg = select(1, ...)
             if ShouldSkipAutoStartForMessage(event, msg) then
                 return
@@ -142,9 +145,6 @@ function pH_AutoSession:HandleEvent(event, ...)
     if session.pausedAt then
         -- Only auto-resume if it was auto-paused (not manually paused)
         if pH_Settings.autoSession.autoResume and state.autoPausedReason then
-            if (event == "CHAT_MSG_MONEY" or event == "CHAT_MSG_LOOT") and state.mailboxOpen then
-                return
-            end
             local msg = select(1, ...)
             if ShouldSkipAutoStartForMessage(event, msg) then
                 return
