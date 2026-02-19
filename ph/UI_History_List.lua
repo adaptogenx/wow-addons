@@ -4,7 +4,7 @@
     Displays sessions in a scrollable list with row pooling for performance.
 ]]
 
--- luacheck: globals time date pH_Index pH_Ledger pH_DB_Account
+-- luacheck: globals time date pH_Index pH_Ledger
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -194,17 +194,6 @@ end
 function pH_History_List:SetSessions(sessionIds)
     self.sessionIds = sessionIds
 
-    if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
-        print(string.format("[pH History] SetSessions: received %d IDs", #sessionIds))
-        if #sessionIds > 0 then
-            local sample = {}
-            for i = 1, math.min(3, #sessionIds) do
-                sample[i] = tostring(sessionIds[i])
-            end
-            print(string.format("[pH History] Sample IDs: %s", table.concat(sample, ", ")))
-        end
-    end
-
     if self.emptyLabel then
         self.emptyLabel:SetShown(#sessionIds == 0)
     end
@@ -230,21 +219,6 @@ end
 --------------------------------------------------
 function pH_History_List:RenderVisibleRows(offset)
     offset = math.floor(offset)
-
-    if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose and offset == 0 then
-        local filled = 0
-        for i = 1, self.numVisibleRows do
-            local dataIndex = offset + i
-            if dataIndex <= #self.sessionIds then
-                local sid = self.sessionIds[dataIndex]
-                if pH_Index and pH_Index:GetSummary(sid) then
-                    filled = filled + 1
-                end
-            end
-        end
-        print(string.format("[pH History] RenderVisibleRows: numRows=%d, total=%d, filled=%d",
-            self.numVisibleRows, #self.sessionIds, filled))
-    end
 
     for i = 1, self.numVisibleRows do
         local row = self.rows[i]
