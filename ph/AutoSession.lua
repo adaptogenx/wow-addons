@@ -21,6 +21,7 @@ local state = {
     toastFrame = nil,               -- Toast notification UI frame
     timerFrame = nil,               -- OnUpdate frame for inactivity checking
     afkFrame = nil,                 -- Frame for PLAYER_FLAGS_CHANGED event
+    mailboxOpen = false,            -- True while mailbox UI is open (skip auto-start/resume on money/loot)
 }
 
 -- Events that may update activity timestamp or trigger auto-resume (broad)
@@ -82,6 +83,11 @@ function pH_AutoSession:Initialize()
     -- Will be created in CreateToastUI() when needed
 end
 
+-- Called by Events.lua when mailbox opens/closes (MAIL_SHOW / MAIL_CLOSED)
+function pH_AutoSession:SetMailboxOpen(open)
+    state.mailboxOpen = open and true or false
+end
+
 -- Returns true if this event+message should NOT trigger auto-start/resume (AH, mail)
 local function ShouldSkipAutoStartForMessage(event, message)
     if event ~= "CHAT_MSG_MONEY" and event ~= "CHAT_MSG_LOOT" then
@@ -111,6 +117,9 @@ function pH_AutoSession:HandleEvent(event, ...)
     -- Case 1: No active session - auto-start only on clear earning events
     if not session then
         if pH_Settings.autoSession.autoStart and AUTO_START_EVENTS[event] then
+            if (event == "CHAT_MSG_MONEY" or event == "CHAT_MSG_LOOT") and state.mailboxOpen then
+                return
+            end
             local msg = select(1, ...)
             if ShouldSkipAutoStartForMessage(event, msg) then
                 return
@@ -133,6 +142,9 @@ function pH_AutoSession:HandleEvent(event, ...)
     if session.pausedAt then
         -- Only auto-resume if it was auto-paused (not manually paused)
         if pH_Settings.autoSession.autoResume and state.autoPausedReason then
+            if (event == "CHAT_MSG_MONEY" or event == "CHAT_MSG_LOOT") and state.mailboxOpen then
+                return
+            end
             local msg = select(1, ...)
             if ShouldSkipAutoStartForMessage(event, msg) then
                 return
