@@ -4,7 +4,7 @@
     Displays sessions in a scrollable list with row pooling for performance.
 ]]
 
--- luacheck: globals time date pH_Index pH_Ledger
+-- luacheck: globals time date pH_Index pH_Ledger CreateFrame UIDropDownMenu_Initialize UIDropDownMenu_CreateInfo ToggleDropDownMenu CloseDropDownMenus DropDownList1 UIDROPDOWNMENU_OPEN_MENU GameTooltip
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -20,6 +20,10 @@ local pH_History_List = {
 
     rowHeight = 45,
     numVisibleRows = 8,  -- Calculated based on available height
+
+    -- Row actions dropdown
+    actionMenu = nil,
+    actionMenuSessionId = nil,
 }
 
 -- pH brand colors for list rows
@@ -134,9 +138,14 @@ function pH_History_List:CreateRow(index)
     badgesText:SetJustifyH("LEFT")
     row.badgesText = badgesText
 
-    -- Click handler
-    row:SetScript("OnClick", function()
-        if row.sessionId then
+    -- Click/right-click handler
+    row:SetScript("OnMouseUp", function(self, button)
+        if not row.sessionId then
+            return
+        end
+        if button == "RightButton" then
+            pH_History_List:ShowRowMenu(self, row.sessionId)
+        else
             pH_History_List.historyController:SelectSession(row.sessionId)
         end
     end)
@@ -170,6 +179,19 @@ function pH_History_List:CreateRow(index)
                         GameTooltip:AddLine("|cffff00ff[P]|r Pickpocketing performed", 0.7, 0.7, 0.7)
                     end
                 end
+
+                if summary.isShort or summary.isArchived then
+                    GameTooltip:AddLine(" ")
+                    if summary.isShort then
+                        GameTooltip:AddLine("|cffffaa00[S]|r Short session (<5m)", 0.7, 0.7, 0.7)
+                    end
+                    if summary.isArchived then
+                        GameTooltip:AddLine("|cff99aabb[A]|r Archived", 0.7, 0.7, 0.7)
+                    end
+                end
+
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("|cffbbbbbbRight-click for actions|r", 0.7, 0.7, 0.7)
 
                 GameTooltip:Show()
             end
@@ -266,6 +288,12 @@ function pH_History_List:RenderVisibleRows(offset)
                 if summary.hasHonor then
                     badges = badges .. "|cffff8000[Hon]|r"  -- Orange
                 end
+                if summary.isShort then
+                    badges = badges .. " |cffffaa00[S]|r"
+                end
+                if summary.isArchived then
+                    badges = badges .. " |cff99aabb[A]|r"
+                end
                 row.badgesText:SetText(badges)
 
                 -- Selection highlight
@@ -284,6 +312,56 @@ function pH_History_List:RenderVisibleRows(offset)
             row:Hide()
         end
     end
+end
+
+function pH_History_List:ShowRowMenu(anchor, sessionId)
+    if not self.actionMenu then
+        self.actionMenu = CreateFrame("Frame", "pH_HistoryRowActionMenu", anchor, "UIDropDownMenuTemplate")
+    end
+    local menu = self.actionMenu
+    self.actionMenuSessionId = sessionId
+
+    -- Toggle closed if already open
+    if DropDownList1 and DropDownList1:IsShown() and UIDROPDOWNMENU_OPEN_MENU == menu then
+        CloseDropDownMenus()
+        return
+    end
+
+    local summary = pH_Index:GetSummary(sessionId)
+    UIDropDownMenu_Initialize(menu, function()
+        local archiveInfo = UIDropDownMenu_CreateInfo()
+        archiveInfo.text = (summary and summary.isArchived) and "Unarchive session" or "Archive session"
+        archiveInfo.func = function()
+            pH_History_List.historyController:ConfirmArchive(sessionId, not (summary and summary.isArchived))
+            CloseDropDownMenus()
+        end
+        UIDropDownMenu_AddButton(archiveInfo)
+
+        local deleteInfo = UIDropDownMenu_CreateInfo()
+        deleteInfo.text = "Delete permanently"
+        deleteInfo.func = function()
+            pH_History_List.historyController:ConfirmDelete(sessionId)
+            CloseDropDownMenus()
+        end
+        UIDropDownMenu_AddButton(deleteInfo)
+
+        local selectedId = pH_History_List.historyController:GetSelectedSession()
+        local mergeInfo = UIDropDownMenu_CreateInfo()
+        if selectedId and selectedId ~= sessionId then
+            mergeInfo.text = string.format("Merge into selected (#%s)", tostring(selectedId))
+            mergeInfo.func = function()
+                pH_History_List.historyController:ConfirmMerge(sessionId, selectedId)
+                CloseDropDownMenus()
+            end
+            mergeInfo.disabled = false
+        else
+            mergeInfo.text = "Merge into selected (select another session first)"
+            mergeInfo.disabled = true
+        end
+        UIDropDownMenu_AddButton(mergeInfo)
+    end, "MENU")
+
+    ToggleDropDownMenu(1, nil, menu, anchor, 0, 0)
 end
 
 --------------------------------------------------

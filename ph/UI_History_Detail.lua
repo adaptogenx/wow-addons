@@ -1468,7 +1468,17 @@ function pH_History_Detail:RenderCompareTab()
     yOffset = yOffset - 20
 
     -- Calculate rank in zone
-    local allZoneSessions = pH_Index.byZone[thisZone] or {}
+    local threshold = 300
+    if pH_Settings and pH_Settings.historyCleanup and pH_Settings.historyCleanup.shortThresholdSec then
+        threshold = pH_Settings.historyCleanup.shortThresholdSec
+    end
+    local allZoneSessions = pH_Index:QuerySessions({
+        zone = thisZone,
+        sort = "totalPerHour",
+        excludeShort = true,
+        minDurationSec = threshold,
+        excludeArchived = true,
+    }) or {}
     local rank = 1
     for _, otherSessionId in ipairs(allZoneSessions) do
         if otherSessionId ~= session.id then

@@ -14,7 +14,10 @@ local pH_MainFrame = CreateFrame("Frame", "pH_MainFrame")
 local function EnsureAccountDB()
     if not pH_DB_Account then
         pH_DB_Account = {
-            meta = { lastSessionId = 0 },
+            meta = {
+                lastSessionId = 0,
+                historyUndo = { stack = {}, maxEntries = 20 },
+            },
             priceOverrides = {},
             activeSession = nil,
             sessions = {},
@@ -26,6 +29,15 @@ local function EnsureAccountDB()
     end
     if pH_DB_Account.meta.lastSessionId == nil then
         pH_DB_Account.meta.lastSessionId = 0
+    end
+    if not pH_DB_Account.meta.historyUndo then
+        pH_DB_Account.meta.historyUndo = { stack = {}, maxEntries = 20 }
+    end
+    if not pH_DB_Account.meta.historyUndo.stack then
+        pH_DB_Account.meta.historyUndo.stack = {}
+    end
+    if not pH_DB_Account.meta.historyUndo.maxEntries then
+        pH_DB_Account.meta.historyUndo.maxEntries = 20
     end
     if not pH_DB_Account.debug then
         pH_DB_Account.debug = { enabled = false, verbose = false, lastTestResults = {} }
@@ -63,7 +75,15 @@ local function InitializeSavedVariables()
             historyMinimized = false,
             historyPosition = nil,
             historyActiveTab = "summary",
-            historyFilters = { sort = "totalPerHour" },
+            historyFilters = {
+                sort = "totalPerHour",
+                excludeShort = true,
+                minDurationSec = 300,
+                excludeArchived = true,
+            },
+            historyCleanup = {
+                shortThresholdSec = 300,
+            },
             microBars = {
                 enabled = true,
                 height = 6,
@@ -131,6 +151,26 @@ local function InitializeSavedVariables()
             autoResume = true,
         }
     end
+    if pH_Settings.historyCleanup == nil then
+        pH_Settings.historyCleanup = {
+            shortThresholdSec = 300,
+        }
+    end
+    if pH_Settings.historyCleanup.shortThresholdSec == nil then
+        pH_Settings.historyCleanup.shortThresholdSec = 300
+    end
+    if pH_Settings.historyFilters == nil then
+        pH_Settings.historyFilters = {}
+    end
+    if pH_Settings.historyFilters.excludeShort == nil then
+        pH_Settings.historyFilters.excludeShort = true
+    end
+    if pH_Settings.historyFilters.minDurationSec == nil then
+        pH_Settings.historyFilters.minDurationSec = 300
+    end
+    if pH_Settings.historyFilters.excludeArchived == nil then
+        pH_Settings.historyFilters.excludeArchived = true
+    end
 
     -- Rest of addon uses pH_DB_Account (see SessionManager, Index, Events, UI_*, etc.)
 end
@@ -176,7 +216,15 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
                 historyMinimized = false,
                 historyPosition = nil,
                 historyActiveTab = "summary",
-                historyFilters = { sort = "totalPerHour" },
+                historyFilters = {
+                    sort = "totalPerHour",
+                    excludeShort = true,
+                    minDurationSec = 300,
+                    excludeArchived = true,
+                },
+                historyCleanup = {
+                    shortThresholdSec = 300,
+                },
                 microBars = {
                     enabled = true,
                     height = 6,
@@ -306,6 +354,12 @@ local function ShowHelp()
     print("|cffffff00/ph show|r - Show/hide the HUD")
     print("|cffffff00/ph status|r - Show current session status")
     print("|cffffff00/ph history|r - Open session history")
+    print("|cffffff00/ph history archive-short|r - Archive all short sessions (<5m)")
+    print("|cffffff00/ph history archive <sessionId>|r - Archive one session")
+    print("|cffffff00/ph history unarchive <sessionId>|r - Unarchive one session")
+    print("|cffffff00/ph history delete <sessionId> confirm|r - Permanently delete session")
+    print("|cffffff00/ph history merge <id1> <id2> [idN...] confirm|r - Merge same-character sessions")
+    print("|cffffff00/ph history undo|r - Undo the last history action (30s)")
     print("|cffffff00/ph auto [on|off]|r - Enable/disable auto-session management or show settings")
     print("")
     print("|cff00ff00=== Debug Commands ===|r")
@@ -397,7 +451,80 @@ local function HandleCommand(msg)
         end
 
     elseif cmd == "history" then
-        pH_History:Toggle()
+        local subCmd = (args[2] or ""):lower()
+        if subCmd == "" then
+            pH_History:Toggle()
+        elseif subCmd == "archive-short" then
+            local threshold = pH_SessionManager:GetShortSessionThresholdSec()
+            local ok, message, undoSec = pH_SessionManager:ArchiveShortSessions(threshold)
+            print("[pH] " .. message)
+            if ok and undoSec then
+                print(string.format("[pH] Undo available for %ds: /ph history undo", undoSec))
+            end
+        elseif subCmd == "archive" then
+            local sessionId = tonumber(args[3])
+            if not sessionId then
+                print("[pH] Usage: /ph history archive <sessionId>")
+            else
+                local ok, message, undoSec = pH_SessionManager:SetSessionArchived(sessionId, true, "manual")
+                print("[pH] " .. message)
+                if ok and undoSec then
+                    print(string.format("[pH] Undo available for %ds: /ph history undo", undoSec))
+                end
+            end
+        elseif subCmd == "unarchive" then
+            local sessionId = tonumber(args[3])
+            if not sessionId then
+                print("[pH] Usage: /ph history unarchive <sessionId>")
+            else
+                local ok, message, undoSec = pH_SessionManager:SetSessionArchived(sessionId, false, "manual")
+                print("[pH] " .. message)
+                if ok and undoSec then
+                    print(string.format("[pH] Undo available for %ds: /ph history undo", undoSec))
+                end
+            end
+        elseif subCmd == "delete" then
+            local sessionId = tonumber(args[3])
+            local confirm = (args[4] or ""):lower() == "confirm"
+            if not sessionId then
+                print("[pH] Usage: /ph history delete <sessionId> confirm")
+            elseif not confirm then
+                print("[pH] Confirm required: /ph history delete <sessionId> confirm")
+            else
+                local ok, message, undoSec = pH_SessionManager:DeleteSession(sessionId)
+                print("[pH] " .. message)
+                if ok and undoSec then
+                    print(string.format("[pH] Undo available for %ds: /ph history undo", undoSec))
+                end
+            end
+        elseif subCmd == "merge" then
+            local confirm = (args[#args] or ""):lower() == "confirm"
+            if not confirm then
+                print("[pH] Usage: /ph history merge <id1> <id2> [idN...] confirm")
+            else
+                local ids = {}
+                for i = 3, #args - 1 do
+                    local id = tonumber(args[i])
+                    if id then
+                        table.insert(ids, id)
+                    end
+                end
+                if #ids < 2 then
+                    print("[pH] Usage: /ph history merge <id1> <id2> [idN...] confirm")
+                else
+                    local ok, message, undoSec = pH_SessionManager:MergeSessions(ids)
+                    print("[pH] " .. message)
+                    if ok and undoSec then
+                        print(string.format("[pH] Undo available for %ds: /ph history undo", undoSec))
+                    end
+                end
+            end
+        elseif subCmd == "undo" then
+            local ok, message = pH_SessionManager:UndoLastHistoryAction()
+            print("[pH] " .. message)
+        else
+            print("[pH] History commands: archive-short, archive <id>, unarchive <id>, delete <id> confirm, merge <ids...> confirm, undo")
+        end
 
     elseif cmd == "debug" then
         local subCmd = args[2] or ""

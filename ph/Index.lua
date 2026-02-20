@@ -5,7 +5,7 @@
     of historical sessions. Designed for scalability (100+ sessions).
 ]]
 
--- luacheck: globals pH_DB_Account GetRealmName UnitFactionGroup UnitName
+-- luacheck: globals pH_DB_Account pH_Settings GetRealmName UnitFactionGroup UnitName
 
 local pH_Index = {
     stale = true,
@@ -91,6 +91,10 @@ end
 --------------------------------------------------
 function pH_Index:Build()
     local startTime = GetTime()
+    local shortThreshold = 300
+    if pH_Settings and pH_Settings.historyCleanup and pH_Settings.historyCleanup.shortThresholdSec then
+        shortThreshold = pH_Settings.historyCleanup.shortThresholdSec
+    end
 
     -- Reset structures
     self.sessions = {}
@@ -190,6 +194,8 @@ function pH_Index:Build()
             local topItemName, topItemValue = GetTopItem(session)
 
             -- Build summary
+            local isArchived = session.archived and true or false
+            local isShort = (metrics.durationSec or 0) < shortThreshold
             local summary = {
                 id = key,
                 charKey = charKey,
@@ -205,6 +211,8 @@ function pH_Index:Build()
                 expectedPerHour = metrics.expectedPerHour,
                 totalValue = metrics.totalValue,
                 totalPerHour = metrics.totalPerHour,
+                isArchived = isArchived,
+                isShort = isShort,
 
                 hasGathering = hasGathering,
                 hasPickpocket = hasPickpocket,
@@ -308,36 +316,39 @@ function pH_Index:Build()
             end
 
             -- Aggregate zone stats
-            if not zoneTotals[zone] then
-                zoneTotals[zone] = {
-                    totalPerHourSum = 0,
-                    count = 0,
-                    bestPerHour = 0,
-                    bestSessionId = nil,
-                    nodesSum = 0,
-                    nodesCount = 0,
-                    bestNodes = 0,
-                }
-            end
-
-            local zt = zoneTotals[zone]
-            zt.totalPerHourSum = zt.totalPerHourSum + summary.totalPerHour
-            zt.count = zt.count + 1
-
-            if summary.totalPerHour > zt.bestPerHour then
-                zt.bestPerHour = summary.totalPerHour
-                zt.bestSessionId = key
-            end
-
-            if hasGathering then
-                local nodesPerHour = 0
-                if metrics.durationHours > 0 then
-                    nodesPerHour = session.gathering.totalNodes / metrics.durationHours
+            -- Cleaned analytics: exclude short and archived sessions by default.
+            if not isArchived and not isShort then
+                if not zoneTotals[zone] then
+                    zoneTotals[zone] = {
+                        totalPerHourSum = 0,
+                        count = 0,
+                        bestPerHour = 0,
+                        bestSessionId = nil,
+                        nodesSum = 0,
+                        nodesCount = 0,
+                        bestNodes = 0,
+                    }
                 end
-                zt.nodesSum = zt.nodesSum + nodesPerHour
-                zt.nodesCount = zt.nodesCount + 1
-                if nodesPerHour > zt.bestNodes then
-                    zt.bestNodes = nodesPerHour
+
+                local zt = zoneTotals[zone]
+                zt.totalPerHourSum = zt.totalPerHourSum + summary.totalPerHour
+                zt.count = zt.count + 1
+
+                if summary.totalPerHour > zt.bestPerHour then
+                    zt.bestPerHour = summary.totalPerHour
+                    zt.bestSessionId = key
+                end
+
+                if hasGathering then
+                    local nodesPerHour = 0
+                    if metrics.durationHours > 0 then
+                        nodesPerHour = session.gathering.totalNodes / metrics.durationHours
+                    end
+                    zt.nodesSum = zt.nodesSum + nodesPerHour
+                    zt.nodesCount = zt.nodesCount + 1
+                    if nodesPerHour > zt.bestNodes then
+                        zt.bestNodes = nodesPerHour
+                    end
                 end
             end
             end  -- Close shouldProcess
@@ -489,6 +500,14 @@ function pH_Index:QuerySessions(filters)
     local charKeys = filters.charKeys  -- nil = all, else {charKey1=true, ...}
     local zone = filters.zone  -- nil = any
     local minPerHour = filters.minPerHour or 0
+    local minDurationSec = filters.minDurationSec or 0
+    local excludeShort = filters.excludeShort or false
+    local excludeArchived = filters.excludeArchived
+    if filters.includeArchived then
+        excludeArchived = false
+    elseif excludeArchived == nil then
+        excludeArchived = false
+    end
     local hasGathering = filters.hasGathering or false
     local hasPickpocket = filters.hasPickpocket or false
     local onlyXP = filters.onlyXP or false
@@ -533,6 +552,21 @@ function pH_Index:QuerySessions(filters)
 
         -- Filter: min gold/hr
         if passesFilters and summary.totalPerHour < minPerHour then
+            passesFilters = false
+        end
+
+        -- Filter: min duration
+        if passesFilters and (summary.durationSec or 0) < minDurationSec then
+            passesFilters = false
+        end
+
+        -- Filter: short sessions
+        if passesFilters and excludeShort and summary.isShort then
+            passesFilters = false
+        end
+
+        -- Filter: archived sessions
+        if passesFilters and excludeArchived and summary.isArchived then
             passesFilters = false
         end
 
@@ -652,11 +686,26 @@ function pH_Index:GetZoneStats(zoneName)
     
     -- Get last session in this zone (sorted by date descending)
     -- QuerySessions returns session IDs, so we need to fetch the actual session object
-    local zoneSessions = self:QuerySessions({zone = zoneName, sort = "date"})
+    local shortThreshold = 300
+    if pH_Settings and pH_Settings.historyCleanup and pH_Settings.historyCleanup.shortThresholdSec then
+        shortThreshold = pH_Settings.historyCleanup.shortThresholdSec
+    end
+    local zoneSessions = self:QuerySessions({
+        zone = zoneName,
+        sort = "date",
+        excludeShort = true,
+        minDurationSec = shortThreshold,
+        excludeArchived = true,
+    })
     local lastSession = nil
     if zoneSessions and zoneSessions[1] then
         local lastSessionId = zoneSessions[1]
         lastSession = pH_DB_Account.sessions[lastSessionId]
+        if not lastSession and type(lastSessionId) == "number" then
+            lastSession = pH_DB_Account.sessions[tostring(lastSessionId)]
+        elseif not lastSession and type(lastSessionId) == "string" then
+            lastSession = pH_DB_Account.sessions[tonumber(lastSessionId)]
+        end
     end
     
     return {

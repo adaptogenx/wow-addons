@@ -4,7 +4,7 @@
     Manages the session history window with filters, list, and detail panes.
 ]]
 
--- luacheck: globals pH_Settings pH_Index UnitName GetRealmName UnitFactionGroup
+-- luacheck: globals pH_Settings pH_Index UnitName GetRealmName UnitFactionGroup StaticPopupDialogs StaticPopup_Show
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -25,10 +25,84 @@ local pH_History = {
         charKeys = nil,
         zone = nil,
         minPerHour = 0,
+        minDurationSec = 300,
+        excludeShort = true,
+        excludeArchived = true,
         hasGathering = false,
         hasPickpocket = false,
     },
 }
+
+local function EnsureHistoryPopups()
+    if StaticPopupDialogs["PH_ARCHIVE_SESSION"] then
+        return
+    end
+
+    StaticPopupDialogs["PH_ARCHIVE_SESSION"] = {
+        text = "Archive session #%d?\n\nYou can undo for 30 seconds.",
+        button1 = "Archive",
+        button2 = "Cancel",
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+        OnAccept = function(self, data)
+            pH_History:RunArchiveAction(data and data.sessionId, true)
+        end,
+    }
+
+    StaticPopupDialogs["PH_UNARCHIVE_SESSION"] = {
+        text = "Unarchive session #%d?\n\nYou can undo for 30 seconds.",
+        button1 = "Unarchive",
+        button2 = "Cancel",
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+        OnAccept = function(self, data)
+            pH_History:RunArchiveAction(data and data.sessionId, false)
+        end,
+    }
+
+    StaticPopupDialogs["PH_DELETE_SESSION"] = {
+        text = "Delete session #%d permanently?\n\nThis removes it from history. Undo is available for 30 seconds.",
+        button1 = "Delete",
+        button2 = "Cancel",
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+        OnAccept = function(self, data)
+            pH_History:RunDeleteAction(data and data.sessionId)
+        end,
+    }
+
+    StaticPopupDialogs["PH_MERGE_SESSIONS"] = {
+        text = "Merge session #%d into session #%d?\n\nBoth sessions must be on the same character. Undo is available for 30 seconds.",
+        button1 = "Merge",
+        button2 = "Cancel",
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+        OnAccept = function(self, data)
+            pH_History:RunMergeAction(data and data.sourceId, data and data.targetId)
+        end,
+    }
+
+    StaticPopupDialogs["PH_ARCHIVE_SHORT"] = {
+        text = "Archive all short sessions under %d minutes?\n\nYou can undo for 30 seconds.",
+        button1 = "Archive",
+        button2 = "Cancel",
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+        OnAccept = function(self, data)
+            pH_History:RunArchiveShortAction(data and data.thresholdSec)
+        end,
+    }
+end
 
 --------------------------------------------------
 -- Initialize
@@ -154,6 +228,8 @@ function pH_History:Show()
         return
     end
 
+    EnsureHistoryPopups()
+
     -- Build index if stale (with loading message)
     if pH_Index.stale then
         -- Show loading message
@@ -181,9 +257,13 @@ function pH_History:Show()
     if pH_Settings.historyFilters then
         self.filterState.sort = pH_Settings.historyFilters.sort or "totalPerHour"
         self.filterState.sortDesc = pH_Settings.historyFilters.sortDesc ~= false
+        self.filterState.excludeShort = pH_Settings.historyFilters.excludeShort ~= false
+        self.filterState.excludeArchived = pH_Settings.historyFilters.excludeArchived ~= false
+        self.filterState.minDurationSec = pH_Settings.historyFilters.minDurationSec or
+            (pH_Settings.historyCleanup and pH_Settings.historyCleanup.shortThresholdSec) or 300
     end
 
-    -- Reset all exclusion filters so sessions always show on open
+    -- Reset all non-persistent filters on open; keep cleanup filters enabled by default
     self.filterState.charKeys = nil
     self.filterState.zone = nil
     self.filterState.search = ""
@@ -313,6 +393,124 @@ function pH_History:OnKeyDown(key)
 
         -- Scroll list to make selection visible
         pH_History_List:ScrollToSelection(currentIndex)
+    end
+end
+
+--------------------------------------------------
+-- History Actions (archive/delete/merge/undo)
+--------------------------------------------------
+function pH_History:ShowUndoNotice(message, undoSec)
+    print("[pH] " .. message)
+    if undoSec then
+        print(string.format("[pH] Undo available for %ds: /ph history undo", undoSec))
+    end
+end
+
+function pH_History:ConfirmArchive(sessionId, archived)
+    if not sessionId then return end
+    EnsureHistoryPopups()
+    if archived then
+        StaticPopup_Show("PH_ARCHIVE_SESSION", sessionId, nil, { sessionId = sessionId })
+    else
+        StaticPopup_Show("PH_UNARCHIVE_SESSION", sessionId, nil, { sessionId = sessionId })
+    end
+end
+
+function pH_History:ConfirmArchiveShort(thresholdSec)
+    EnsureHistoryPopups()
+    local threshold = thresholdSec or (pH_Settings and pH_Settings.historyCleanup and pH_Settings.historyCleanup.shortThresholdSec) or 300
+    local mins = math.floor(threshold / 60)
+    StaticPopup_Show("PH_ARCHIVE_SHORT", mins, nil, { thresholdSec = threshold })
+end
+
+function pH_History:RunArchiveShortAction(thresholdSec)
+    local ok, message, undoSec = pH_SessionManager:ArchiveShortSessions(thresholdSec or 300)
+    self:ShowUndoNotice(message, ok and undoSec or nil)
+    self:RefreshList()
+    local sessionIds = pH_Index:QuerySessions(self.filterState)
+    if #sessionIds > 0 then
+        self:SelectSession(sessionIds[1])
+    else
+        self.selectedSessionId = nil
+        pH_History_Detail:SetSession(nil)
+    end
+end
+
+function pH_History:RunArchiveAction(sessionId, archived)
+    if not sessionId then return end
+    local ok, message, undoSec = pH_SessionManager:SetSessionArchived(sessionId, archived, "manual")
+    self:ShowUndoNotice(message, ok and undoSec or nil)
+    self:RefreshList()
+    local sessionIds = pH_Index:QuerySessions(self.filterState)
+    local selectedVisible = false
+    if self.selectedSessionId then
+        for _, id in ipairs(sessionIds) do
+            if id == self.selectedSessionId then
+                selectedVisible = true
+                break
+            end
+        end
+    end
+    if selectedVisible then
+        pH_History_Detail:SetSession(self.selectedSessionId)
+    elseif #sessionIds > 0 then
+        self:SelectSession(sessionIds[1])
+    else
+        self.selectedSessionId = nil
+        pH_History_Detail:SetSession(nil)
+    end
+end
+
+function pH_History:ConfirmDelete(sessionId)
+    if not sessionId then return end
+    EnsureHistoryPopups()
+    StaticPopup_Show("PH_DELETE_SESSION", sessionId, nil, { sessionId = sessionId })
+end
+
+function pH_History:RunDeleteAction(sessionId)
+    if not sessionId then return end
+    local ok, message, undoSec = pH_SessionManager:DeleteSession(sessionId)
+    self:ShowUndoNotice(message, ok and undoSec or nil)
+    if ok and self.selectedSessionId == sessionId then
+        self.selectedSessionId = nil
+    end
+    self:RefreshList()
+    if not self.selectedSessionId then
+        local sessionIds = pH_Index:QuerySessions(self.filterState)
+        if #sessionIds > 0 then
+            self:SelectSession(sessionIds[1])
+        else
+            pH_History_Detail:SetSession(nil)
+        end
+    end
+end
+
+function pH_History:ConfirmMerge(sourceId, targetId)
+    if not sourceId or not targetId or sourceId == targetId then
+        return
+    end
+    EnsureHistoryPopups()
+    StaticPopup_Show("PH_MERGE_SESSIONS", sourceId, targetId, {
+        sourceId = sourceId,
+        targetId = targetId,
+    })
+end
+
+function pH_History:RunMergeAction(sourceId, targetId)
+    if not sourceId or not targetId then
+        return
+    end
+    local ok, message, undoSec = pH_SessionManager:MergeSessions({ sourceId, targetId })
+    self:ShowUndoNotice(message, ok and undoSec or nil)
+    if ok then
+        self.selectedSessionId = nil
+    end
+    self:RefreshList()
+    local sessionIds = pH_Index:QuerySessions(self.filterState)
+    if #sessionIds > 0 then
+        self:SelectSession(sessionIds[1])
+    else
+        pH_History_Detail:SetSession(nil)
     end
 end
 
