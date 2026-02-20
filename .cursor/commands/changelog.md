@@ -2,4 +2,4 @@
 - Ensure the output is fit for non-nical consumption. remove specific commits and hashes
 - Run another pass at the change log to make it concise. 
 - Each item should be a small sentence and describes the highlevel change
-- Output the changelog as text in the converstion
+- Output the changelog as markdown syntax in the converstion
