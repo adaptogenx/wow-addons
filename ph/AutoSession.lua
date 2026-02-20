@@ -8,7 +8,7 @@
     - Instance entry detection (start paused, resume on first activity)
 ]]
 
--- luacheck: globals pH_SessionManager pH_Settings pH_HUD pH_Colors UnitIsAFK IsInInstance GetTime time MailFrame
+-- luacheck: globals pH_SessionManager pH_Settings pH_HUD pH_Colors UnitIsAFK IsInInstance GetTime time
 
 local pH_AutoSession = {}
 
@@ -22,6 +22,8 @@ local state = {
     timerFrame = nil,               -- OnUpdate frame for inactivity checking
     afkFrame = nil,                 -- Frame for PLAYER_FLAGS_CHANGED event
     mailboxOpen = false,            -- True while mailbox UI is open (skip auto-start/resume on money/loot)
+    mailboxCloseTimer = nil,        -- Timer frame for delayed mailbox close (handles event ordering)
+    xpLastSeen = nil,               -- Last XP value seen (for filtering login/sync XP updates)
 }
 
 -- Events that may update activity timestamp or trigger auto-resume (broad)
@@ -30,19 +32,22 @@ local TRIGGER_EVENTS = {
     CHAT_MSG_LOOT = true,
     UNIT_SPELLCAST_SUCCEEDED = true,
     PLAYER_XP_UPDATE = true,
+    UPDATE_FACTION = true,  -- Reputation changes
     CHAT_MSG_COMBAT_HONOR_GAIN = true,
     QUEST_TURNED_IN = true,
     MERCHANT_SHOW = true,  -- Resume only, not start
 }
 
--- Events that are allowed to auto-start a session (narrow: only clear earning activity)
--- Excludes UNIT_SPELLCAST_SUCCEEDED (fires on every spell: mount, buff, etc.) and
--- PLAYER_XP_UPDATE (can fire on login/sync). MERCHANT_SHOW never starts, only resumes.
+-- Events that are allowed to auto-start a session (narrow: only the 4 core metrics)
+-- Core metrics: Gold, XP, Reputation, Honor
+-- Excludes sources like CHAT_MSG_LOOT (items) and QUEST_TURNED_IN (quest rewards) - these are
+-- sources that provide core metrics, not metrics themselves.
+-- Note: QUEST_ACCEPTED should NOT be added here - accepting a quest provides no rewards.
 local AUTO_START_EVENTS = {
-    CHAT_MSG_MONEY = true,           -- Looted coin
-    CHAT_MSG_LOOT = true,             -- Looted item
-    QUEST_TURNED_IN = true,          -- Quest reward
-    CHAT_MSG_COMBAT_HONOR_GAIN = true,-- Honor gain
+    CHAT_MSG_MONEY = true,           -- Core metric: Gold
+    PLAYER_XP_UPDATE = true,         -- Core metric: XP (filtered to exclude login/sync)
+    UPDATE_FACTION = true,           -- Core metric: Reputation
+    CHAT_MSG_COMBAT_HONOR_GAIN = true,-- Core metric: Honor
 }
 
 -- Initialize the auto-session system
@@ -85,25 +90,67 @@ end
 
 -- Called by Events.lua when mailbox opens/closes (MAIL_SHOW / MAIL_CLOSED)
 function pH_AutoSession:SetMailboxOpen(open)
-    state.mailboxOpen = open and true or false
+    if open then
+        -- Clear any pending close timer
+        if state.mailboxCloseTimer then
+            state.mailboxCloseTimer:SetScript("OnUpdate", nil)
+            state.mailboxCloseTimer = nil
+        end
+        state.mailboxOpen = true
+    else
+        -- Delay clearing mailbox state to handle event ordering edge cases
+        -- (CHAT_MSG_LOOT/CHAT_MSG_MONEY might fire after MAIL_CLOSED in the same frame)
+        -- Create or reuse timer frame
+        if not state.mailboxCloseTimer then
+            state.mailboxCloseTimer = CreateFrame("Frame")
+        end
+        state.mailboxCloseTimer.elapsed = 0
+        state.mailboxCloseTimer:SetScript("OnUpdate", function(self, elapsed)
+            self.elapsed = self.elapsed + elapsed
+            if self.elapsed >= 0.5 then
+                state.mailboxOpen = false
+                self:SetScript("OnUpdate", nil)
+                state.mailboxCloseTimer = nil
+            end
+        end)
+    end
 end
 
--- Returns true if this event+message should NOT trigger auto-start/resume (AH, mail)
-local function ShouldSkipAutoStartForMessage(event, message)
-    if event ~= "CHAT_MSG_MONEY" and event ~= "CHAT_MSG_LOOT" then
-        return false
+-- Returns true if this event should NOT trigger auto-start/resume (mailbox, login/sync)
+local function ShouldSkipAutoStart(event, ...)
+    -- Skip if mailbox is open (for any event that could come from mail)
+    if state.mailboxOpen then
+        if event == "CHAT_MSG_MONEY" or event == "CHAT_MSG_LOOT" or event == "PLAYER_XP_UPDATE" or event == "UPDATE_FACTION" then
+            return true
+        end
     end
 
-    -- If the mailbox UI is open, treat money/loot as coming from mail
-    if MailFrame and MailFrame:IsShown() then
-        return true
+    -- Filter login/sync XP updates (first XP update after addon load)
+    if event == "PLAYER_XP_UPDATE" then
+        local currentXP = UnitXP("player")
+        if state.xpLastSeen == nil then
+            -- First XP update - likely login/sync, skip it
+            state.xpLastSeen = currentXP
+            return true
+        end
+        -- Only allow if XP actually increased (not just a sync)
+        if currentXP <= state.xpLastSeen then
+            return true
+        end
+        state.xpLastSeen = currentXP
     end
 
-    if not message or type(message) ~= "string" then
-        return false
+    -- Filter message-based events (money, loot) for auction/mail keywords
+    if event == "CHAT_MSG_MONEY" or event == "CHAT_MSG_LOOT" then
+        local message = select(1, ...)
+        if not message or type(message) ~= "string" then
+            return false
+        end
+        local lower = message:lower()
+        return lower:find("auction") or lower:find("mail")
     end
-    local lower = message:lower()
-    return lower:find("auction") or lower:find("mail")
+
+    return false
 end
 
 -- Handle an event - may auto-start or auto-resume session
@@ -120,11 +167,10 @@ function pH_AutoSession:HandleEvent(event, ...)
 
     local session = pH_SessionManager:GetActiveSession()
 
-    -- Case 1: No active session - auto-start only on clear earning events
+    -- Case 1: No active session - auto-start only on core metric events
     if not session then
         if pH_Settings.autoSession.autoStart and AUTO_START_EVENTS[event] then
-            local msg = select(1, ...)
-            if ShouldSkipAutoStartForMessage(event, msg) then
+            if ShouldSkipAutoStart(event, ...) then
                 return
             end
             local ok, message = pH_SessionManager:StartSession()
@@ -145,8 +191,7 @@ function pH_AutoSession:HandleEvent(event, ...)
     if session.pausedAt then
         -- Only auto-resume if it was auto-paused (not manually paused)
         if pH_Settings.autoSession.autoResume and state.autoPausedReason then
-            local msg = select(1, ...)
-            if ShouldSkipAutoStartForMessage(event, msg) then
+            if ShouldSkipAutoStart(event, ...) then
                 return
             end
             local ok, message = pH_SessionManager:ResumeSession()
