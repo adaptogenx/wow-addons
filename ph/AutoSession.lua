@@ -8,7 +8,7 @@
     - Instance entry detection (start paused, resume on first activity)
 ]]
 
--- luacheck: globals pH_SessionManager pH_Settings pH_HUD pH_Colors UnitIsAFK IsInInstance GetTime time
+-- luacheck: globals pH_SessionManager pH_Settings pH_HUD pH_Colors UnitIsAFK IsInInstance GetTime time GetFactionInfo
 
 local pH_AutoSession = {}
 
@@ -24,6 +24,7 @@ local state = {
     mailboxOpen = false,            -- True while mailbox UI is open (skip auto-start/resume on money/loot)
     mailboxCloseTimer = nil,        -- Timer frame for delayed mailbox close (handles event ordering)
     xpLastSeen = nil,               -- Last XP value seen (for filtering login/sync XP updates)
+    repCache = {},                  -- [factionID] = barValue (for filtering login/sync)
 }
 
 -- Events that may update activity timestamp or trigger auto-resume (broad)
@@ -138,6 +139,32 @@ local function ShouldSkipAutoStart(event, ...)
             return true
         end
         state.xpLastSeen = currentXP
+    end
+
+    -- Filter login/sync reputation updates (first UPDATE_FACTION after addon load)
+    if event == "UPDATE_FACTION" then
+        local factionID = select(1, ...)
+        if not factionID or type(factionID) ~= "number" then
+            return true  -- Skip if invalid
+        end
+
+        local name, description, standingID, barMin, barMax, barValue = GetFactionInfo(factionID)
+        if not name or barValue == nil then
+            return true  -- Skip if faction info unavailable
+        end
+
+        if not state.repCache[factionID] then
+            -- First update for this faction - likely login/sync, skip it
+            state.repCache[factionID] = barValue
+            return true
+        end
+
+        -- Only allow if reputation actually increased (not just a sync)
+        if barValue <= state.repCache[factionID] then
+            return true
+        end
+
+        state.repCache[factionID] = barValue
     end
 
     -- Filter message-based events (money, loot) for auction/mail keywords
