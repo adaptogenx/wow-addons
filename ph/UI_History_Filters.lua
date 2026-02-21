@@ -4,7 +4,7 @@
     Provides search, sort, zone, character, and flag filters.
 ]]
 
--- luacheck: globals CreateFrame UIDropDownMenu_Initialize UIDropDownMenu_CreateInfo UIDROPDOWNMENU_OPEN_MENU ToggleDropDownMenu CloseDropDownMenus DropDownList1
+-- luacheck: globals CreateFrame UIDropDownMenu_Initialize UIDropDownMenu_CreateInfo UIDROPDOWNMENU_OPEN_MENU ToggleDropDownMenu CloseDropDownMenus DropDownList1 pH_SessionManager
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -85,7 +85,7 @@ function pH_History_Filters:Initialize(parent, historyController)
     self.charDropdown = charBtn
 
     -- Flags dropdown (replaces multiple checkboxes to avoid overflow)
-    local flagsBtn = self:CreateDropdownButton(parent, "Flags: Any", 110)
+    local flagsBtn = self:CreateDropdownButton(parent, "Flags: Any", 160)
     flagsBtn:SetPoint("LEFT", charBtn, "RIGHT", 10, 0)
     flagsBtn:SetScript("OnClick", function(self)
         pH_History_Filters:ShowFlagsMenu(self)
@@ -314,11 +314,16 @@ function pH_History_Filters:UpdateFlagsLabel()
     if fs.onlyXP then table.insert(parts, "XP") end
     if fs.onlyRep then table.insert(parts, "Rep") end
     if fs.onlyHonor then table.insert(parts, "Honor") end
+    -- "Short sessions" and "Archived" are opt-in flags.
+    if not fs.excludeShort then table.insert(parts, "Short sessions") end
+    if not fs.excludeArchived then table.insert(parts, "Archived") end
 
     if #parts == 0 then
         self.flagsDropdown.text:SetText("Flags: Any")
+    elseif #parts > 1 then
+        self.flagsDropdown.text:SetText("Flags: enabled")
     else
-        self.flagsDropdown.text:SetText("Flags: " .. table.concat(parts, ","))
+        self.flagsDropdown.text:SetText("Flags: " .. parts[1])
     end
 end
 
@@ -399,6 +404,33 @@ function pH_History_Filters:ShowFlagsMenu(button)
             info.checked = fs[opt.key] and true or false
             UIDropDownMenu_AddButton(info)
         end
+
+        local divider = UIDropDownMenu_CreateInfo()
+        divider.disabled = true
+        divider.text = " "
+        UIDropDownMenu_AddButton(divider)
+
+        local showShortInfo = UIDropDownMenu_CreateInfo()
+        showShortInfo.text = "Short sessions"
+        showShortInfo.func = function()
+            fs.excludeShort = not fs.excludeShort
+            self:UpdateFlagsLabel()
+            self:OnFilterChanged()
+            CloseDropDownMenus()
+        end
+        showShortInfo.checked = not fs.excludeShort
+        UIDropDownMenu_AddButton(showShortInfo)
+
+        local showArchivedInfo = UIDropDownMenu_CreateInfo()
+        showArchivedInfo.text = "Archived"
+        showArchivedInfo.func = function()
+            fs.excludeArchived = not fs.excludeArchived
+            self:UpdateFlagsLabel()
+            self:OnFilterChanged()
+            CloseDropDownMenus()
+        end
+        showArchivedInfo.checked = not fs.excludeArchived
+        UIDropDownMenu_AddButton(showArchivedInfo)
     end, "MENU")
 
     ToggleDropDownMenu(1, nil, menu, button, 0, 0)
