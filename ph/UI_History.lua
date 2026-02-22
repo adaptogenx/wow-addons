@@ -264,7 +264,12 @@ function pH_History:Show()
     end
 
     -- Reset all non-persistent filters on open; keep cleanup filters enabled by default
-    self.filterState.charKeys = nil
+    local currentCharKey = pH_Index:GetCurrentCharKey()
+    if currentCharKey then
+        self.filterState.charKeys = { [currentCharKey] = true }
+    else
+        self.filterState.charKeys = nil
+    end
     self.filterState.zone = nil
     self.filterState.search = ""
     self.filterState.minPerHour = 0

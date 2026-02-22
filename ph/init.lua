@@ -20,6 +20,7 @@ local function EnsureAccountDB()
             },
             priceOverrides = {},
             activeSession = nil,
+            activeSessions = {},
             sessions = {},
             debug = { enabled = false, verbose = false, lastTestResults = {} },
         }
@@ -42,22 +43,15 @@ local function EnsureAccountDB()
     if not pH_DB_Account.debug then
         pH_DB_Account.debug = { enabled = false, verbose = false, lastTestResults = {} }
     end
-end
-
--- Check for duplicate sessions and warn user
-local function WarnIfDuplicatesExist()
-    if not pH_Debug or not pH_Debug.ScanForDuplicates then
-        return
+    if not pH_DB_Account.activeSessions then
+        pH_DB_Account.activeSessions = {}
     end
-
-    local scanResult = pH_Debug:ScanForDuplicates()
-    if scanResult.totalDuplicates > 0 then
-        print(string.format(
-            "|cffff8000[pH]|r Warning: %d duplicate sessions detected. " ..
-            "Type |cff00ff00/goldph debug dupes|r for details.",
-            scanResult.totalDuplicates
-        ))
+    if pH_DB_Account.activeSession and next(pH_DB_Account.activeSessions) == nil then
+        local legacy = pH_DB_Account.activeSession
+        local charKey = (legacy.character or "Unknown") .. "-" .. (legacy.realm or "Unknown") .. "-" .. (legacy.faction or "Unknown")
+        pH_DB_Account.activeSessions[charKey] = legacy
     end
+    pH_DB_Account.activeSession = nil
 end
 
 -- Initialize saved variables on first load
@@ -196,16 +190,8 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
             pH_AutoSession:Initialize()
         end
 
-        local charName = UnitName("player") or "Unknown"
-        local realm = GetRealmName() or "Unknown"
         print("[pH] Version 0.13.0 loaded. Type /ph help for commands (legacy /goldph still works).")
-
-        -- Check for duplicate sessions (delayed to avoid login spam)
-        C_Timer.After(2, WarnIfDuplicatesExist)
     elseif event == "PLAYER_ENTERING_WORLD" then
-        -- Persist any active session that belongs to another character (e.g. after char switch)
-        pH_SessionManager:PersistOrphanedActiveSession()
-
         -- Ensure settings exist
         if not pH_Settings then
             pH_Settings = {
@@ -372,8 +358,6 @@ local function ShowHelp()
     print("|cffffff00/ph debug pickpocket|r - Show pickpocket statistics (Phase 6)")
     print("|cffffff00/ph debug gathering|r - Show gathering node statistics")
     print("|cffffff00/ph debug data|r - Show session counts and per-character breakdown")
-    print("|cffffff00/ph debug dupes|r - Scan for duplicate sessions in database")
-    print("|cffffff00/ph debug purge-dupes [confirm]|r - Remove duplicate sessions (backup first!)")
     print("")
     print("|cff00ff00=== Test Commands ===|r")
     print("|cffffff00/ph test run|r - Run automated test suite")
@@ -560,13 +544,8 @@ local function HandleCommand(msg)
             pH_Debug:ShowGathering()
         elseif subCmd == "data" then
             pH_Debug:ShowData()
-        elseif subCmd == "dupes" then
-            pH_Debug:ShowDuplicates()
-        elseif subCmd == "purge-dupes" then
-            local confirm = (args[3] or ""):lower() == "confirm"
-            pH_Debug:PurgeDuplicates(confirm)
         else
-            print("[pH] Debug commands: on, off, verbose, dump, ledger, holdings, prices, pickpocket, gathering, data, dupes, purge-dupes")
+            print("[pH] Debug commands: on, off, verbose, dump, ledger, holdings, prices, pickpocket, gathering, data")
         end
 
     elseif cmd == "test" then
