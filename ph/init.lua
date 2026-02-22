@@ -5,7 +5,7 @@
     Account-wide: pH_DB_Account (sessions). Per-character: pH_Settings (UI state).
 ]]
 
--- luacheck: globals pH_DB pH_DB_Account pH_Settings
+-- luacheck: globals pH_DB pH_DB_Account pH_Settings pH_AutoSession
 
 -- Create main addon frame
 local pH_MainFrame = CreateFrame("Frame", "pH_MainFrame")
@@ -139,16 +139,10 @@ local function InitializeSavedVariables()
     if pH_Settings.startPanelExpanded == nil then
         pH_Settings.startPanelExpanded = true
     end
-    -- Migration: add autoSession settings (Phase 12: Auto session management)
+    -- Migration: add autoSession settings (source-aware model migrates in AutoSession.lua)
     if pH_Settings.autoSession == nil then
         pH_Settings.autoSession = {
             enabled = true,
-            autoStart = true,
-            instanceStart = true,
-            afkPause = true,
-            inactivityPromptMin = 5,
-            inactivityPauseMin = 10,
-            autoResume = true,
         }
     end
     if pH_Settings.historyCleanup == nil then
@@ -360,7 +354,13 @@ local function ShowHelp()
     print("|cffffff00/ph history delete <sessionId> confirm|r - Permanently delete session")
     print("|cffffff00/ph history merge <id1> <id2> [idN...] confirm|r - Merge same-character sessions")
     print("|cffffff00/ph history undo|r - Undo the last history action (30s)")
-    print("|cffffff00/ph auto [on|off]|r - Enable/disable auto-session management or show settings")
+    print("|cffffff00/ph auto status|r - Show source-aware auto-session settings")
+    print("|cffffff00/ph auto on|off|r - Enable/disable auto-session management")
+    print("|cffffff00/ph auto profile <manual|balanced|handsfree>|r - Apply preset")
+    print("|cffffff00/ph auto set <start|resume> <source> <off|prompt|auto>|r - Set one source rule")
+    print("|cffffff00/ph auto prompt <never|smart|always>|r - Configure start prompts")
+    print("|cffffff00/ph auto sources|r - List source keys")
+    print("|cffffff00/ph auto ui|r - Open Auto Session settings panel")
     print("")
     print("|cff00ff00=== Debug Commands ===|r")
     print("|cffffff00/ph debug on|off|r - Enable/disable debug mode (auto-run invariants)")
@@ -406,7 +406,7 @@ local function HandleCommand(msg)
     end
 
     if cmd == "start" then
-        local ok, message = pH_SessionManager:StartSession()
+        local ok, message = pH_SessionManager:StartSession("manual", "command")
         print("[pH] " .. message)
         if ok then
             pH_Settings.hudMinimized = true  -- New session starts with HUD collapsed
@@ -419,14 +419,14 @@ local function HandleCommand(msg)
         pH_HUD:Update()
 
     elseif cmd == "pause" then
-        local ok, message = pH_SessionManager:PauseSession()
+        local ok, message = pH_SessionManager:PauseSession("manual", "command")
         print("[pH] " .. message)
         if ok then
             pH_HUD:Update()
         end
 
     elseif cmd == "resume" then
-        local ok, message = pH_SessionManager:ResumeSession()
+        local ok, message = pH_SessionManager:ResumeSession("manual", "command")
         print("[pH] " .. message)
         if ok then
             pH_HUD:Update()
@@ -669,24 +669,60 @@ local function HandleCommand(msg)
             print("[pH] Auto-session settings not initialized")
             return
         end
+        if type(pH_AutoSession) ~= "table" then
+            print("[pH] Auto-session module is not loaded")
+            return
+        end
         if subCmd == "on" then
             pH_Settings.autoSession.enabled = true
             print("[pH] Auto-session management enabled")
         elseif subCmd == "off" then
             pH_Settings.autoSession.enabled = false
             print("[pH] Auto-session management disabled")
-        elseif subCmd == "" then
-            local cfg = pH_Settings.autoSession
+        elseif subCmd == "" or subCmd == "status" then
             print("[pH] Auto-session settings:")
-            print(string.format("  Enabled: %s", cfg.enabled and "Yes" or "No"))
-            print(string.format("  Auto-start: %s", cfg.autoStart and "Yes" or "No"))
-            print(string.format("  Instance start: %s", cfg.instanceStart and "Yes" or "No"))
-            print(string.format("  AFK pause: %s", cfg.afkPause and "Yes" or "No"))
-            print(string.format("  Inactivity prompt: %d min", cfg.inactivityPromptMin or 5))
-            print(string.format("  Inactivity auto-pause: %d min", cfg.inactivityPauseMin or 10))
-            print(string.format("  Auto-resume: %s", cfg.autoResume and "Yes" or "No"))
+            for _, line in ipairs(pH_AutoSession:GetStatusLines()) do
+                print(line)
+            end
+        elseif subCmd == "profile" then
+            local profile = (args[3] or ""):lower()
+            local ok, message = pH_AutoSession:ApplyProfile(profile)
+            if ok then
+                print("[pH] Auto-session profile set to " .. profile)
+            else
+                print("[pH] " .. (message or "Failed to set profile"))
+            end
+        elseif subCmd == "prompt" then
+            local mode = (args[3] or ""):lower()
+            local ok, message = pH_AutoSession:SetPromptMode(mode)
+            if ok then
+                print("[pH] Auto-session prompt mode set to " .. mode)
+            else
+                print("[pH] " .. (message or "Failed to set prompt mode"))
+            end
+        elseif subCmd == "set" then
+            local kind = (args[3] or ""):lower()
+            local source = (args[4] or ""):lower()
+            local action = (args[5] or ""):lower()
+            local ok, message = pH_AutoSession:SetRule(kind, source, action)
+            if ok then
+                print(string.format("[pH] Rule updated: %s %s = %s", kind, source, action))
+            else
+                print("[pH] " .. (message or "Failed to set rule"))
+            end
+        elseif subCmd == "sources" then
+            pH_AutoSession:PrintSources()
+        elseif subCmd == "ui" or subCmd == "settings" then
+            pH_AutoSession:OpenSettingsPanel()
         else
-            print("[pH] Usage: /ph auto [on|off]")
+            print("[pH] Usage:")
+            print("  /ph auto status")
+            print("  /ph auto on|off")
+            print("  /ph auto profile <manual|balanced|handsfree>")
+            print("  /ph auto prompt <never|smart|always>")
+            print("  /ph auto set <start|resume> <source> <off|prompt|auto>")
+            print("  /ph auto sources")
+            print("  /ph auto ui")
         end
 
     elseif cmd == "help" then

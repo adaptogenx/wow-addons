@@ -1,391 +1,1003 @@
 --[[
-    AutoSession.lua - Automatic session start/pause/resume management
+    AutoSession.lua - Source-aware automatic session start/pause/resume management
 
-    Handles:
-    - Auto-start on meaningful activity (loot, combat, etc.)
-    - Auto-pause on AFK or inactivity
-    - Auto-resume on activity while paused
-    - Instance entry detection (start paused, resume on first activity)
+    Features:
+    - Source-based auto-start/auto-resume rules
+    - Prompt-based start policy for ambiguous events
+    - Auto-pause on AFK/inactivity
+    - Instance entry start behavior
+    - Lifecycle-safe runtime state reset (prevents stale/circular behavior)
 ]]
 
--- luacheck: globals pH_SessionManager pH_Settings pH_HUD pH_Colors UnitIsAFK IsInInstance GetTime time GetFactionInfo
+-- luacheck: globals pH_SessionManager pH_Settings pH_HUD pH_Colors UnitIsAFK IsInInstance GetTime time GetFactionInfo GetNumFactions UnitXP UnitLevel GetMaxPlayerLevel GetSpellInfo UIParent
 
 local pH_AutoSession = {}
 
--- Runtime state (not persisted)
-local state = {
-    lastActivityAt = nil,           -- Timestamp of last meaningful activity
-    autoPausedReason = nil,         -- nil, "afk", or "inactivity" (tracks why session was auto-paused)
-    inactivityToastShown = false,   -- Whether we've shown the 5-min inactivity prompt
-    wasPausedLastCheck = nil,       -- True if session was paused last CheckInactivity (so we detect resume)
-    toastFrame = nil,               -- Toast notification UI frame
-    timerFrame = nil,               -- OnUpdate frame for inactivity checking
-    afkFrame = nil,                 -- Frame for PLAYER_FLAGS_CHANGED event
-    mailboxOpen = false,            -- True while mailbox UI is open (skip auto-start/resume on money/loot)
-    mailboxCloseTimer = nil,        -- Timer frame for delayed mailbox close (handles event ordering)
-    xpLastSeen = nil,               -- Last XP value seen (for filtering login/sync XP updates)
-    repCache = {},                  -- [factionID] = barValue (for filtering login/sync)
+local PROFILE_MANUAL = "manual"
+local PROFILE_BALANCED = "balanced"
+local PROFILE_HANDSFREE = "handsfree"
+
+local ACTION_OFF = "off"
+local ACTION_PROMPT = "prompt"
+local ACTION_AUTO = "auto"
+
+local PROMPT_NEVER = "never"
+local PROMPT_SMART = "smart"
+local PROMPT_ALWAYS = "always"
+
+local INSTANCE_START_PAUSED = "paused"
+local INSTANCE_START_ACTIVE = "active"
+
+local SOURCE_LABELS = {
+    ["xp.mob_kill"] = "XP: Mob kill",
+    ["xp.quest_turnin"] = "XP: Quest turn-in",
+    ["xp.zone_discovery"] = "XP: Zone discovery",
+    ["xp.other"] = "XP: Other",
+
+    ["gold.mob_loot_coin"] = "Gold: Looted coin",
+    ["gold.treasure_or_container_coin"] = "Gold: Treasure/container",
+    ["gold.lockbox_coin"] = "Gold: Lockbox",
+    ["gold.pickpocket_coin"] = "Gold: Pickpocket",
+    ["gold.quest_reward"] = "Gold: Quest reward",
+    ["gold.vendor_sale"] = "Gold: Vendor sale",
+    ["gold.mail"] = "Gold: Mail",
+    ["gold.auction_payout"] = "Gold: Auction payout",
+    ["gold.trade_or_cod"] = "Gold: Trade/COD",
+    ["gold.other"] = "Gold: Other",
+
+    ["rep.mob_kill"] = "Rep: Mob kill",
+    ["rep.quest_turnin"] = "Rep: Quest turn-in",
+    ["rep.item_turnin"] = "Rep: Item turn-in",
+    ["rep.other"] = "Rep: Other",
+
+    ["gathering.node"] = "Gathering",
+    ["honor.gain"] = "Honor",
 }
 
--- Events that may update activity timestamp or trigger auto-resume (broad)
-local TRIGGER_EVENTS = {
-    CHAT_MSG_MONEY = true,
-    CHAT_MSG_LOOT = true,
-    UNIT_SPELLCAST_SUCCEEDED = true,
-    PLAYER_XP_UPDATE = true,
-    UPDATE_FACTION = true,  -- Reputation changes
-    CHAT_MSG_COMBAT_HONOR_GAIN = true,
-    QUEST_TURNED_IN = true,
-    MERCHANT_SHOW = true,  -- Resume only, not start
+local ALL_SOURCES = {
+    "xp.mob_kill", "xp.quest_turnin", "xp.zone_discovery", "xp.other",
+    "gold.mob_loot_coin", "gold.treasure_or_container_coin", "gold.lockbox_coin", "gold.pickpocket_coin",
+    "gold.quest_reward", "gold.vendor_sale", "gold.mail", "gold.auction_payout", "gold.trade_or_cod", "gold.other",
+    "rep.mob_kill", "rep.quest_turnin", "rep.item_turnin", "rep.other",
+    "gathering.node", "honor.gain",
 }
 
--- Events that are allowed to auto-start a session (narrow: only the 4 core metrics)
--- Core metrics: Gold, XP, Reputation, Honor
--- Excludes sources like CHAT_MSG_LOOT (items) and QUEST_TURNED_IN (quest rewards) - these are
--- sources that provide core metrics, not metrics themselves.
--- Note: QUEST_ACCEPTED should NOT be added here - accepting a quest provides no rewards.
-local AUTO_START_EVENTS = {
-    CHAT_MSG_MONEY = true,           -- Core metric: Gold
-    PLAYER_XP_UPDATE = true,         -- Core metric: XP (filtered to exclude login/sync)
-    UPDATE_FACTION = true,           -- Core metric: Reputation
-    CHAT_MSG_COMBAT_HONOR_GAIN = true,-- Core metric: Honor
-}
+local function BuildRules(defaultAction)
+    local rules = {}
+    for _, source in ipairs(ALL_SOURCES) do
+        rules[source] = { action = defaultAction }
+    end
+    return rules
+end
 
--- Initialize the auto-session system
-function pH_AutoSession:Initialize()
-    -- Ensure settings exist
-    if not pH_Settings.autoSession then
-        pH_Settings.autoSession = {
-            enabled = true,
-            autoStart = true,
-            instanceStart = true,
-            afkPause = true,
-            inactivityPromptMin = 5,
-            inactivityPauseMin = 10,
-            autoResume = true,
-        }
+local function BuildProfile(profile)
+    local start = BuildRules(ACTION_OFF)
+    local resume = BuildRules(ACTION_OFF)
+
+    if profile == PROFILE_HANDSFREE then
+        for source, entry in pairs(start) do
+            if source ~= "gold.mail" and source ~= "gold.auction_payout" and source ~= "gold.trade_or_cod" and source ~= "gold.vendor_sale" then
+                entry.action = ACTION_AUTO
+            end
+        end
+        for source, entry in pairs(resume) do
+            if source ~= "gold.mail" and source ~= "gold.auction_payout" and source ~= "gold.trade_or_cod" and source ~= "gold.vendor_sale" then
+                entry.action = ACTION_AUTO
+            end
+        end
+        start["xp.zone_discovery"].action = ACTION_PROMPT
+        resume["xp.zone_discovery"].action = ACTION_OFF
+    elseif profile ~= PROFILE_MANUAL then
+        -- Balanced defaults
+        start["gathering.node"].action = ACTION_AUTO
+        resume["gathering.node"].action = ACTION_AUTO
+
+        start["xp.mob_kill"].action = ACTION_AUTO
+        resume["xp.mob_kill"].action = ACTION_AUTO
+
+        start["honor.gain"].action = ACTION_AUTO
+        resume["honor.gain"].action = ACTION_AUTO
+
+        start["gold.mob_loot_coin"].action = ACTION_AUTO
+        resume["gold.mob_loot_coin"].action = ACTION_AUTO
+
+        start["gold.lockbox_coin"].action = ACTION_PROMPT
+        resume["gold.lockbox_coin"].action = ACTION_AUTO
+
+        start["gold.pickpocket_coin"].action = ACTION_AUTO
+        resume["gold.pickpocket_coin"].action = ACTION_AUTO
+
+        start["xp.zone_discovery"].action = ACTION_OFF
+        resume["xp.zone_discovery"].action = ACTION_OFF
+
+        start["xp.quest_turnin"].action = ACTION_OFF
+        resume["xp.quest_turnin"].action = ACTION_OFF
+
+        start["gold.quest_reward"].action = ACTION_OFF
+        resume["gold.quest_reward"].action = ACTION_OFF
+
+        start["gold.vendor_sale"].action = ACTION_OFF
+        resume["gold.vendor_sale"].action = ACTION_OFF
+
+        start["gold.mail"].action = ACTION_OFF
+        resume["gold.mail"].action = ACTION_OFF
+
+        start["gold.auction_payout"].action = ACTION_OFF
+        resume["gold.auction_payout"].action = ACTION_OFF
+
+        start["gold.trade_or_cod"].action = ACTION_OFF
+        resume["gold.trade_or_cod"].action = ACTION_OFF
+
+        start["gold.other"].action = ACTION_PROMPT
+        resume["gold.other"].action = ACTION_AUTO
+
+        start["xp.other"].action = ACTION_PROMPT
+        resume["xp.other"].action = ACTION_AUTO
+
+        start["rep.mob_kill"].action = ACTION_PROMPT
+        resume["rep.mob_kill"].action = ACTION_AUTO
+
+        start["rep.quest_turnin"].action = ACTION_OFF
+        resume["rep.quest_turnin"].action = ACTION_OFF
+
+        start["rep.item_turnin"].action = ACTION_OFF
+        resume["rep.item_turnin"].action = ACTION_OFF
+
+        start["rep.other"].action = ACTION_PROMPT
+        resume["rep.other"].action = ACTION_AUTO
     end
 
-    -- Create timer frame for inactivity checking
+    return start, resume
+end
+
+local function EnsureRuleShape(map, fallbackAction)
+    if type(map) ~= "table" then
+        map = {}
+    end
+    for _, source in ipairs(ALL_SOURCES) do
+        if type(map[source]) ~= "table" then
+            map[source] = { action = fallbackAction }
+        end
+        local action = map[source].action
+        if action ~= ACTION_OFF and action ~= ACTION_PROMPT and action ~= ACTION_AUTO then
+            map[source].action = fallbackAction
+        end
+    end
+    return map
+end
+
+local function MigrateSettings()
+    if not pH_Settings then
+        pH_Settings = {}
+    end
+
+    local cfg = pH_Settings.autoSession
+    if type(cfg) ~= "table" then
+        cfg = {}
+        pH_Settings.autoSession = cfg
+    end
+
+    -- Migrate legacy bool-style settings
+    local oldAutoStart = cfg.autoStart
+    local oldInstanceStart = cfg.instanceStart
+    local oldAfkPause = cfg.afkPause
+    local oldInactivityPromptMin = cfg.inactivityPromptMin
+    local oldInactivityPauseMin = cfg.inactivityPauseMin
+    local oldAutoResume = cfg.autoResume
+
+    if cfg.enabled == nil then
+        cfg.enabled = true
+    end
+
+    if type(cfg.profiles) ~= "table" then
+        cfg.profiles = {}
+    end
+    if cfg.profiles.default ~= PROFILE_MANUAL and cfg.profiles.default ~= PROFILE_BALANCED and cfg.profiles.default ~= PROFILE_HANDSFREE then
+        cfg.profiles.default = PROFILE_BALANCED
+    end
+
+    if type(cfg.prompt) ~= "table" then
+        cfg.prompt = {}
+    end
+    if cfg.prompt.mode ~= PROMPT_NEVER and cfg.prompt.mode ~= PROMPT_SMART and cfg.prompt.mode ~= PROMPT_ALWAYS then
+        cfg.prompt.mode = PROMPT_SMART
+    end
+
+    if type(cfg.start) ~= "table" then
+        cfg.start = {}
+    end
+    if type(cfg.resume) ~= "table" then
+        cfg.resume = {}
+    end
+
+    local defaultStart, defaultResume = BuildProfile(cfg.profiles.default)
+
+    cfg.start.rules = EnsureRuleShape(cfg.start.rules or defaultStart, ACTION_OFF)
+    cfg.resume.rules = EnsureRuleShape(cfg.resume.rules or defaultResume, ACTION_OFF)
+
+    if type(cfg.resume.onlyIfAutoPaused) ~= "boolean" then
+        cfg.resume.onlyIfAutoPaused = true
+    end
+
+    if type(cfg.pause) ~= "table" then
+        cfg.pause = {}
+    end
+    if type(cfg.pause.afkEnabled) ~= "boolean" then
+        cfg.pause.afkEnabled = oldAfkPause == nil and true or (oldAfkPause and true or false)
+    end
+    if type(cfg.pause.inactivityPromptMin) ~= "number" then
+        cfg.pause.inactivityPromptMin = oldInactivityPromptMin or 5
+    end
+    if type(cfg.pause.inactivityPauseMin) ~= "number" then
+        cfg.pause.inactivityPauseMin = oldInactivityPauseMin or 10
+    end
+
+    if type(cfg.instanceStart) ~= "table" then
+        cfg.instanceStart = {}
+    end
+    if type(cfg.instanceStart.enabled) ~= "boolean" then
+        cfg.instanceStart.enabled = oldInstanceStart == nil and true or (oldInstanceStart and true or false)
+    end
+    if cfg.instanceStart.mode ~= INSTANCE_START_PAUSED and cfg.instanceStart.mode ~= INSTANCE_START_ACTIVE then
+        cfg.instanceStart.mode = INSTANCE_START_PAUSED
+    end
+
+    -- Preserve legacy intended behavior
+    if oldAutoStart == false then
+        for _, source in ipairs(ALL_SOURCES) do
+            cfg.start.rules[source].action = ACTION_OFF
+        end
+    end
+    if oldAutoResume == false then
+        for _, source in ipairs(ALL_SOURCES) do
+            cfg.resume.rules[source].action = ACTION_OFF
+        end
+    end
+
+end
+
+local function SourceLabel(source)
+    return SOURCE_LABELS[source] or source
+end
+
+local state = {
+    lastActivityAt = nil,
+    inactivityToastShown = false,
+    wasPausedLastCheck = nil,
+    timerFrame = nil,
+    afkFrame = nil,
+
+    mailboxOpen = false,
+    merchantOpen = false,
+    vendorSaleUntil = 0,
+
+    questTurnInUntil = 0,
+    zoneDiscoveryUntil = 0,
+    pickpocketUntil = 0,
+    lockboxUntil = 0,
+    itemTurnInUntil = 0,
+
+    xpLastSeen = nil,
+    repCache = {},
+    pendingXPSource = nil,
+    pendingXPSourceUntil = 0,
+    pendingRepSource = nil,
+    pendingRepSourceUntil = 0,
+
+    toastFrame = nil,
+    promptFrame = nil,
+    promptCooldownBySource = {},
+    promptContext = nil,
+}
+
+local GATHERING_SPELLS = {
+    [2575] = true,
+    [2366] = true,
+    [8613] = true,
+    [7620] = true,
+}
+
+local EVENT_INTEREST = {
+    CHAT_MSG_MONEY = true,
+    CHAT_MSG_LOOT = true,
+    CHAT_MSG_COMBAT_HONOR_GAIN = true,
+    CHAT_MSG_COMBAT_XP_GAIN = true,
+    CHAT_MSG_COMBAT_FACTION_CHANGE = true,
+    CHAT_MSG_SYSTEM = true,
+    PLAYER_XP_UPDATE = true,
+    UPDATE_FACTION = true,
+    UNIT_SPELLCAST_SUCCEEDED = true,
+    QUEST_TURNED_IN = true,
+}
+
+local function ParseCopper(message)
+    if type(message) ~= "string" then
+        return 0
+    end
+    local totalCopper = 0
+    local gold = message:match("(%d+) Gold")
+    if gold then
+        totalCopper = totalCopper + tonumber(gold) * 10000
+    end
+    local silver = message:match("(%d+) Silver")
+    if silver then
+        totalCopper = totalCopper + tonumber(silver) * 100
+    end
+    local copper = message:match("(%d+) Copper")
+    if copper then
+        totalCopper = totalCopper + tonumber(copper)
+    end
+    return totalCopper
+end
+
+local function ParseHonor(message)
+    if type(message) ~= "string" then
+        return 0
+    end
+    local amount = message:match("(%d+) honor") or message:match("awarded (%d+) honor")
+    return tonumber(amount) or 0
+end
+
+local function NormalizeAction(value, allowPrompt)
+    if value == ACTION_OFF then
+        return ACTION_OFF
+    end
+    if value == ACTION_AUTO then
+        return ACTION_AUTO
+    end
+    if allowPrompt and value == ACTION_PROMPT then
+        return ACTION_PROMPT
+    end
+    return nil
+end
+
+local function GetCfg()
+    return pH_Settings and pH_Settings.autoSession or nil
+end
+
+function pH_AutoSession:InitializeRepCache()
+    state.repCache = {}
+    local numFactions = GetNumFactions and GetNumFactions() or 0
+    for i = 1, numFactions do
+        local _, _, _, _, _, barValue, _, _, isHeader, _, _, _, _, factionID = GetFactionInfo(i)
+        if not isHeader and factionID and barValue ~= nil then
+            state.repCache[factionID] = barValue
+        end
+    end
+end
+
+function pH_AutoSession:ResetRuntimeOnSessionBoundary()
+    state.lastActivityAt = GetTime()
+    state.inactivityToastShown = false
+    state.wasPausedLastCheck = nil
+    state.promptContext = nil
+    if state.promptFrame then
+        state.promptFrame:Hide()
+    end
+    self:HideToast()
+end
+
+function pH_AutoSession:Initialize()
+    MigrateSettings()
+    self:InitializeRepCache()
+
     state.timerFrame = CreateFrame("Frame")
-    state.timerFrame:SetScript("OnUpdate", function(self, elapsed)
-        self.timer = (self.timer or 0) + elapsed
-        if self.timer >= 10 then  -- Check every 10 seconds
+    state.timerFrame:SetScript("OnUpdate", function(selfFrame, elapsed)
+        selfFrame.timer = (selfFrame.timer or 0) + elapsed
+        if selfFrame.timer >= 10 then
             pH_AutoSession:CheckInactivity()
-            self.timer = 0
+            selfFrame.timer = 0
         end
     end)
 
-    -- Create AFK detection frame
     state.afkFrame = CreateFrame("Frame")
     state.afkFrame:RegisterEvent("PLAYER_FLAGS_CHANGED")
-    state.afkFrame:SetScript("OnEvent", function(self, event, unit)
+    state.afkFrame:SetScript("OnEvent", function(_, event, unit)
         if event == "PLAYER_FLAGS_CHANGED" and unit == "player" then
             pH_AutoSession:OnPlayerFlagsChanged(unit)
         end
     end)
-
-    -- Initialize toast UI (created lazily on first use)
-    -- Will be created in CreateToastUI() when needed
 end
 
--- Called by Events.lua when mailbox opens/closes (MAIL_SHOW / MAIL_CLOSED)
+function pH_AutoSession:OnSessionStarted(_session, _reason)
+    self:ResetRuntimeOnSessionBoundary()
+end
+
+function pH_AutoSession:OnSessionStopped(_session)
+    state.lastActivityAt = nil
+    state.inactivityToastShown = false
+    state.wasPausedLastCheck = nil
+    state.promptContext = nil
+    if state.promptFrame then
+        state.promptFrame:Hide()
+    end
+    self:HideToast()
+end
+
+function pH_AutoSession:OnSessionPaused(session, reason)
+    if session then
+        session.autoSessionPauseReason = reason or "manual"
+    end
+    self:HideToast()
+    if state.promptFrame then
+        state.promptFrame:Hide()
+    end
+end
+
+function pH_AutoSession:OnSessionResumed(session, _reason)
+    if session then
+        session.autoSessionPauseReason = nil
+    end
+    state.lastActivityAt = GetTime()
+    state.inactivityToastShown = false
+    state.wasPausedLastCheck = false
+    self:HideToast()
+    if state.promptFrame then
+        state.promptFrame:Hide()
+    end
+end
+
 function pH_AutoSession:SetMailboxOpen(open)
+    state.mailboxOpen = open and true or false
+end
+
+function pH_AutoSession:SetMerchantOpen(open)
+    state.merchantOpen = open and true or false
+    local now = GetTime()
     if open then
-        -- Clear any pending close timer
-        if state.mailboxCloseTimer then
-            state.mailboxCloseTimer:SetScript("OnUpdate", nil)
-            state.mailboxCloseTimer = nil
-        end
-        state.mailboxOpen = true
+        state.vendorSaleUntil = now + 3.0
     else
-        -- Delay clearing mailbox state to handle event ordering edge cases
-        -- (CHAT_MSG_LOOT/CHAT_MSG_MONEY might fire after MAIL_CLOSED in the same frame)
-        -- Create or reuse timer frame
-        if not state.mailboxCloseTimer then
-            state.mailboxCloseTimer = CreateFrame("Frame")
-        end
-        state.mailboxCloseTimer.elapsed = 0
-        state.mailboxCloseTimer:SetScript("OnUpdate", function(self, elapsed)
-            self.elapsed = self.elapsed + elapsed
-            if self.elapsed >= 0.5 then
-                state.mailboxOpen = false
-                self:SetScript("OnUpdate", nil)
-                state.mailboxCloseTimer = nil
-            end
-        end)
+        -- Keep a short tail window in case money events land just after close.
+        state.vendorSaleUntil = now + 1.5
     end
 end
 
--- Returns true if this event should NOT trigger auto-start/resume (mailbox, login/sync)
-local function ShouldSkipAutoStart(event, ...)
-    -- Skip if mailbox is open (for any event that could come from mail)
-    if state.mailboxOpen then
-        if event == "CHAT_MSG_MONEY" or event == "CHAT_MSG_LOOT" or event == "PLAYER_XP_UPDATE" or event == "UPDATE_FACTION" then
-            return true
-        end
+function pH_AutoSession:MarkQuestTurnIn(hasXP, hasMoney)
+    local now = GetTime()
+    state.questTurnInUntil = now + 2.0
+    if hasXP then
+        state.pendingXPSource = "xp.quest_turnin"
+        state.pendingXPSourceUntil = now + 2.0
     end
-
-    -- Filter login/sync XP updates (first XP update after addon load)
-    if event == "PLAYER_XP_UPDATE" then
-        local currentXP = UnitXP("player")
-        if state.xpLastSeen == nil then
-            -- First XP update - likely login/sync, skip it
-            state.xpLastSeen = currentXP
-            return true
-        end
-        -- Only allow if XP actually increased (not just a sync)
-        if currentXP <= state.xpLastSeen then
-            return true
-        end
-        state.xpLastSeen = currentXP
+    if hasMoney then
+        -- used by CHAT_MSG_MONEY classification shortly after turn-in
+        state.questTurnInUntil = now + 2.0
     end
-
-    -- Filter login/sync reputation updates (first UPDATE_FACTION after addon load)
-    if event == "UPDATE_FACTION" then
-        local factionID = select(1, ...)
-        if not factionID or type(factionID) ~= "number" then
-            return true  -- Skip if invalid
-        end
-
-        local name, description, standingID, barMin, barMax, barValue = GetFactionInfo(factionID)
-        if not name or barValue == nil then
-            return true  -- Skip if faction info unavailable
-        end
-
-        if not state.repCache[factionID] then
-            -- First update for this faction - likely login/sync, skip it
-            state.repCache[factionID] = barValue
-            return true
-        end
-
-        -- Only allow if reputation actually increased (not just a sync)
-        if barValue <= state.repCache[factionID] then
-            return true
-        end
-
-        state.repCache[factionID] = barValue
-    end
-
-    -- Filter message-based events (money, loot) for auction/mail keywords
-    if event == "CHAT_MSG_MONEY" or event == "CHAT_MSG_LOOT" then
-        local message = select(1, ...)
-        if not message or type(message) ~= "string" then
-            return false
-        end
-        local lower = message:lower()
-        return lower:find("auction") or lower:find("mail")
-    end
-
-    return false
 end
 
--- Handle an event - may auto-start or auto-resume session
-function pH_AutoSession:HandleEvent(event, ...)
-    -- Early return if disabled
-    if not pH_Settings.autoSession or not pH_Settings.autoSession.enabled then
+function pH_AutoSession:MarkItemTurnIn()
+    state.itemTurnInUntil = GetTime() + 2.0
+end
+
+function pH_AutoSession:MarkPickpocketWindow(durationSec)
+    state.pickpocketUntil = GetTime() + (durationSec or 2.0)
+end
+
+function pH_AutoSession:MarkLockboxWindow(durationSec)
+    state.lockboxUntil = GetTime() + (durationSec or 3.0)
+end
+
+local function IsDefaultBlockedSource(source)
+    return source == "gold.mail" or source == "gold.auction_payout" or source == "gold.trade_or_cod" or source == "gold.vendor_sale"
+end
+
+function pH_AutoSession:MarkXPContextFromMessage(message)
+    if type(message) ~= "string" then
+        return
+    end
+    local lower = message:lower()
+    local now = GetTime()
+    if lower:find("discovered") and lower:find("experience") then
+        state.zoneDiscoveryUntil = now + 2.0
+        state.pendingXPSource = "xp.zone_discovery"
+        state.pendingXPSourceUntil = now + 2.0
         return
     end
 
-    -- Check if this is a trigger event
-    if not TRIGGER_EVENTS[event] then
+    if lower:find("experience") then
+        if now <= state.questTurnInUntil then
+            state.pendingXPSource = "xp.quest_turnin"
+        else
+            state.pendingXPSource = "xp.mob_kill"
+        end
+        state.pendingXPSourceUntil = now + 2.0
+    end
+end
+
+function pH_AutoSession:MarkRepContextFromMessage(_message)
+    local now = GetTime()
+    if now <= state.questTurnInUntil then
+        state.pendingRepSource = "rep.quest_turnin"
+    elseif now <= state.itemTurnInUntil then
+        state.pendingRepSource = "rep.item_turnin"
+    else
+        state.pendingRepSource = "rep.mob_kill"
+    end
+    state.pendingRepSourceUntil = now + 2.0
+end
+
+function pH_AutoSession:ClassifyActivity(event, ...)
+    local now = GetTime()
+
+    if event == "CHAT_MSG_COMBAT_XP_GAIN" then
+        self:MarkXPContextFromMessage(select(1, ...))
+        return nil
+    end
+
+    if event == "CHAT_MSG_SYSTEM" then
+        local message = select(1, ...)
+        self:MarkXPContextFromMessage(message)
+        if type(message) == "string" then
+            local lower = message:lower()
+            if lower:find("mail") then
+                return { source = "gold.mail", confidence = "high", amount = 0, shouldSuppress = false }
+            end
+        end
+        return nil
+    end
+
+    if event == "CHAT_MSG_COMBAT_FACTION_CHANGE" then
+        self:MarkRepContextFromMessage(select(1, ...))
+        return nil
+    end
+
+    if event == "UNIT_SPELLCAST_SUCCEEDED" then
+        local unitTarget, _, spellID = ...
+        if unitTarget ~= "player" then
+            return nil
+        end
+        if spellID and GATHERING_SPELLS[spellID] then
+            return { source = "gathering.node", confidence = "high", amount = 1, shouldSuppress = false }
+        end
+        local spellName = spellID and GetSpellInfo and GetSpellInfo(spellID) or nil
+        if spellName == "Pick Pocket" or spellName == "Pickpocket" then
+            self:MarkPickpocketWindow(2.0)
+        end
+        return nil
+    end
+
+    if event == "CHAT_MSG_LOOT" then
+        local message = select(1, ...)
+        if type(message) ~= "string" then
+            return nil
+        end
+        local itemLink = message:match("You receive loot: (|c%x+|H.+|h.+|h|r)")
+        if not itemLink then
+            return nil
+        end
+        local itemID = itemLink:match("|Hitem:(%d+):")
+        if not itemID then
+            return nil
+        end
+        itemID = tonumber(itemID)
+        if not itemID then
+            return nil
+        end
+
+        local itemName, quality, itemClass, itemSubClass
+        if pH_Valuation and pH_Valuation.GetItemInfo then
+            itemName, quality, itemClass, itemSubClass = pH_Valuation:GetItemInfo(itemID)
+        end
+        if not itemName and GetItemInfo then
+            local itemNameInfo, _, qualityInfo, _, _, _, _, _, _, _, _, itemClassInfo, itemSubClassInfo = GetItemInfo(itemID)
+            itemName = itemNameInfo
+            quality = qualityInfo
+            itemClass = itemClassInfo
+            itemSubClass = itemSubClassInfo
+        end
+        if not itemName then
+            return { source = "gold.other", confidence = "low", amount = 0, shouldSuppress = false }
+        end
+        if pH_Valuation and pH_Valuation.ClassifyItem then
+            local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+            if bucket == "gathering" then
+                return { source = "gathering.node", confidence = "high", amount = 1, shouldSuppress = false }
+            end
+            if bucket == "container_lockbox" then
+                return { source = "gold.treasure_or_container_coin", confidence = "medium", amount = 0, shouldSuppress = false }
+            end
+        end
+        return { source = "gold.other", confidence = "low", amount = 0, shouldSuppress = false }
+    end
+
+    if event == "CHAT_MSG_MONEY" then
+        local message = select(1, ...)
+        local amount = ParseCopper(message)
+        local source = "gold.other"
+
+        if state.mailboxOpen then
+            source = "gold.mail"
+        elseif state.merchantOpen or now <= state.vendorSaleUntil then
+            source = "gold.vendor_sale"
+        elseif now <= state.lockboxUntil then
+            source = "gold.lockbox_coin"
+        elseif now <= state.pickpocketUntil then
+            source = "gold.pickpocket_coin"
+        elseif now <= state.questTurnInUntil then
+            source = "gold.quest_reward"
+        else
+            local lower = type(message) == "string" and message:lower() or ""
+            if lower:find("auction") then
+                source = "gold.auction_payout"
+            elseif lower:find("mail") then
+                source = "gold.mail"
+            elseif lower:find("cod") or lower:find("trade") then
+                source = "gold.trade_or_cod"
+            elseif lower:find("you loot") then
+                source = "gold.mob_loot_coin"
+            end
+        end
+
+        return {
+            source = source,
+            confidence = (source == "gold.other" and "low" or "high"),
+            amount = amount,
+            shouldSuppress = false,
+        }
+    end
+
+    if event == "PLAYER_XP_UPDATE" then
+        local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
+        if UnitLevel("player") >= maxLevel then
+            return nil
+        end
+
+        local currentXP = UnitXP("player")
+        if state.xpLastSeen == nil then
+            state.xpLastSeen = currentXP
+            return nil
+        end
+
+        local delta = currentXP - state.xpLastSeen
+        state.xpLastSeen = currentXP
+        if delta <= 0 then
+            return nil
+        end
+
+        local source = "xp.other"
+        if now <= state.pendingXPSourceUntil and state.pendingXPSource then
+            source = state.pendingXPSource
+        elseif now <= state.zoneDiscoveryUntil then
+            source = "xp.zone_discovery"
+        elseif now <= state.questTurnInUntil then
+            source = "xp.quest_turnin"
+        end
+
+        return { source = source, confidence = "high", amount = delta, shouldSuppress = false }
+    end
+
+    if event == "UPDATE_FACTION" then
+        local totalDelta = 0
+        local numFactions = GetNumFactions and GetNumFactions() or 0
+        for i = 1, numFactions do
+            local _, _, _, _, _, barValue, _, _, isHeader, _, _, _, _, factionID = GetFactionInfo(i)
+            if not isHeader and factionID and barValue ~= nil then
+                local old = state.repCache[factionID] or barValue
+                local delta = barValue - old
+                if delta > 0 then
+                    totalDelta = totalDelta + delta
+                end
+                state.repCache[factionID] = barValue
+            end
+        end
+
+        if totalDelta <= 0 then
+            return nil
+        end
+
+        local source = "rep.other"
+        if now <= state.pendingRepSourceUntil and state.pendingRepSource then
+            source = state.pendingRepSource
+        elseif now <= state.questTurnInUntil then
+            source = "rep.quest_turnin"
+        elseif now <= state.itemTurnInUntil then
+            source = "rep.item_turnin"
+        end
+
+        return { source = source, confidence = "medium", amount = totalDelta, shouldSuppress = false }
+    end
+
+    if event == "CHAT_MSG_COMBAT_HONOR_GAIN" then
+        local amount = ParseHonor(select(1, ...))
+        if amount <= 0 then
+            return nil
+        end
+        return { source = "honor.gain", confidence = "high", amount = amount, shouldSuppress = false }
+    end
+
+    if event == "QUEST_TURNED_IN" then
+        local _, xpReward, moneyReward = ...
+        self:MarkQuestTurnIn((xpReward or 0) > 0, (moneyReward or 0) > 0)
+        return nil
+    end
+
+    return nil
+end
+
+local function MaybeShowHUD()
+    if pH_HUD then
+        pH_HUD:Update()
+    end
+end
+
+function pH_AutoSession:GetSourceAction(kind, source)
+    local cfg = GetCfg()
+    if not cfg then
+        return ACTION_OFF
+    end
+    local container = (kind == "start") and cfg.start or cfg.resume
+    local rules = container and container.rules or nil
+    local action = rules and rules[source] and rules[source].action or ACTION_OFF
+    local allowPrompt = (kind == "start")
+    return NormalizeAction(action, allowPrompt) or ACTION_OFF
+end
+
+function pH_AutoSession:ShouldPrompt(source, action, confidence)
+    local cfg = GetCfg()
+    if not cfg then
+        return false
+    end
+    if IsDefaultBlockedSource(source) and action ~= ACTION_PROMPT then
+        return false
+    end
+    local mode = cfg.prompt and cfg.prompt.mode or PROMPT_SMART
+    if action == ACTION_PROMPT then
+        if mode == PROMPT_NEVER then
+            return false
+        end
+        return true
+    end
+    if mode == PROMPT_ALWAYS then
+        return action ~= ACTION_OFF
+    end
+    if mode == PROMPT_SMART then
+        return action == ACTION_PROMPT or confidence == "low"
+    end
+    return false
+end
+
+function pH_AutoSession:StartSessionFromSource(source)
+    local ok, message = pH_SessionManager:StartSession("auto", source)
+    if ok then
+        state.lastActivityAt = GetTime()
+        state.inactivityToastShown = false
+        MaybeShowHUD()
+        print("[pH] Auto-started session from " .. SourceLabel(source) .. ": " .. (message or ""))
+    end
+    return ok
+end
+
+function pH_AutoSession:ResumeSessionFromSource(source)
+    local ok, message = pH_SessionManager:ResumeSession("auto", source)
+    if ok then
+        state.lastActivityAt = GetTime()
+        state.inactivityToastShown = false
+        MaybeShowHUD()
+        print("[pH] Auto-resumed session from " .. SourceLabel(source) .. ": " .. (message or ""))
+    end
+    return ok
+end
+
+local function CreatePromptUI()
+    if state.promptFrame then
+        return state.promptFrame
+    end
+
+    local frame = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    frame:SetSize(360, 120)
+    frame:SetFrameStrata("DIALOG")
+    frame:SetFrameLevel(1000)
+    frame:SetMovable(false)
+    frame:EnableMouse(true)
+    frame:Hide()
+
+    local bg = frame:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(unpack(pH_Colors.BG_PARCHMENT))
+
+    frame:SetBackdrop({
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 12,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 },
+    })
+    frame:SetBackdropBorderColor(unpack(pH_Colors.BORDER_BRONZE))
+
+    frame.messageText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    frame.messageText:SetPoint("TOP", frame, "TOP", 0, -12)
+    frame.messageText:SetPoint("LEFT", frame, "LEFT", 12, 0)
+    frame.messageText:SetPoint("RIGHT", frame, "RIGHT", -12, 0)
+    frame.messageText:SetJustifyH("CENTER")
+    frame.messageText:SetWordWrap(true)
+
+    frame.startBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    frame.startBtn:SetSize(70, 22)
+    frame.startBtn:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 12, 10)
+    frame.startBtn:SetText("Start")
+
+    frame.dismissBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    frame.dismissBtn:SetSize(70, 22)
+    frame.dismissBtn:SetPoint("LEFT", frame.startBtn, "RIGHT", 6, 0)
+    frame.dismissBtn:SetText("Not now")
+
+    frame.alwaysBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    frame.alwaysBtn:SetSize(90, 22)
+    frame.alwaysBtn:SetPoint("LEFT", frame.dismissBtn, "RIGHT", 6, 0)
+    frame.alwaysBtn:SetText("Always")
+
+    frame.neverBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    frame.neverBtn:SetSize(90, 22)
+    frame.neverBtn:SetPoint("LEFT", frame.alwaysBtn, "RIGHT", 6, 0)
+    frame.neverBtn:SetText("Never")
+
+    frame:SetScript("OnUpdate", function(self, elapsed)
+        self.autoDismissTimer = (self.autoDismissTimer or 0) + elapsed
+        if self.autoDismissTimer >= 20 then
+            self:Hide()
+        end
+    end)
+
+    state.promptFrame = frame
+    return frame
+end
+
+function pH_AutoSession:ShowStartPrompt(source, confidence)
+    local now = GetTime()
+    local nextAllowed = state.promptCooldownBySource[source] or 0
+    if now < nextAllowed then
+        return
+    end
+
+    state.promptCooldownBySource[source] = now + 20
+    state.promptContext = { source = source, confidence = confidence }
+
+    local frame = CreatePromptUI()
+    local hudFrame = _G["pH_HUD_Frame"]
+    if hudFrame and hudFrame:IsVisible() then
+        frame:SetPoint("TOP", hudFrame, "BOTTOM", 0, -8)
+    else
+        frame:SetPoint("CENTER", UIParent, "CENTER", 0, -100)
+    end
+
+    frame.messageText:SetText("Start session from " .. SourceLabel(source) .. "?")
+
+    frame.startBtn:SetScript("OnClick", function()
+        local ctx = state.promptContext
+        if ctx and ctx.source then
+            pH_AutoSession:StartSessionFromSource(ctx.source)
+        end
+        frame:Hide()
+    end)
+
+    frame.dismissBtn:SetScript("OnClick", function()
+        frame:Hide()
+    end)
+
+    frame.alwaysBtn:SetScript("OnClick", function()
+        local cfg = GetCfg()
+        local ctx = state.promptContext
+        if cfg and ctx and ctx.source and cfg.start and cfg.start.rules and cfg.start.rules[ctx.source] then
+            cfg.start.rules[ctx.source].action = ACTION_AUTO
+            print("[pH] Auto-start enabled for " .. SourceLabel(ctx.source))
+            pH_AutoSession:StartSessionFromSource(ctx.source)
+        end
+        frame:Hide()
+    end)
+
+    frame.neverBtn:SetScript("OnClick", function()
+        local cfg = GetCfg()
+        local ctx = state.promptContext
+        if cfg and ctx and ctx.source and cfg.start and cfg.start.rules and cfg.start.rules[ctx.source] then
+            cfg.start.rules[ctx.source].action = ACTION_OFF
+            print("[pH] Auto-start disabled for " .. SourceLabel(ctx.source))
+        end
+        frame:Hide()
+    end)
+
+    frame.autoDismissTimer = 0
+    frame:Show()
+end
+
+function pH_AutoSession:ProcessActivity(activity)
+    if not activity or not activity.source then
+        return
+    end
+
+    local cfg = GetCfg()
+    if not cfg or not cfg.enabled then
         return
     end
 
     local session = pH_SessionManager:GetActiveSession()
 
-    -- Case 1: No active session - auto-start only on core metric events
     if not session then
-        if pH_Settings.autoSession.autoStart and AUTO_START_EVENTS[event] then
-            if ShouldSkipAutoStart(event, ...) then
-                return
-            end
-            local ok, message = pH_SessionManager:StartSession()
-            if ok then
-                state.lastActivityAt = GetTime()
-                state.autoPausedReason = nil
-                state.inactivityToastShown = false
-                if pH_HUD then
-                    pH_HUD:Update()
-                end
-                print("[pH] Auto-started session: " .. (message or ""))
-            end
+        local action = self:GetSourceAction("start", activity.source)
+        local shouldPrompt = self:ShouldPrompt(activity.source, action, activity.confidence)
+        if shouldPrompt then
+            self:ShowStartPrompt(activity.source, activity.confidence)
+            return
+        end
+        if action == ACTION_AUTO then
+            self:StartSessionFromSource(activity.source)
         end
         return
     end
 
-    -- Case 2: Session is paused - auto-resume if enabled and was auto-paused
     if session.pausedAt then
-        -- Only auto-resume if it was auto-paused (not manually paused)
-        if pH_Settings.autoSession.autoResume and state.autoPausedReason then
-            if ShouldSkipAutoStart(event, ...) then
-                return
-            end
-            local ok, message = pH_SessionManager:ResumeSession()
-            if ok then
-                state.lastActivityAt = GetTime()
-                local reason = state.autoPausedReason
-                state.autoPausedReason = nil
-                state.inactivityToastShown = false
-                if pH_HUD then
-                    pH_HUD:Update()
-                end
-                if reason == "instance" then
-                    print("[pH] Session resumed (first activity in instance).")
-                else
-                    print("[pH] Auto-resumed session: " .. (message or ""))
-                end
-            end
+        if cfg.resume and cfg.resume.onlyIfAutoPaused and session.autoSessionPauseReason == "manual" then
+            return
+        end
+
+        local action = self:GetSourceAction("resume", activity.source)
+        if action == ACTION_AUTO then
+            self:ResumeSessionFromSource(activity.source)
         end
         return
     end
 
-    -- Case 3: Active session - update activity timestamp
     state.lastActivityAt = GetTime()
-    state.inactivityToastShown = false  -- Reset toast flag on activity
+    state.inactivityToastShown = false
 end
 
--- Handle PLAYER_ENTERING_WORLD - check for instance entry
+function pH_AutoSession:HandleEvent(event, ...)
+    local cfg = GetCfg()
+    if not cfg or not cfg.enabled then
+        return
+    end
+
+    if not EVENT_INTEREST[event] then
+        return
+    end
+
+    if event == "QUEST_TURNED_IN" then
+        local _, xpReward, moneyReward = ...
+        self:MarkQuestTurnIn((xpReward or 0) > 0, (moneyReward or 0) > 0)
+        if xpReward and xpReward > 0 then
+            self:ProcessActivity({ source = "xp.quest_turnin", confidence = "high", amount = xpReward, shouldSuppress = false })
+        end
+        if moneyReward and moneyReward > 0 then
+            self:ProcessActivity({ source = "gold.quest_reward", confidence = "high", amount = moneyReward, shouldSuppress = false })
+        end
+        return
+    end
+
+    local activity = self:ClassifyActivity(event, ...)
+    self:ProcessActivity(activity)
+end
+
 function pH_AutoSession:OnPlayerEnteringWorld()
-    if not pH_Settings.autoSession or not pH_Settings.autoSession.enabled then
+    local cfg = GetCfg()
+    if not cfg or not cfg.enabled then
         return
     end
 
-    if not pH_Settings.autoSession.instanceStart then
+    if not cfg.instanceStart or not cfg.instanceStart.enabled then
         return
     end
 
-    -- Check if we're entering an instance
-    local isInstance, instanceType = IsInInstance()
+    local isInstance = IsInInstance()
     if not isInstance then
         return
     end
 
-    -- Only start if we don't already have an active session
-    local session = pH_SessionManager:GetActiveSession()
-    if session then
+    if pH_SessionManager:GetActiveSession() then
         return
     end
 
-    -- Start session paused; will auto-resume on first activity (loot, XP, honor, etc.)
-    local ok, message = pH_SessionManager:StartSession()
-    if ok then
-        pH_SessionManager:PauseSession()
-        state.lastActivityAt = GetTime()
-        state.autoPausedReason = "instance"
-        state.inactivityToastShown = false
-        if pH_HUD then
-            pH_HUD:Update()
-        end
-        print("[pH] Session started (paused in instance). It will resume when you loot, gain XP, complete a quest, or earn honor.")
+    local ok = pH_SessionManager:StartSession("auto", "instance.entry")
+    if not ok then
+        return
     end
+
+    if cfg.instanceStart.mode == INSTANCE_START_PAUSED then
+        pH_SessionManager:PauseSession("instance")
+        print("[pH] Session started in instance (paused). It will resume on configured activity.")
+    else
+        print("[pH] Session started in instance.")
+    end
+
+    MaybeShowHUD()
 end
 
--- Check for inactivity and show prompt or auto-pause
-function pH_AutoSession:CheckInactivity()
-    if not pH_Settings.autoSession or not pH_Settings.autoSession.enabled then
-        return
-    end
-
-    local session = pH_SessionManager:GetActiveSession()
-    if not session then
-        state.wasPausedLastCheck = nil
-        return
-    end
-
-    -- Just resumed (was paused last check, now not paused): reset activity and don't show toast
-    if session.pausedAt then
-        state.wasPausedLastCheck = true
-        return
-    end
-    if state.wasPausedLastCheck then
-        state.lastActivityAt = GetTime()
-        state.inactivityToastShown = false
-        state.wasPausedLastCheck = false
-        self:HideToast()
-        return
-    end
-    state.wasPausedLastCheck = false
-
-    -- If no activity timestamp yet, initialize it
-    if not state.lastActivityAt then
-        state.lastActivityAt = GetTime()
-        return
-    end
-
-    local now = GetTime()
-    local idleSeconds = now - state.lastActivityAt
-    local promptMin = pH_Settings.autoSession.inactivityPromptMin or 5
-    local pauseMin = pH_Settings.autoSession.inactivityPauseMin or 10
-
-    -- Show prompt at 5 minutes
-    if idleSeconds >= (promptMin * 60) and not state.inactivityToastShown then
-        self:ShowInactivityToast()
-        state.inactivityToastShown = true
-    end
-
-    -- Auto-pause at 10 minutes
-    if idleSeconds >= (pauseMin * 60) then
-        local ok, message = pH_SessionManager:PauseSession()
-        if ok then
-            state.autoPausedReason = "inactivity"
-            state.inactivityToastShown = false
-            self:HideToast()
-            if pH_HUD then
-                pH_HUD:Update()
-            end
-            print("[pH] Auto-paused session due to inactivity: " .. (message or ""))
-        end
-    end
-end
-
--- Handle AFK flag changes
-function pH_AutoSession:OnPlayerFlagsChanged(unit)
-    if not pH_Settings.autoSession or not pH_Settings.autoSession.enabled then
-        return
-    end
-
-    if not pH_Settings.autoSession.afkPause then
-        return
-    end
-
-    local session = pH_SessionManager:GetActiveSession()
-    if not session then
-        return
-    end
-
-    local isAFK = UnitIsAFK("player")
-
-    if isAFK and not session.pausedAt then
-        -- Pause on AFK
-        local ok, message = pH_SessionManager:PauseSession()
-        if ok then
-            state.autoPausedReason = "afk"
-            state.inactivityToastShown = false
-            self:HideToast()
-            if pH_HUD then
-                pH_HUD:Update()
-            end
-            print("[pH] Auto-paused session (AFK): " .. (message or ""))
-        end
-    elseif not isAFK and session.pausedAt and state.autoPausedReason == "afk" then
-        -- Resume on un-AFK (only if it was auto-paused due to AFK)
-        if pH_Settings.autoSession.autoResume then
-            local ok, message = pH_SessionManager:ResumeSession()
-            if ok then
-                state.lastActivityAt = GetTime()
-                state.autoPausedReason = nil
-                state.inactivityToastShown = false
-                if pH_HUD then
-                    pH_HUD:Update()
-                end
-                print("[pH] Auto-resumed session (no longer AFK): " .. (message or ""))
-            end
-        end
-    end
-end
-
--- Create toast UI frame (lazy initialization)
 local function CreateToastUI()
     if state.toastFrame then
         return state.toastFrame
@@ -399,12 +1011,10 @@ local function CreateToastUI()
     toast:EnableMouse(true)
     toast:Hide()
 
-    -- Background
     local bg = toast:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(unpack(pH_Colors.BG_PARCHMENT))
 
-    -- Border
     toast:SetBackdrop({
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
         edgeSize = 12,
@@ -412,7 +1022,6 @@ local function CreateToastUI()
     })
     toast:SetBackdropBorderColor(unpack(pH_Colors.BORDER_BRONZE))
 
-    -- Message text (anchored above button row so it never overlaps)
     local messageText = toast:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     messageText:SetPoint("TOP", toast, "TOP", 0, -12)
     messageText:SetPoint("LEFT", toast, "LEFT", 12, 0)
@@ -424,7 +1033,6 @@ local function CreateToastUI()
     messageText:SetWordWrap(true)
     toast.messageText = messageText
 
-    -- Action button (e.g., "Pause" or "Start")
     local actionBtn = CreateFrame("Button", nil, toast, "UIPanelButtonTemplate")
     actionBtn:SetSize(90, 24)
     actionBtn:SetPoint("BOTTOMLEFT", toast, "BOTTOM", 12, 10)
@@ -435,7 +1043,6 @@ local function CreateToastUI()
     end)
     toast.actionBtn = actionBtn
 
-    -- Dismiss button
     local dismissBtn = CreateFrame("Button", nil, toast, "UIPanelButtonTemplate")
     dismissBtn:SetSize(90, 24)
     dismissBtn:SetPoint("BOTTOMRIGHT", toast, "BOTTOM", -12, 10)
@@ -445,12 +1052,10 @@ local function CreateToastUI()
     end)
     toast.dismissBtn = dismissBtn
 
-    -- Auto-dismiss timer
     toast.autoDismissTimer = 0
-
-    toast:SetScript("OnUpdate", function(self, elapsed)
-        self.autoDismissTimer = self.autoDismissTimer + elapsed
-        if self.autoDismissTimer >= 30 then
+    toast:SetScript("OnUpdate", function(selfFrame, elapsed)
+        selfFrame.autoDismissTimer = selfFrame.autoDismissTimer + elapsed
+        if selfFrame.autoDismissTimer >= 30 then
             pH_AutoSession:HideToast()
         end
     end)
@@ -459,14 +1064,8 @@ local function CreateToastUI()
     return toast
 end
 
--- Show inactivity toast prompt
 function pH_AutoSession:ShowInactivityToast()
     local toast = CreateToastUI()
-    if not toast then
-        return
-    end
-
-    -- Position below HUD if it exists
     local hudFrame = _G["pH_HUD_Frame"]
     if hudFrame and hudFrame:IsVisible() then
         toast:SetPoint("TOP", hudFrame, "BOTTOM", 0, -8)
@@ -477,13 +1076,10 @@ function pH_AutoSession:ShowInactivityToast()
     toast.messageText:SetText("No activity detected. Pause session?")
     toast.actionBtn:SetText("Pause")
     toast.actionCallback = function()
-        local ok, message = pH_SessionManager:PauseSession()
+        local ok, message = pH_SessionManager:PauseSession("inactivity")
         if ok then
-            state.autoPausedReason = "inactivity"
             state.inactivityToastShown = false
-            if pH_HUD then
-                pH_HUD:Update()
-            end
+            MaybeShowHUD()
             print("[pH] Session paused: " .. (message or ""))
         end
     end
@@ -492,12 +1088,265 @@ function pH_AutoSession:ShowInactivityToast()
     toast:Show()
 end
 
--- Hide toast
 function pH_AutoSession:HideToast()
     if state.toastFrame then
         state.toastFrame:Hide()
     end
 end
 
--- Export
+function pH_AutoSession:CheckInactivity()
+    local cfg = GetCfg()
+    if not cfg or not cfg.enabled then
+        return
+    end
+
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        state.wasPausedLastCheck = nil
+        return
+    end
+
+    if session.pausedAt then
+        state.wasPausedLastCheck = true
+        return
+    end
+
+    if state.wasPausedLastCheck then
+        state.lastActivityAt = GetTime()
+        state.inactivityToastShown = false
+        state.wasPausedLastCheck = false
+        self:HideToast()
+        return
+    end
+    state.wasPausedLastCheck = false
+
+    if not state.lastActivityAt then
+        state.lastActivityAt = GetTime()
+        return
+    end
+
+    local idleSeconds = GetTime() - state.lastActivityAt
+    local promptMin = cfg.pause and cfg.pause.inactivityPromptMin or 5
+    local pauseMin = cfg.pause and cfg.pause.inactivityPauseMin or 10
+
+    if idleSeconds >= (promptMin * 60) and not state.inactivityToastShown then
+        self:ShowInactivityToast()
+        state.inactivityToastShown = true
+    end
+
+    if idleSeconds >= (pauseMin * 60) then
+        local ok, message = pH_SessionManager:PauseSession("inactivity")
+        if ok then
+            state.inactivityToastShown = false
+            self:HideToast()
+            MaybeShowHUD()
+            print("[pH] Auto-paused session due to inactivity: " .. (message or ""))
+        end
+    end
+end
+
+function pH_AutoSession:OnPlayerFlagsChanged(unit)
+    local cfg = GetCfg()
+    if not cfg or not cfg.enabled then
+        return
+    end
+    if unit ~= "player" then
+        return
+    end
+    if not cfg.pause or not cfg.pause.afkEnabled then
+        return
+    end
+
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return
+    end
+
+    local isAFK = UnitIsAFK("player")
+
+    if isAFK and not session.pausedAt then
+        local ok, message = pH_SessionManager:PauseSession("afk")
+        if ok then
+            state.inactivityToastShown = false
+            self:HideToast()
+            MaybeShowHUD()
+            print("[pH] Auto-paused session (AFK): " .. (message or ""))
+        end
+        return
+    end
+
+    if not isAFK and session.pausedAt and session.autoSessionPauseReason == "afk" then
+        local action = self:GetSourceAction("resume", "xp.mob_kill")
+        if action == ACTION_AUTO then
+            local ok, message = pH_SessionManager:ResumeSession("auto", "afk_clear")
+            if ok then
+                state.lastActivityAt = GetTime()
+                state.inactivityToastShown = false
+                MaybeShowHUD()
+                print("[pH] Auto-resumed session (no longer AFK): " .. (message or ""))
+            end
+        end
+    end
+end
+
+function pH_AutoSession:ApplyProfile(profile)
+    local cfg = GetCfg()
+    if not cfg then
+        return false, "Auto-session settings unavailable"
+    end
+    if profile ~= PROFILE_MANUAL and profile ~= PROFILE_BALANCED and profile ~= PROFILE_HANDSFREE then
+        return false, "Invalid profile"
+    end
+
+    local startRules, resumeRules = BuildProfile(profile)
+    cfg.profiles.default = profile
+    cfg.start.rules = startRules
+    cfg.resume.rules = resumeRules
+    cfg.resume.onlyIfAutoPaused = true
+
+    -- Keep hard safety defaults
+    cfg.start.rules["gold.vendor_sale"].action = ACTION_OFF
+    cfg.resume.rules["gold.vendor_sale"].action = ACTION_OFF
+    cfg.start.rules["gold.mail"].action = ACTION_OFF
+    cfg.resume.rules["gold.mail"].action = ACTION_OFF
+    cfg.start.rules["gold.auction_payout"].action = ACTION_OFF
+    cfg.resume.rules["gold.auction_payout"].action = ACTION_OFF
+    cfg.start.rules["gold.trade_or_cod"].action = ACTION_OFF
+    cfg.resume.rules["gold.trade_or_cod"].action = ACTION_OFF
+
+    return true
+end
+
+function pH_AutoSession:SetRule(kind, source, action)
+    local cfg = GetCfg()
+    if not cfg then
+        return false, "Auto-session settings unavailable"
+    end
+    local validSource = SOURCE_LABELS[source] ~= nil
+    if not validSource then
+        return false, "Unknown source: " .. tostring(source)
+    end
+    if kind ~= "start" and kind ~= "resume" then
+        return false, "Kind must be start or resume"
+    end
+
+    action = NormalizeAction(action, kind == "start")
+    if not action then
+        return false, "Invalid action"
+    end
+
+    local rules = (kind == "start") and cfg.start.rules or cfg.resume.rules
+    if not rules[source] then
+        rules[source] = { action = ACTION_OFF }
+    end
+    rules[source].action = action
+    return true
+end
+
+function pH_AutoSession:SetPromptMode(mode)
+    local cfg = GetCfg()
+    if not cfg then
+        return false, "Auto-session settings unavailable"
+    end
+    if mode ~= PROMPT_NEVER and mode ~= PROMPT_SMART and mode ~= PROMPT_ALWAYS then
+        return false, "Invalid prompt mode"
+    end
+    cfg.prompt.mode = mode
+    return true
+end
+
+function pH_AutoSession:GetStatusLines()
+    local cfg = GetCfg()
+    if not cfg then
+        return { "Auto-session settings unavailable" }
+    end
+
+    local lines = {}
+    table.insert(lines, string.format("  Enabled: %s", cfg.enabled and "Yes" or "No"))
+    table.insert(lines, string.format("  Profile: %s", cfg.profiles.default))
+    table.insert(lines, string.format("  Prompt mode: %s", cfg.prompt.mode))
+    table.insert(lines, string.format("  Instance start: %s (%s)", cfg.instanceStart.enabled and "Yes" or "No", cfg.instanceStart.mode))
+    table.insert(lines, string.format("  AFK pause: %s", cfg.pause.afkEnabled and "Yes" or "No"))
+    table.insert(lines, string.format("  Inactivity prompt: %d min", cfg.pause.inactivityPromptMin or 5))
+    table.insert(lines, string.format("  Inactivity pause: %d min", cfg.pause.inactivityPauseMin or 10))
+    table.insert(lines, string.format("  Resume only if auto-paused: %s", cfg.resume.onlyIfAutoPaused and "Yes" or "No"))
+    return lines
+end
+
+function pH_AutoSession:OpenSettingsPanel()
+    -- Keep UI footprint minimal for classic compatibility: status + usage helper frame
+    if not self.settingsFrame then
+        local frame = CreateFrame("Frame", "pH_AutoSession_Settings", UIParent, "BackdropTemplate")
+        frame:SetSize(420, 260)
+        frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+        frame:SetFrameStrata("DIALOG")
+        frame:SetFrameLevel(500)
+        frame:SetBackdrop({
+            bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+            edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+            tile = true,
+            tileSize = 16,
+            edgeSize = 16,
+            insets = { left = 4, right = 4, top = 4, bottom = 4 },
+        })
+        frame:EnableMouse(true)
+        frame:SetMovable(true)
+        frame:RegisterForDrag("LeftButton")
+        frame:SetScript("OnDragStart", frame.StartMoving)
+        frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+
+        local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOP", frame, "TOP", 0, -12)
+        title:SetText("pH Auto Session Settings")
+
+        local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
+
+        local body = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        body:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -42)
+        body:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
+        body:SetJustifyH("LEFT")
+        body:SetJustifyV("TOP")
+        body:SetText("Use /ph auto status, /ph auto profile <manual|balanced|handsfree>,\n/ph auto set <start|resume> <source> <off|prompt|auto>,\n/ph auto prompt <never|smart|always>.\n\nCommon sources:\n  xp.mob_kill, xp.quest_turnin, xp.zone_discovery\n  gold.mob_loot_coin, gold.vendor_sale, gold.mail\n  rep.mob_kill, rep.quest_turnin\n  gathering.node")
+
+        local profileBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+        profileBtn:SetSize(110, 24)
+        profileBtn:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 16, 16)
+        profileBtn:SetText("Balanced")
+        profileBtn:SetScript("OnClick", function()
+            pH_AutoSession:ApplyProfile(PROFILE_BALANCED)
+            print("[pH] Auto-session profile set to balanced")
+        end)
+
+        local manualBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+        manualBtn:SetSize(110, 24)
+        manualBtn:SetPoint("LEFT", profileBtn, "RIGHT", 8, 0)
+        manualBtn:SetText("Manual")
+        manualBtn:SetScript("OnClick", function()
+            pH_AutoSession:ApplyProfile(PROFILE_MANUAL)
+            print("[pH] Auto-session profile set to manual")
+        end)
+
+        local handsfreeBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+        handsfreeBtn:SetSize(110, 24)
+        handsfreeBtn:SetPoint("LEFT", manualBtn, "RIGHT", 8, 0)
+        handsfreeBtn:SetText("Handsfree")
+        handsfreeBtn:SetScript("OnClick", function()
+            pH_AutoSession:ApplyProfile(PROFILE_HANDSFREE)
+            print("[pH] Auto-session profile set to handsfree")
+        end)
+
+        self.settingsFrame = frame
+    end
+
+    self.settingsFrame:Show()
+end
+
+function pH_AutoSession:PrintSources()
+    print("[pH] Source keys:")
+    for _, source in ipairs(ALL_SOURCES) do
+        print("  " .. source .. " - " .. SourceLabel(source))
+    end
+end
+
 _G.pH_AutoSession = pH_AutoSession

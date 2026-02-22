@@ -4,7 +4,7 @@
     Shows real-time session metrics in accounting-style layout.
 ]]
 
--- luacheck: globals pH_Settings pH_History pH_Ledger pH_SessionManager pH_Index SlashCmdList
+-- luacheck: globals pH_Settings pH_History pH_Ledger pH_SessionManager pH_Index SlashCmdList pH_AutoSession
 
 local pH_HUD = {}
 
@@ -777,11 +777,11 @@ function pH_HUD:Initialize()
     local bodyTopOffset = -(PADDING + HEADER_HEIGHT + BODY_GAP)
     local GAP = 6
 
-    -- Help link (in header row, between logo and Start button - shown only when no session)
+    -- Help link (in header row, shown only when no session)
     local helpLink = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     helpLink:SetFont("Fonts\\FRIZQT__.TTF", 12, "")  -- Same font as title for vertical alignment
     helpLink:SetPoint("LEFT", hudFrame.title, "RIGHT", GAP, 0)
-    helpLink:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -GAP, 0)
+    helpLink:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -74, 0)
     helpLink:SetText("Help")
     helpLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
     local helpLinkBtn = CreateFrame("Button", nil, hudFrame)
@@ -806,6 +806,37 @@ function pH_HUD:Initialize()
     helpLinkBtn:Hide()
     hudFrame.startHelpLink = helpLink
     hudFrame.startHelpLinkBtn = helpLinkBtn
+
+    -- Auto settings link (header row; source-aware auto-session settings)
+    local autoLink = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    autoLink:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
+    autoLink:SetPoint("LEFT", helpLink, "RIGHT", GAP + 4, 0)
+    autoLink:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -GAP, 0)
+    autoLink:SetText("Auto")
+    autoLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+
+    local autoLinkBtn = CreateFrame("Button", nil, hudFrame)
+    autoLinkBtn:SetAllPoints(autoLink)
+    autoLinkBtn:SetScript("OnClick", function()
+        if type(pH_AutoSession) == "table" and pH_AutoSession.OpenSettingsPanel then
+            pH_AutoSession:OpenSettingsPanel()
+        elseif SlashCmdList["GOLDPH"] then
+            SlashCmdList["GOLDPH"]("auto status")
+        end
+    end)
+    autoLinkBtn:SetScript("OnEnter", function()
+        autoLink:SetTextColor(1, 1, 1)
+        GameTooltip:SetOwner(autoLink, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Open Auto Session settings")
+        GameTooltip:Show()
+    end)
+    autoLinkBtn:SetScript("OnLeave", function()
+        autoLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+        GameTooltip:Hide()
+    end)
+    autoLinkBtn:Hide()
+    hudFrame.startAutoLink = autoLink
+    hudFrame.startAutoLinkBtn = autoLinkBtn
 
     -- Placeholder startScreen (empty - expanded panel uses startExpanded; collapsed uses header row only)
     local startScreen = CreateFrame("Frame", nil, hudFrame)
@@ -1706,6 +1737,12 @@ function pH_HUD:Update()
             if hudFrame.startHelpLinkBtn then
                 hudFrame.startHelpLinkBtn:Show()
             end
+            if hudFrame.startAutoLink then
+                hudFrame.startAutoLink:Show()
+            end
+            if hudFrame.startAutoLinkBtn then
+                hudFrame.startAutoLinkBtn:Show()
+            end
             if hudFrame.startExpanded then
                 hudFrame.startExpanded:Show()
                 UpdateStartPanelContent()
@@ -1741,6 +1778,12 @@ function pH_HUD:Update()
             end
             if hudFrame.startHelpLinkBtn then
                 hudFrame.startHelpLinkBtn:Show()
+            end
+            if hudFrame.startAutoLink then
+                hudFrame.startAutoLink:Show()
+            end
+            if hudFrame.startAutoLinkBtn then
+                hudFrame.startAutoLinkBtn:Show()
             end
             
             -- Update expand button icon
@@ -1823,6 +1866,12 @@ function pH_HUD:Update()
     end
     if hudFrame.startHelpLinkBtn then
         hudFrame.startHelpLinkBtn:Hide()
+    end
+    if hudFrame.startAutoLink then
+        hudFrame.startAutoLink:Hide()
+    end
+    if hudFrame.startAutoLinkBtn then
+        hudFrame.startAutoLinkBtn:Hide()
     end
     -- Restore normal bg opacity
     hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], PH_BG_PARCHMENT[4])
