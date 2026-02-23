@@ -117,50 +117,43 @@ function pH_Index:Build()
     -- Temporary storage for zone aggregates
     local zoneTotals = {}  -- [zone] -> {totalPerHourSum, count, bestPerHour, bestSessionId, nodesSum, nodesCount, bestNodes}
 
-    -- Track processed session IDs to prevent duplicates
-    local processedSessions = {}
+    -- Build a set of active session IDs (exclude from history)
+    local activeSessionIds = {}
+    if pH_DB_Account.activeSessions then
+        for _, active in pairs(pH_DB_Account.activeSessions) do
+            if active and active.id ~= nil then
+                activeSessionIds[tostring(active.id)] = true
+            end
+        end
+    end
 
-    -- Scan all sessions (skip active session)
+    -- Scan all sessions (skip active sessions)
     for sessionId, session in pairs(pH_DB_Account.sessions) do
         -- Normalize key: WoW SavedVariables may use string keys ("165"); use numeric for consistency
         local key = (type(sessionId) == "number") and sessionId or tonumber(sessionId)
         key = key or sessionId  -- fallback for non-numeric keys
 
-        -- Skip if already processed (prevent duplicates)
-        if processedSessions[key] then
-            if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
-                print(string.format("[pH Index] Warning: Duplicate session ID %s detected, skipping", tostring(sessionId)))
-            end
-        else
-            processedSessions[key] = true
+        -- Skip if this is an active session (should not be in history)
+        local shouldProcess = not activeSessionIds[tostring(key)] and not activeSessionIds[tostring(sessionId)]
 
-            -- Skip if this is the active session (should not be in history)
-            local shouldProcess = true
-            if pH_DB_Account.activeSession then
-                local activeId = pH_DB_Account.activeSession.id
-                if activeId == key or activeId == sessionId or tostring(activeId) == tostring(sessionId) then
-                    shouldProcess = false
+        -- Get metrics using SessionManager (source of truth)
+        -- Wrap in pcall; skip sessions that error (e.g. legacy/malformed data)
+        local metrics
+        if shouldProcess then
+            local ok, result = pcall(function()
+                return pH_SessionManager:GetMetrics(session)
+            end)
+            if ok and result then
+                metrics = result
+            else
+                shouldProcess = false
+                if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose and not ok then
+                    print(string.format("[pH Index] Skip session %s: %s", tostring(key), tostring(result)))
                 end
             end
+        end
 
-            -- Get metrics using SessionManager (source of truth)
-            -- Wrap in pcall; skip sessions that error (e.g. legacy/malformed data)
-            local metrics
-            if shouldProcess then
-                local ok, result = pcall(function()
-                    return pH_SessionManager:GetMetrics(session)
-                end)
-                if ok and result then
-                    metrics = result
-                else
-                    shouldProcess = false
-                    if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose and not ok then
-                        print(string.format("[pH Index] Skip session %s: %s", tostring(key), tostring(result)))
-                    end
-                end
-            end
-
-            if shouldProcess then
+        if shouldProcess then
             -- Build character key (use session metadata for cross-character filter; fallback for old sessions)
             local charKey = GetCharKey(
                 session.character or UnitName("player") or "Unknown",
@@ -351,8 +344,7 @@ function pH_Index:Build()
                     end
                 end
             end
-            end  -- Close shouldProcess
-        end  -- Close processedSessions check
+        end  -- Close shouldProcess
     end
 
     -- Finalize item aggregates (compute avgValueEach)
@@ -378,18 +370,6 @@ function pH_Index:Build()
             bestNodesPerHour = zt.bestNodes,
         }
     end
-
-    -- Build sorted arrays (deduplicate sessionIds first)
-    -- Create a set to track seen session IDs
-    local seen = {}
-    local uniqueSessions = {}
-    for _, sessionId in ipairs(self.sessions) do
-        if not seen[sessionId] then
-            seen[sessionId] = true
-            table.insert(uniqueSessions, sessionId)
-        end
-    end
-    self.sessions = uniqueSessions
 
     -- 1. Sort by totalPerHour descending
     local sortedByTotal = {}

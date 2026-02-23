@@ -1060,24 +1060,6 @@ function pH_Debug:ResetTestHUD()
     print(COLOR_GREEN .. "[pH] Fresh session started for testing" .. COLOR_RESET)
 end
 
---------------------------------------------------
--- Session Duplication Detection and Repair
---------------------------------------------------
-
--- Build a content signature for a session (used for duplicate detection)
-local function BuildSessionSignature(session)
-    -- Extract key fields that uniquely identify a session
-    local startedAt = session.startedAt or 0
-    local zone = session.zone or "Unknown"
-    local character = session.character or "Unknown"
-    local realm = session.realm or "Unknown"
-    local durationSec = session.durationSec or 0
-    local cash = pH_Ledger:GetBalance(session, "Assets:Cash") or 0
-
-    -- Build a pipe-separated signature
-    return string.format("%d|%s|%s|%s|%d|%d",
-        startedAt, zone, character, realm, durationSec, cash)
-end
 
 -- Show data summary (session counts, active session, per-char breakdown)
 function pH_Debug:ShowData()
@@ -1090,7 +1072,8 @@ function pH_Debug:ShowData()
     local count = 0
     for _ in pairs(sessions) do count = count + 1 end
 
-    local active = pH_DB_Account.activeSession
+    local activeSessions = pH_DB_Account.activeSessions or {}
+    local activeCount = 0
     local currentChar = UnitName("player") or "Unknown"
     local currentRealm = GetRealmName() or "Unknown"
     local currentFaction = UnitFactionGroup("player") or "Unknown"
@@ -1112,13 +1095,21 @@ function pH_Debug:ShowData()
             print(COLOR_RED .. "  -> Index has data but Query returns 0 (filter bug?)" .. COLOR_RESET)
         end
     end
-    if active then
-        local owner = (active.character or "?") .. "-" .. (active.realm or "?") .. "-" .. (active.faction or "?")
-        local isCurrent = (active.character == currentChar and active.realm == currentRealm and active.faction == currentFaction)
-        print(string.format("  Active session: #%d (owner: %s) %s",
-            active.id, owner, isCurrent and COLOR_GREEN .. "(this char)" .. COLOR_RESET or COLOR_YELLOW .. "(other char)" .. COLOR_RESET))
+    local currentActive = nil
+    for charKey, active in pairs(activeSessions) do
+        if active then
+            activeCount = activeCount + 1
+            local marker = (charKey == currentCharKey) and (COLOR_GREEN .. " (this char)" .. COLOR_RESET) or ""
+            print(string.format("  Active session [%s]: #%d%s", charKey, active.id, marker))
+            if charKey == currentCharKey then
+                currentActive = active
+            end
+        end
+    end
+    if activeCount == 0 then
+        print("  Active sessions: none")
     else
-        print("  Active session: none")
+        print(string.format("  Active sessions total: %d", activeCount))
     end
     print(string.format("  Current char: %s", currentCharKey))
 
@@ -1133,8 +1124,8 @@ function pH_Debug:ShowData()
         local ck = getCharKey(session)
         byChar[ck] = (byChar[ck] or 0) + 1
     end
-    if active and not sessions[active.id] then
-        local ck = getCharKey(active)
+    if currentActive and not sessions[currentActive.id] then
+        local ck = getCharKey(currentActive)
         byChar[ck] = (byChar[ck] or 0) + 1
     end
 
@@ -1147,178 +1138,6 @@ function pH_Debug:ShowData()
     end
     print("  Use Char: All dropdown in History to see all characters.")
     print(COLOR_RESET)
-end
-
--- Scan database for duplicate sessions
-function pH_Debug:ScanForDuplicates()
-    if not pH_DB_Account or not pH_DB_Account.sessions then
-        return {
-            duplicateGroups = {},
-            totalDuplicates = 0,
-            totalUnique = 0,
-        }
-    end
-
-    print(COLOR_YELLOW .. "[pH] Scanning for duplicate sessions..." .. COLOR_RESET)
-
-    -- Build signature -> session IDs mapping
-    local sessionsBySig = {}  -- [signature] -> {id1, id2, ...}
-    local totalSessions = 0
-
-    for sessionId, session in pairs(pH_DB_Account.sessions) do
-        -- Skip active session (never touch it)
-        if not pH_DB_Account.activeSession or pH_DB_Account.activeSession.id ~= sessionId then
-            local sig = BuildSessionSignature(session)
-
-            if not sessionsBySig[sig] then
-                sessionsBySig[sig] = {}
-            end
-            table.insert(sessionsBySig[sig], sessionId)
-            totalSessions = totalSessions + 1
-        end
-    end
-
-    -- Find duplicate groups (2+ sessions with same signature)
-    local duplicateGroups = {}
-    local totalDuplicates = 0
-
-    for sig, sessionIds in pairs(sessionsBySig) do
-        if #sessionIds > 1 then
-            -- Sort IDs so lowest is first (canonical)
-            table.sort(sessionIds)
-
-            local canonicalId = sessionIds[1]
-            local duplicateIds = {}
-            for i = 2, #sessionIds do
-                table.insert(duplicateIds, sessionIds[i])
-                totalDuplicates = totalDuplicates + 1
-            end
-
-            -- Get session metadata for display
-            local canonicalSession = pH_DB_Account.sessions[canonicalId]
-
-            table.insert(duplicateGroups, {
-                canonical_id = canonicalId,
-                duplicate_ids = duplicateIds,
-                signature = sig,
-                metadata = {
-                    zone = canonicalSession.zone or "Unknown",
-                    character = canonicalSession.character or "Unknown",
-                    startedAt = canonicalSession.startedAt,
-                    durationSec = canonicalSession.durationSec or 0,
-                },
-            })
-        end
-    end
-
-    return {
-        duplicateGroups = duplicateGroups,
-        totalDuplicates = totalDuplicates,
-        totalUnique = totalSessions - totalDuplicates,
-    }
-end
-
--- Display duplicate scan results
-function pH_Debug:ShowDuplicates()
-    local result = self:ScanForDuplicates()
-
-    print(COLOR_YELLOW .. "=== Session Duplicate Scan ===" .. COLOR_RESET)
-    print(string.format("  Total sessions scanned: %d", result.totalUnique + result.totalDuplicates))
-    print(string.format("  Unique sessions: %d", result.totalUnique))
-    print(string.format("  Duplicate sessions: %d", result.totalDuplicates))
-    print(string.format("  Duplicate groups: %d", #result.duplicateGroups))
-    print("")
-
-    if result.totalDuplicates == 0 then
-        print(COLOR_GREEN .. "  No duplicates found! Database is clean." .. COLOR_RESET)
-    else
-        print(COLOR_RED .. string.format("  Found %d duplicate sessions in %d groups:",
-            result.totalDuplicates, #result.duplicateGroups) .. COLOR_RESET)
-        print("")
-
-        for i, group in ipairs(result.duplicateGroups) do
-            local meta = group.metadata
-            local dateStr
-            if date then
-                dateStr = date("%Y-%m-%d %H:%M", meta.startedAt)
-            else
-                dateStr = tostring(meta.startedAt)
-            end
-
-            print(string.format("  Group #%d:", i))
-            print(string.format("    Zone: %s | Character: %s", meta.zone, meta.character))
-            print(string.format("    Date: %s | Duration: %ds", dateStr, meta.durationSec))
-            print(string.format("    Canonical (keep): Session #%d", group.canonical_id))
-            print(string.format("    Duplicates (remove): %s", table.concat(group.duplicate_ids, ", ")))
-            print("")
-        end
-
-        print(COLOR_YELLOW .. "  To remove duplicates, run: /goldph debug purge-dupes confirm" .. COLOR_RESET)
-    end
-
-    print(COLOR_YELLOW .. "=============================" .. COLOR_RESET)
-end
-
--- Purge duplicate sessions from database
-function pH_Debug:PurgeDuplicates(confirm)
-    -- First scan for duplicates
-    local result = self:ScanForDuplicates()
-
-    if result.totalDuplicates == 0 then
-        print(COLOR_GREEN .. "[pH] No duplicates found. Database is clean." .. COLOR_RESET)
-        return
-    end
-
-    -- Dry run mode (show what would be removed)
-    if not confirm then
-        print(COLOR_YELLOW .. "=== Purge Duplicates (DRY RUN) ===" .. COLOR_RESET)
-        print(COLOR_RED .. "  WARNING: This will permanently delete duplicate sessions!" .. COLOR_RESET)
-        print(string.format("  Sessions to be removed: %d", result.totalDuplicates))
-        print(string.format("  Sessions to be kept: %d", result.totalUnique))
-        print("")
-
-        for i, group in ipairs(result.duplicateGroups) do
-            print(string.format("  Group #%d: Keep session #%d, remove %d duplicates",
-                i, group.canonical_id, #group.duplicate_ids))
-        end
-
-        print("")
-        print(COLOR_YELLOW .. "  IMPORTANT: Backup your SavedVariables folder first!" .. COLOR_RESET)
-        print(COLOR_YELLOW .. "  Location: WTF/Account/<YourAccount>/SavedVariables/pH.lua" .. COLOR_RESET)
-        print("")
-        print(COLOR_GREEN .. "  To proceed with removal, run: /goldph debug purge-dupes confirm" .. COLOR_RESET)
-        print(COLOR_YELLOW .. "=================================" .. COLOR_RESET)
-        return
-    end
-
-    -- Confirmed purge
-    print(COLOR_RED .. "=== Purging Duplicate Sessions ===" .. COLOR_RESET)
-    print(string.format("  Removing %d duplicate sessions...", result.totalDuplicates))
-    print("")
-
-    local removedCount = 0
-
-    for _, group in ipairs(result.duplicateGroups) do
-        for _, duplicateId in ipairs(group.duplicate_ids) do
-            if pH_DB_Account.sessions[duplicateId] then
-                pH_DB_Account.sessions[duplicateId] = nil
-                removedCount = removedCount + 1
-                print(string.format("  Removed session #%d (duplicate of #%d)", duplicateId, group.canonical_id))
-            end
-        end
-    end
-
-    -- Mark index stale for rebuild
-    if pH_Index then
-        pH_Index:MarkStale()
-    end
-
-    print("")
-    print(COLOR_GREEN .. string.format("  Successfully removed %d duplicate sessions!", removedCount) .. COLOR_RESET)
-    print(string.format("  Kept %d unique sessions", result.totalUnique))
-    print("")
-    print(COLOR_YELLOW .. "  Run /reload to rebuild the history index" .. COLOR_RESET)
-    print(COLOR_RED .. "=================================" .. COLOR_RESET)
 end
 
 -- Export module

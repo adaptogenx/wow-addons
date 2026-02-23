@@ -92,6 +92,13 @@ local METRIC_LABELS = {
     honor = "HONOR / HOUR",
 }
 
+local METRIC_TOOLTIP_LABELS = {
+    gold = "Gold / Hour",
+    xp = "XP / Hour",
+    rep = "Rep / Hour",
+    honor = "Honor / Hour",
+}
+
 -- Header icon textures (Classic-safe, order: pause/resume, history, min/max)
 local HEADER_ICON_PAUSE = "Interface\\TimeManager\\PauseButton"
 local HEADER_ICON_PLAY = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up"
@@ -175,6 +182,20 @@ local function FormatRateForMicroBar(metricKey, rate)
             return string.format("%d", rate)
         end
     end
+end
+
+local function ShowMicroMetricTooltip(anchor, metricKey, state)
+    if not anchor or not metricKey or not state then
+        return
+    end
+    GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
+    GameTooltip:SetText(METRIC_TOOLTIP_LABELS[metricKey] or metricKey)
+    GameTooltip:AddLine(string.format("Current: %s", state.lastUpdatedText ~= "" and state.lastUpdatedText or "0"), 0.86, 0.82, 0.70)
+    GameTooltip:AddLine("Bar shows current rate relative to this session's peak (with a minimum baseline).", 0.62, 0.58, 0.50, true)
+    if state.icon and state.icon:GetAlpha() < 1 then
+        GameTooltip:AddLine("No tracked gain this session.", 0.62, 0.58, 0.50)
+    end
+    GameTooltip:Show()
 end
 
 -- Reposition tiles horizontally in fixed order (gold, rep, xp, honor)
@@ -720,9 +741,18 @@ function pH_HUD:Initialize()
     local tileWidth = 50
 
     for metricKey, state in pairs(metricStates) do
+        local key = metricKey
+        local metricState = state
         -- Create tile container (child of bodyContainer)
         local tile = CreateFrame("Frame", nil, bodyContainer)
         tile:SetSize(tileWidth, TILE_HEIGHT)
+        tile:EnableMouse(true)
+        tile:SetScript("OnEnter", function(self)
+            ShowMicroMetricTooltip(self, key, metricState)
+        end)
+        tile:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
         state.tile = tile
 
         -- Icon (compact, positioned at top left) - 12px for ultra-compact

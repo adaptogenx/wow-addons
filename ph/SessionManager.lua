@@ -34,6 +34,33 @@ local function GetSessionCharKey(session)
     return character .. "-" .. realm .. "-" .. faction
 end
 
+local function GetCurrentCharKey()
+    local character = UnitName("player") or "Unknown"
+    local realm = GetRealmName() or "Unknown"
+    local faction = UnitFactionGroup("player") or "Unknown"
+    return character .. "-" .. realm .. "-" .. faction
+end
+
+local function EnsureActiveSessions()
+    if not pH_DB_Account.activeSessions then
+        pH_DB_Account.activeSessions = {}
+    end
+    return pH_DB_Account.activeSessions
+end
+
+local function IsSessionActiveAnywhere(sessionId)
+    if not sessionId then
+        return false
+    end
+    local activeSessions = EnsureActiveSessions()
+    for _, active in pairs(activeSessions) do
+        if active and tonumber(active.id) == tonumber(sessionId) then
+            return true
+        end
+    end
+    return false
+end
+
 local function ResolveSessionStorageKey(sessionId)
     if pH_DB_Account.sessions[sessionId] ~= nil then
         return sessionId
@@ -118,23 +145,6 @@ end
 function pH_SessionManager:StartSession()
     if self:GetActiveSession() then
         return false, "A session is already active. Stop it first with /goldph stop"
-    end
-
-    -- If another character has an active session, persist it to history so we don't lose it
-    local other = pH_DB_Account.activeSession
-    if other and not SessionOwnedByCurrentPlayer(other) then
-        local now = time()
-        if other.currentLoginAt then
-            other.accumulatedDuration = (other.accumulatedDuration or 0) + (now - other.currentLoginAt)
-            other.currentLoginAt = nil
-        end
-        other.endedAt = now
-        other.durationSec = other.accumulatedDuration or 0
-        pH_DB_Account.sessions[other.id] = other
-        pH_DB_Account.activeSession = nil
-        if pH_Index then
-            pH_Index:MarkStale()
-        end
     end
 
     -- Increment session ID
@@ -223,8 +233,9 @@ function pH_SessionManager:StartSession()
 
     -- Initialize reputation tracking (via Events.lua after session created)
 
-    -- Set as active session
-    pH_DB_Account.activeSession = session
+    -- Set as active session for the current character
+    local activeSessions = EnsureActiveSessions()
+    activeSessions[GetCurrentCharKey()] = session
 
     -- Verbose debug: log initial duration tracking state
     if pH_DB_Account.debug.verbose then
@@ -268,8 +279,9 @@ function pH_SessionManager:StopSession()
     -- Save to history
     pH_DB_Account.sessions[session.id] = session
 
-    -- Clear active session
-    pH_DB_Account.activeSession = nil
+    -- Clear active session for current character only
+    local activeSessions = EnsureActiveSessions()
+    activeSessions[GetCurrentCharKey()] = nil
 
     -- Mark index stale for rebuild
     if pH_Index then
@@ -280,30 +292,15 @@ function pH_SessionManager:StopSession()
                  self:FormatDuration(session.durationSec) .. ")"
 end
 
--- Persist an active session that belongs to another character (e.g. after switching chars).
--- Call on PLAYER_ENTERING_WORLD so orphaned sessions are saved immediately.
 function pH_SessionManager:PersistOrphanedActiveSession()
-    local other = pH_DB_Account.activeSession
-    if not other or SessionOwnedByCurrentPlayer(other) then
-        return
-    end
-    local now = time()
-    if other.currentLoginAt then
-        other.accumulatedDuration = (other.accumulatedDuration or 0) + (now - other.currentLoginAt)
-        other.currentLoginAt = nil
-    end
-    other.endedAt = now
-    other.durationSec = other.accumulatedDuration or 0
-    pH_DB_Account.sessions[other.id] = other
-    pH_DB_Account.activeSession = nil
-    if pH_Index then
-        pH_Index:MarkStale()
-    end
+    -- No-op with per-character active sessions.
+    return
 end
 
 -- Get the active session for the current character only (or nil if none or owned by another character)
 function pH_SessionManager:GetActiveSession()
-    local session = pH_DB_Account.activeSession
+    local activeSessions = EnsureActiveSessions()
+    local session = activeSessions[GetCurrentCharKey()]
     if not session then
         return nil
     end
@@ -334,7 +331,7 @@ function pH_SessionManager:SetSessionArchived(sessionId, archived, reason)
     if not session then
         return false, "Session not found"
     end
-    if pH_DB_Account.activeSession and pH_DB_Account.activeSession.id == tonumber(sessionId) then
+    if IsSessionActiveAnywhere(sessionId) then
         return false, "Cannot archive active session"
     end
 
@@ -410,7 +407,7 @@ function pH_SessionManager:DeleteSession(sessionId)
     if not session then
         return false, "Session not found"
     end
-    if pH_DB_Account.activeSession and pH_DB_Account.activeSession.id == tonumber(sessionId) then
+    if IsSessionActiveAnywhere(sessionId) then
         return false, "Cannot delete active session"
     end
 
@@ -434,8 +431,6 @@ function pH_SessionManager:MergeSessions(sessionIds)
 
     local unique = {}
     local sourceSessions = {}
-    local activeId = pH_DB_Account.activeSession and pH_DB_Account.activeSession.id or nil
-
     for _, id in ipairs(sessionIds) do
         local storageKey = ResolveSessionStorageKey(id)
         if not unique[storageKey] then
@@ -444,7 +439,7 @@ function pH_SessionManager:MergeSessions(sessionIds)
             if not session then
                 return false, string.format("Session #%s not found", tostring(id))
             end
-            if activeId and activeId == tonumber(id) then
+            if IsSessionActiveAnywhere(id) then
                 return false, "Cannot merge active session"
             end
             if session.archived then
