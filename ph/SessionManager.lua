@@ -4,7 +4,7 @@
     Handles session creation, persistence, and metrics computation.
 ]]
 
--- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax UnitClass pH_DB_Account pH_Settings UnitName GetRealmName UnitFactionGroup pH_Index
+-- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax UnitClass pH_DB_Account pH_Settings UnitName GetRealmName UnitFactionGroup pH_AutoSession
 
 local pH_SessionManager = {}
 local DEFAULT_SHORT_SESSION_SEC = 300
@@ -142,7 +142,7 @@ local function PopValidUndoEntry()
 end
 
 -- Start a new session
-function pH_SessionManager:StartSession()
+function pH_SessionManager:StartSession(startReason, startSource)
     if self:GetActiveSession() then
         return false, "A session is already active. Stop it first with /goldph stop"
     end
@@ -174,6 +174,7 @@ function pH_SessionManager:StartSession()
         accumulatedDuration = 0,  -- Total in-game seconds played this session
         currentLoginAt = now,     -- Timestamp of current login segment (nil when logged out)
         pausedAt = nil,           -- When set, session is paused (clock and events frozen)
+        autoSessionPauseReason = nil,
 
         zone = GetZoneText() or "Unknown",
 
@@ -254,6 +255,10 @@ function pH_SessionManager:StartSession()
         ))
     end
 
+    if type(pH_AutoSession) == "table" and pH_AutoSession.OnSessionStarted then
+        pH_AutoSession:OnSessionStarted(session, startReason or "manual", startSource)
+    end
+
     return true, "Session #" .. sessionId .. " started"
 end
 
@@ -282,6 +287,10 @@ function pH_SessionManager:StopSession()
     -- Clear active session for current character only
     local activeSessions = EnsureActiveSessions()
     activeSessions[GetCurrentCharKey()] = nil
+
+    if type(pH_AutoSession) == "table" and pH_AutoSession.OnSessionStopped then
+        pH_AutoSession:OnSessionStopped(session)
+    end
 
     -- Mark index stale for rebuild
     if pH_Index then
@@ -673,7 +682,7 @@ function pH_SessionManager:IsPaused(session)
 end
 
 -- Pause the active session (stop clock and do not record events until resumed)
-function pH_SessionManager:PauseSession()
+function pH_SessionManager:PauseSession(pauseReason, pauseSource)
     local session = self:GetActiveSession()
     if not session then
         return false, "No active session"
@@ -687,11 +696,15 @@ function pH_SessionManager:PauseSession()
         session.currentLoginAt = nil
     end
     session.pausedAt = now
+    session.autoSessionPauseReason = pauseReason or "manual"
+    if type(pH_AutoSession) == "table" and pH_AutoSession.OnSessionPaused then
+        pH_AutoSession:OnSessionPaused(session, session.autoSessionPauseReason, pauseSource)
+    end
     return true, "Session paused"
 end
 
 -- Resume a paused session
-function pH_SessionManager:ResumeSession()
+function pH_SessionManager:ResumeSession(resumeReason, resumeSource)
     local session = self:GetActiveSession()
     if not session then
         return false, "No active session"
@@ -700,7 +713,11 @@ function pH_SessionManager:ResumeSession()
         return false, "Session is not paused"
     end
     session.pausedAt = nil
+    session.autoSessionPauseReason = nil
     session.currentLoginAt = time()
+    if type(pH_AutoSession) == "table" and pH_AutoSession.OnSessionResumed then
+        pH_AutoSession:OnSessionResumed(session, resumeReason or "manual", resumeSource)
+    end
     return true, "Session resumed"
 end
 

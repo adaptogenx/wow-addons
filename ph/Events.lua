@@ -4,7 +4,7 @@
     Handles WoW events and routes them to accounting actions.
 ]]
 
--- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax GetNumFactions GetFactionInfo pH_DB_Account
+-- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax GetNumFactions GetFactionInfo pH_DB_Account pH_AutoSession
 -- luacheck: ignore delta
 
 local pH_Events = {}
@@ -93,6 +93,9 @@ function pH_Events:Initialize(frame)
     frame:RegisterEvent("PLAYER_XP_UPDATE") -- Phase 9 (XP tracking)
     frame:RegisterEvent("UPDATE_FACTION") -- Phase 9 (Reputation tracking)
     frame:RegisterEvent("CHAT_MSG_COMBAT_HONOR_GAIN") -- Phase 9 (Honor tracking)
+    frame:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN") -- Source-aware auto-session XP source hint
+    frame:RegisterEvent("CHAT_MSG_COMBAT_FACTION_CHANGE") -- Source-aware auto-session Rep source hint
+    frame:RegisterEvent("CHAT_MSG_SYSTEM") -- Zone discovery XP hint
     frame:RegisterEvent("MAIL_SHOW")   -- AutoSession: skip auto-start while mailbox open
     frame:RegisterEvent("MAIL_CLOSED")
 
@@ -142,6 +145,19 @@ function pH_Events:OnEvent(event, ...)
     elseif event == "MAIL_CLOSED" then
         if type(pH_AutoSession) == "table" then
             pH_AutoSession:SetMailboxOpen(false)
+        end
+    elseif event == "MERCHANT_SHOW" then
+        if type(pH_AutoSession) == "table" and pH_AutoSession.SetMerchantOpen then
+            pH_AutoSession:SetMerchantOpen(true)
+        end
+    elseif event == "MERCHANT_CLOSED" then
+        if type(pH_AutoSession) == "table" and pH_AutoSession.SetMerchantOpen then
+            pH_AutoSession:SetMerchantOpen(false)
+        end
+    elseif event == "QUEST_TURNED_IN" then
+        if type(pH_AutoSession) == "table" and pH_AutoSession.MarkQuestTurnIn then
+            local _, xpReward, moneyReward = ...
+            pH_AutoSession:MarkQuestTurnIn((xpReward or 0) > 0, (moneyReward or 0) > 0)
         end
     end
 
@@ -718,6 +734,9 @@ function pH_Events:OnUnitSpellcastSucceeded(unitTarget, castGUID, spellID)
     if spellName == "Pick Pocket" or spellName == "Pickpocket" then
         -- Set attribution window: 2 seconds after cast
         state.pickpocketActiveUntil = GetTime() + 2.0
+        if type(pH_AutoSession) == "table" and pH_AutoSession.MarkPickpocketWindow then
+            pH_AutoSession:MarkPickpocketWindow(2.0)
+        end
 
         if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
             print(string.format("[pH] Pick Pocket detected, attribution window: %.1f seconds", 2.0))
@@ -1033,6 +1052,9 @@ function pH_Events:OnBagUpdateLockboxCheck(session)
         session.pickpocket.lockboxesOpened = session.pickpocket.lockboxesOpened + opened
         state.openingLockboxUntil = GetTime() + 3.0
         state.openingLockboxItemID = openedItemID
+        if type(pH_AutoSession) == "table" and pH_AutoSession.MarkLockboxWindow then
+            pH_AutoSession:MarkLockboxWindow(3.0)
+        end
 
         if pH_DB_Account.debug.verbose then
             local name = openedItemID and (GetItemInfo(openedItemID) or "?") or "?"
@@ -1156,6 +1178,9 @@ function pH_Events:OnUseContainerItemForLockbox(bag, slot)
         -- Set attribution window: 3 seconds after opening
         state.openingLockboxUntil = GetTime() + 3.0
         state.openingLockboxItemID = itemID
+        if type(pH_AutoSession) == "table" and pH_AutoSession.MarkLockboxWindow then
+            pH_AutoSession:MarkLockboxWindow(3.0)
+        end
         session.pickpocket.lockboxesOpened = session.pickpocket.lockboxesOpened + 1
 
         if pH_DB_Account.debug.verbose then
