@@ -98,8 +98,12 @@ local HEADER_ICON_PLAY = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up"
 local HEADER_ICON_HISTORY = "Interface\\QUESTFRAME\\UI-QuestLog-BookIcon"
 local HEADER_ICON_MINUS = "Interface\\Buttons\\UI-MinusButton-Up"
 local HEADER_ICON_PLUS = "Interface\\Buttons\\UI-PlusButton-Up"
+local HEADER_ICON_SETTINGS = "Interface\\Buttons\\UI-OptionsButton"
 local ICON_GAP = 2
 local ICON_SIZE = 20  -- Match stop button height (20px)
+local OVERFLOW_ICON_SIZE = 14
+local HEADER_MIN_WIDTH = 226
+local PRIMARY_BTN_WIDTH = 78
 
 -- Color keys mapping for micro-bar colors
 local colorKeys = { gold = "GOLD", xp = "XP", rep = "REP", honor = "HONOR" }
@@ -116,6 +120,8 @@ local metricStates = {
 local METRIC_ORDER = { "gold", "rep", "xp", "honor" }
 
 local lastUpdateTime = 0
+local HideOverflowMenu
+local lastSessionStateKey = nil
 
 --------------------------------------------------
 -- Micro-Bar Helper Functions
@@ -514,10 +520,8 @@ local function EnsureMetricPanels()
     end
 end
 
---------------------------------------------------
 -- CreateHeaderIcons - Consistent icon row for all three HUD states
--- Order (right to left): Expand/Collapse | History | Pause | Start/Stop (left of pause)
---------------------------------------------------
+-- Order (right to left): Expand/Collapse | Overflow | History
 local function CreateHeaderIcons(parent)
     if not parent then return end
 
@@ -529,6 +533,7 @@ local function CreateHeaderIcons(parent)
     minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
     minMaxBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
     minMaxBtn:SetScript("OnClick", function()
+        HideOverflowMenu()
         pH_HUD:ToggleMinimize()
     end)
     minMaxBtn:SetScript("OnEnter", function(self)
@@ -546,6 +551,7 @@ local function CreateHeaderIcons(parent)
     historyBtn:SetNormalTexture(HEADER_ICON_HISTORY)
     historyBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
     historyBtn:SetScript("OnClick", function()
+        HideOverflowMenu()
         pH_History:Toggle()
     end)
     historyBtn:SetScript("OnEnter", function(self)
@@ -556,36 +562,100 @@ local function CreateHeaderIcons(parent)
     historyBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     parent.historyBtn = historyBtn
 
-    -- Pause/Resume (leftmost of icons, Start/Stop button anchors to its left)
-    local pauseResumeBtn = CreateFrame("Button", nil, parent)
-    pauseResumeBtn:SetSize(ICON_SIZE, ICON_SIZE)
-    pauseResumeBtn:SetPoint("RIGHT", historyBtn, "LEFT", -ICON_GAP, 0)
-    pauseResumeBtn:SetNormalTexture(HEADER_ICON_PAUSE)
-    pauseResumeBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
-    pauseResumeBtn:SetScript("OnClick", function()
-        local session = pH_SessionManager:GetActiveSession()
-        if not session then return end
-        if pH_SessionManager:IsPaused(session) then
-            pH_SessionManager:ResumeSession()
-        else
-            pH_SessionManager:PauseSession()
-        end
-        pH_HUD:Update()
+    -- Overflow menu trigger (leftmost icon)
+    local overflowBtn = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    overflowBtn:SetSize(ICON_SIZE, ICON_SIZE)
+    overflowBtn:SetPoint("RIGHT", historyBtn, "LEFT", -ICON_GAP, 0)
+    overflowBtn:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 10,
+        insets = {left = 2, right = 2, top = 2, bottom = 2},
+    })
+    overflowBtn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.9)
+    overflowBtn:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+    local overflowText = overflowBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    overflowText:SetPoint("CENTER", 0, 0)
+    overflowText:SetText("...")
+    overflowText:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+    overflowBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3], 1.0)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("More actions")
+        GameTooltip:Show()
     end)
-    pauseResumeBtn:SetScript("OnEnter", function(self)
-        local session = pH_SessionManager:GetActiveSession()
-        if session and pH_SessionManager:IsPaused(session) then
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetText("Resume session")
-            GameTooltip:Show()
-        else
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetText("Pause session")
-            GameTooltip:Show()
-        end
+    overflowBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+        GameTooltip:Hide()
     end)
-    pauseResumeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    parent.pauseResumeBtn = pauseResumeBtn
+    parent.overflowBtn = overflowBtn
+end
+
+HideOverflowMenu = function()
+    if not hudFrame then return end
+    if hudFrame.overflowMenuBackdrop then
+        hudFrame.overflowMenuBackdrop:Hide()
+    end
+    if hudFrame.overflowMenu then
+        hudFrame.overflowMenu:Hide()
+    end
+end
+
+local function ToggleOverflowMenu()
+    if not hudFrame or not hudFrame.overflowMenu or not hudFrame.overflowBtn then
+        return
+    end
+
+    if hudFrame.overflowMenu:IsShown() then
+        HideOverflowMenu()
+        return
+    end
+
+    local session = pH_SessionManager:GetActiveSession()
+    local isPaused = session and pH_SessionManager:IsPaused(session)
+    local function SetOverflowItemState(btn, tooltipText, isDisabled)
+        if not btn then
+            return
+        end
+        btn.tooltipText = tooltipText
+        btn.isActionDisabled = isDisabled and true or false
+        local alpha = btn.isActionDisabled and 0.45 or 1.0
+        if btn.icon then
+            btn.icon:SetAlpha(alpha)
+        end
+        if btn.text then
+            btn.text:SetAlpha(alpha)
+        end
+    end
+
+    if hudFrame.overflowPauseBtn and hudFrame.overflowPauseBtn.icon then
+        if not session then
+            hudFrame.overflowPauseBtn.icon:SetTexture(HEADER_ICON_PAUSE)
+            SetOverflowItemState(hudFrame.overflowPauseBtn, "Pause session (no active session)", true)
+        elseif isPaused then
+            hudFrame.overflowPauseBtn.icon:SetTexture(HEADER_ICON_PLAY)
+            SetOverflowItemState(hudFrame.overflowPauseBtn, "Resume session", false)
+        else
+            hudFrame.overflowPauseBtn.icon:SetTexture(HEADER_ICON_PAUSE)
+            SetOverflowItemState(hudFrame.overflowPauseBtn, "Pause session", false)
+        end
+    end
+
+    if hudFrame.overflowStopBtn then
+        if session then
+            SetOverflowItemState(hudFrame.overflowStopBtn, "Stop session", false)
+        else
+            SetOverflowItemState(hudFrame.overflowStopBtn, "Stop session (no active session)", true)
+        end
+    end
+
+    hudFrame.overflowMenu:ClearAllPoints()
+    hudFrame.overflowMenu:SetPoint("TOPLEFT", hudFrame.overflowBtn, "BOTTOMLEFT", 0, -4)
+
+    if hudFrame.overflowMenuBackdrop then
+        hudFrame.overflowMenuBackdrop:Show()
+    end
+    hudFrame.overflowMenu:Show()
 end
 
 -- Initialize HUD
@@ -623,10 +693,10 @@ function pH_HUD:Initialize()
     -- Header icon row (pause/resume, history, minimize/maximize) - visible in all three states
     CreateHeaderIcons(hudFrame)
 
-    -- Start/Stop button (dual purpose: Start when no session, Stop when active)
+    -- Primary session button (Start/Stop/Resume based on state)
     local stopBtn = CreateFrame("Button", nil, hudFrame, "BackdropTemplate")
-    stopBtn:SetSize(56, 20)
-    stopBtn:SetPoint("RIGHT", hudFrame.pauseResumeBtn, "LEFT", -ICON_GAP, 0)
+    stopBtn:SetSize(PRIMARY_BTN_WIDTH, 20)
+    stopBtn:SetPoint("RIGHT", hudFrame.overflowBtn, "LEFT", -ICON_GAP, 0)
     stopBtn:SetBackdrop({
         bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -641,6 +711,7 @@ function pH_HUD:Initialize()
     stopBtnText:SetTextColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3])
     stopBtn.textObj = stopBtnText  -- for Update() to switch Start/Stop
     hudFrame.stopBtn = stopBtn
+    hudFrame.primarySessionBtn = stopBtn
 
     --------------------------------------------------
     -- Header row (fixed height, all elements vertically centered)
@@ -668,6 +739,7 @@ function pH_HUD:Initialize()
     -- Timer (always visible, next to title)
     local headerTimer = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     headerTimer:SetPoint("LEFT", title, "RIGHT", 6, 0)
+    headerTimer:SetPoint("RIGHT", stopBtn, "LEFT", -6, 0)
     headerTimer:SetJustifyH("LEFT")
     headerTimer:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])  -- pH brand muted text
     headerTimer:SetText("0m")
@@ -772,71 +844,155 @@ function pH_HUD:Initialize()
 
     --------------------------------------------------
     -- Start screen (shown when no session active)
-    -- Single line: logo | Help | Start | icons (Help lives in header row)
+    -- Single line: logo | Start | History | ... | Min/Max
     --------------------------------------------------
     local bodyTopOffset = -(PADDING + HEADER_HEIGHT + BODY_GAP)
-    local GAP = 6
+    -- Final header right-side order:
+    -- Primary | History | Overflow | Min/Max
+    hudFrame.minMaxBtn:ClearAllPoints()
+    hudFrame.minMaxBtn:SetPoint("RIGHT", headerRow, "RIGHT", -PADDING, 0)
+    hudFrame.overflowBtn:ClearAllPoints()
+    hudFrame.overflowBtn:SetPoint("RIGHT", hudFrame.minMaxBtn, "LEFT", -ICON_GAP, 0)
+    hudFrame.historyBtn:ClearAllPoints()
+    hudFrame.historyBtn:SetPoint("RIGHT", hudFrame.overflowBtn, "LEFT", -ICON_GAP, 0)
+    hudFrame.stopBtn:ClearAllPoints()
+    hudFrame.stopBtn:SetPoint("RIGHT", hudFrame.historyBtn, "LEFT", -ICON_GAP, 0)
 
-    -- Help link (in header row, shown only when no session)
-    local helpLink = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    helpLink:SetFont("Fonts\\FRIZQT__.TTF", 12, "")  -- Same font as title for vertical alignment
-    helpLink:SetPoint("LEFT", hudFrame.title, "RIGHT", GAP, 0)
-    helpLink:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -74, 0)
-    helpLink:SetText("Help")
-    helpLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
-    local helpLinkBtn = CreateFrame("Button", nil, hudFrame)
-    helpLinkBtn:SetAllPoints(helpLink)
-    helpLinkBtn:SetScript("OnClick", function()
+    -- Overflow menu and outside-click catcher
+    local overflowBackdrop = CreateFrame("Button", nil, UIParent)
+    overflowBackdrop:SetAllPoints(UIParent)
+    overflowBackdrop:SetFrameStrata("DIALOG")
+    overflowBackdrop:SetFrameLevel(300)
+    overflowBackdrop:EnableMouse(true)
+    overflowBackdrop:SetScript("OnClick", function()
+        HideOverflowMenu()
+    end)
+    overflowBackdrop:Hide()
+    hudFrame.overflowMenuBackdrop = overflowBackdrop
+
+    local overflowMenu = CreateFrame("Frame", nil, hudFrame, "BackdropTemplate")
+    overflowMenu:SetSize(32, 112)
+    overflowMenu:SetFrameStrata("DIALOG")
+    overflowMenu:SetFrameLevel(301)
+    overflowMenu:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 12,
+        insets = {left = 3, right = 3, top = 3, bottom = 3},
+    })
+    overflowMenu:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], 0.95)
+    overflowMenu:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 1.0)
+    overflowMenu:Hide()
+    hudFrame.overflowMenu = overflowMenu
+
+    local function CreateMenuIconButton(parent, texturePath, yOffset, tooltipText, onClick, textGlyph, textColor)
+        local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
+        btn:SetSize(ICON_SIZE, ICON_SIZE)
+        btn:SetPoint("TOP", parent, "TOP", 0, yOffset)
+        btn.isActionDisabled = false
+        btn:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true, tileSize = 16, edgeSize = 10,
+            insets = {left = 2, right = 2, top = 2, bottom = 2},
+        })
+        btn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.9)
+        btn:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+
+        local iconFrame = CreateFrame("Frame", nil, btn)
+        iconFrame:SetSize(OVERFLOW_ICON_SIZE, OVERFLOW_ICON_SIZE)
+        iconFrame:SetPoint("CENTER", btn, "CENTER", 0, 0)
+        btn.iconFrame = iconFrame
+
+        btn.icon = btn:CreateTexture(nil, "ARTWORK")
+        btn.icon:SetSize(OVERFLOW_ICON_SIZE, OVERFLOW_ICON_SIZE)
+        btn.icon:SetPoint("CENTER", iconFrame, "CENTER", 0, 0)
+        if texturePath then
+            btn.icon:SetTexture(texturePath)
+            btn.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        else
+            btn.icon:Hide()
+        end
+        if textGlyph then
+            btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            btn.text:SetPoint("CENTER", iconFrame, "CENTER", 0, 0)
+            btn.text:SetFont("Fonts\\FRIZQT__.TTF", 12, "OUTLINE")
+            btn.text:SetText(textGlyph)
+            if textColor then
+                btn.text:SetTextColor(textColor[1], textColor[2], textColor[3])
+            else
+                btn.text:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
+            end
+        end
+        btn.tooltipText = tooltipText
+        btn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+        btn:SetScript("OnClick", function()
+            if btn.isActionDisabled then
+                return
+            end
+            HideOverflowMenu()
+            onClick()
+        end)
+        btn:SetScript("OnEnter", function(self)
+            self:SetBackdropBorderColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3], 1.0)
+            if self.tooltipText then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText(self.tooltipText)
+                GameTooltip:Show()
+            end
+        end)
+        btn:SetScript("OnLeave", function(self)
+            self:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+            GameTooltip:Hide()
+        end)
+        return btn
+    end
+
+    local pauseBtn = CreateMenuIconButton(overflowMenu, HEADER_ICON_PAUSE, -6, "Pause session", function()
+        local session = pH_SessionManager:GetActiveSession()
+        if not session then return end
+        if pH_SessionManager:IsPaused(session) then
+            local ok, message = pH_SessionManager:ResumeSession("manual", "overflow")
+            if message then print("[pH] " .. message) end
+            if ok then pH_HUD:Update() end
+        else
+            local ok, message = pH_SessionManager:PauseSession("manual", "overflow")
+            if message then print("[pH] " .. message) end
+            if ok then pH_HUD:Update() end
+        end
+    end)
+    overflowMenu.pauseBtn = pauseBtn
+    hudFrame.overflowPauseBtn = pauseBtn
+
+    local stopMenuBtn = CreateMenuIconButton(overflowMenu, "Interface\\RAIDFRAME\\ReadyCheck-NotReady", -28, "Stop session", function()
+        local ok, message = pH_SessionManager:StopSession()
+        if message then print("[pH] " .. message) end
+        if ok then pH_HUD:Update() end
+    end)
+    overflowMenu.stopBtn = stopMenuBtn
+    hudFrame.overflowStopBtn = stopMenuBtn
+
+    local helpMenuBtn = CreateMenuIconButton(overflowMenu, nil, -50, "Help", function()
         if SlashCmdList["GOLDPH"] then
             SlashCmdList["GOLDPH"]("help")
         else
             print("[pH] Type /ph help for commands")
         end
-    end)
-    helpLinkBtn:SetScript("OnEnter", function()
-        helpLink:SetTextColor(1, 1, 1)
-        GameTooltip:SetOwner(helpLink, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Type /ph help for commands")
-        GameTooltip:Show()
-    end)
-    helpLinkBtn:SetScript("OnLeave", function()
-        helpLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
-        GameTooltip:Hide()
-    end)
-    helpLinkBtn:Hide()
-    hudFrame.startHelpLink = helpLink
-    hudFrame.startHelpLinkBtn = helpLinkBtn
+    end, "?")
+    overflowMenu.helpBtn = helpMenuBtn
 
-    -- Auto settings link (header row; source-aware auto-session settings)
-    local autoLink = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    autoLink:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
-    autoLink:SetPoint("LEFT", helpLink, "RIGHT", GAP + 4, 0)
-    autoLink:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -GAP, 0)
-    autoLink:SetText("Auto")
-    autoLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
-
-    local autoLinkBtn = CreateFrame("Button", nil, hudFrame)
-    autoLinkBtn:SetAllPoints(autoLink)
-    autoLinkBtn:SetScript("OnClick", function()
+    local settingsMenuBtn = CreateMenuIconButton(overflowMenu, HEADER_ICON_SETTINGS, -72, "Settings", function()
         if type(pH_AutoSession) == "table" and pH_AutoSession.OpenSettingsPanel then
             pH_AutoSession:OpenSettingsPanel()
         elseif SlashCmdList["GOLDPH"] then
             SlashCmdList["GOLDPH"]("auto status")
         end
     end)
-    autoLinkBtn:SetScript("OnEnter", function()
-        autoLink:SetTextColor(1, 1, 1)
-        GameTooltip:SetOwner(autoLink, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Open Auto Session settings")
-        GameTooltip:Show()
+    overflowMenu.settingsBtn = settingsMenuBtn
+
+    hudFrame.overflowBtn:SetScript("OnClick", function()
+        ToggleOverflowMenu()
     end)
-    autoLinkBtn:SetScript("OnLeave", function()
-        autoLink:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
-        GameTooltip:Hide()
-    end)
-    autoLinkBtn:Hide()
-    hudFrame.startAutoLink = autoLink
-    hudFrame.startAutoLinkBtn = autoLinkBtn
 
     -- Placeholder startScreen (empty - expanded panel uses startExpanded; collapsed uses header row only)
     local startScreen = CreateFrame("Frame", nil, hudFrame)
@@ -1010,6 +1166,7 @@ function pH_HUD:Initialize()
     hudFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
     hudFrame:SetScript("OnEvent", function(self, event, ...)
         if event == "ZONE_CHANGED_NEW_AREA" then
+            HideOverflowMenu()
             -- Only update if no active session and start panel is expanded
             local session = pH_SessionManager:GetActiveSession()
             if not session and pH_Settings.startPanelExpanded then
@@ -1697,7 +1854,7 @@ UpdateStartPanelContent = function()
         if w > maxTextWidth then maxTextWidth = w end
     end
     -- Clamp between collapsed width (210) and max (340), add padding + margin
-    local adaptiveWidth = math.max(210, math.min(maxTextWidth + 2 * PADDING + 20, 340))
+    local adaptiveWidth = math.max(HEADER_MIN_WIDTH, math.min(maxTextWidth + 2 * PADDING + 20, 340))
     hudFrame.startExpanded:SetSize(adaptiveWidth, 120)
     -- Update text width constraints to match new width
     for _, line in ipairs(measuredLines) do
@@ -1714,6 +1871,18 @@ function pH_HUD:Update()
     end
 
     local session = pH_SessionManager:GetActiveSession()
+    local sessionStateKey
+    if not session then
+        sessionStateKey = "none"
+    elseif pH_SessionManager:IsPaused(session) then
+        sessionStateKey = "paused"
+    else
+        sessionStateKey = "running"
+    end
+    if lastSessionStateKey ~= sessionStateKey then
+        HideOverflowMenu()
+        lastSessionStateKey = sessionStateKey
+    end
 
     if not session then
         -- No active session: show start panel (collapsed or expanded)
@@ -1721,6 +1890,7 @@ function pH_HUD:Update()
         
         -- Toggle expand/collapse behavior for start panel
         hudFrame.minMaxBtn:SetScript("OnClick", function()
+            HideOverflowMenu()
             pH_Settings.startPanelExpanded = not pH_Settings.startPanelExpanded
             pH_HUD:Update()
         end)
@@ -1729,19 +1899,6 @@ function pH_HUD:Update()
             -- Expanded start panel
             if hudFrame.startScreen then
                 hudFrame.startScreen:Hide()
-            end
-            -- Help link stays visible in header for both states
-            if hudFrame.startHelpLink then
-                hudFrame.startHelpLink:Show()
-            end
-            if hudFrame.startHelpLinkBtn then
-                hudFrame.startHelpLinkBtn:Show()
-            end
-            if hudFrame.startAutoLink then
-                hudFrame.startAutoLink:Show()
-            end
-            if hudFrame.startAutoLinkBtn then
-                hudFrame.startAutoLinkBtn:Show()
             end
             if hudFrame.startExpanded then
                 hudFrame.startExpanded:Show()
@@ -1758,7 +1915,7 @@ function pH_HUD:Update()
             end)
             
             -- Frame size: expanded with content (width set by adaptive calc, fallback 340)
-            local expWidth = hudFrame.startExpandedWidth or 340
+            local expWidth = math.max(HEADER_MIN_WIDTH, hudFrame.startExpandedWidth or 340)
             local startBodyHeight = 120  -- Zone context + tips content
             local expHeight = PADDING + HEADER_HEIGHT + BODY_GAP + startBodyHeight + PADDING
             hudFrame:Show()
@@ -1766,24 +1923,12 @@ function pH_HUD:Update()
             hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], 0.95)
             
         else
-            -- Collapsed start panel (single line: logo | Help | Start | icons)
+            -- Collapsed start panel (single line: logo | ? | settings | Start | icons)
             if hudFrame.startScreen then
                 hudFrame.startScreen:Hide()
             end
             if hudFrame.startExpanded then
                 hudFrame.startExpanded:Hide()
-            end
-            if hudFrame.startHelpLink then
-                hudFrame.startHelpLink:Show()
-            end
-            if hudFrame.startHelpLinkBtn then
-                hudFrame.startHelpLinkBtn:Show()
-            end
-            if hudFrame.startAutoLink then
-                hudFrame.startAutoLink:Show()
-            end
-            if hudFrame.startAutoLinkBtn then
-                hudFrame.startAutoLinkBtn:Show()
             end
             
             -- Update expand button icon
@@ -1795,13 +1940,13 @@ function pH_HUD:Update()
                 GameTooltip:Show()
             end)
             
-            -- Frame size: header only (logo Help Start icons)
+            -- Frame size: header only
             hudFrame:Show()
-            hudFrame:SetSize(210, ComputeStartCollapsedHeight())
+            hudFrame:SetSize(HEADER_MIN_WIDTH, ComputeStartCollapsedHeight())
             hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], PH_BG_PARCHMENT[4])
         end
         
-        -- Header: show title, Help link, Start button, icon row; hide timer
+        -- Header: show title, primary button, icon row; hide timer
         hudFrame.title:Show()
         hudFrame.headerTimer:Hide()
         if hudFrame.stopBtn then
@@ -1809,7 +1954,7 @@ function pH_HUD:Update()
             hudFrame.stopBtn.textObj:SetText("Start")
             hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3])
             hudFrame.stopBtn:SetScript("OnClick", function()
-                local ok, message = pH_SessionManager:StartSession()
+                local ok, message = pH_SessionManager:StartSession("manual", "hud_start")
                 print("[pH] " .. message)
                 if ok then
                     pH_Settings.hudMinimized = true
@@ -1828,13 +1973,13 @@ function pH_HUD:Update()
             end)
         end
 
-        -- Icon row: pause invisible (keeps space), history and minMax enabled
-        hudFrame.pauseResumeBtn:Show()
-        hudFrame.pauseResumeBtn:Disable()
-        hudFrame.pauseResumeBtn:SetAlpha(0)
+        -- Icon row: all right-side controls visible
         hudFrame.historyBtn:Show()
         hudFrame.historyBtn:Enable()
         hudFrame.historyBtn:SetAlpha(1)
+        hudFrame.overflowBtn:Show()
+        hudFrame.overflowBtn:Enable()
+        hudFrame.overflowBtn:SetAlpha(1)
         hudFrame.minMaxBtn:Show()
         hudFrame.minMaxBtn:Enable()
         hudFrame.minMaxBtn:SetAlpha(1)
@@ -1854,36 +1999,36 @@ function pH_HUD:Update()
         return
     end
 
-    -- Session is active: hide start screen and Help link, show active components
+    -- Session is active: hide start screen, show active components
     if hudFrame.startScreen then
         hudFrame.startScreen:Hide()
     end
     if hudFrame.startExpanded then
         hudFrame.startExpanded:Hide()
     end
-    if hudFrame.startHelpLink then
-        hudFrame.startHelpLink:Hide()
-    end
-    if hudFrame.startHelpLinkBtn then
-        hudFrame.startHelpLinkBtn:Hide()
-    end
-    if hudFrame.startAutoLink then
-        hudFrame.startAutoLink:Hide()
-    end
-    if hudFrame.startAutoLinkBtn then
-        hudFrame.startAutoLinkBtn:Hide()
-    end
     -- Restore normal bg opacity
     hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], PH_BG_PARCHMENT[4])
 
     hudFrame.title:Show()
     hudFrame.headerTimer:Show()
+    local isPaused = pH_SessionManager:IsPaused(session)
     if hudFrame.stopBtn then
         hudFrame.stopBtn:Show()
-        hudFrame.stopBtn.textObj:SetText("Stop")
-        hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3])
+        if isPaused then
+            hudFrame.stopBtn.textObj:SetText("Resume")
+            hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3])
+        else
+            hudFrame.stopBtn.textObj:SetText("Stop")
+            hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3])
+        end
         hudFrame.stopBtn:SetScript("OnClick", function()
-            local ok, message = pH_SessionManager:StopSession()
+            local ok, message
+            local active = pH_SessionManager:GetActiveSession()
+            if active and pH_SessionManager:IsPaused(active) then
+                ok, message = pH_SessionManager:ResumeSession("manual", "hud_primary")
+            else
+                ok, message = pH_SessionManager:StopSession()
+            end
             if ok then
                 print("[pH] " .. message)
                 pH_HUD:Update()
@@ -1892,7 +2037,12 @@ function pH_HUD:Update()
         hudFrame.stopBtn:SetScript("OnEnter", function(self)
             self:SetBackdropBorderColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3], 1.0)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetText("Stop session and save results")
+            local active = pH_SessionManager:GetActiveSession()
+            if active and pH_SessionManager:IsPaused(active) then
+                GameTooltip:SetText("Resume paused session")
+            else
+                GameTooltip:SetText("Stop session and save results")
+            end
             GameTooltip:Show()
         end)
         hudFrame.stopBtn:SetScript("OnLeave", function(self)
@@ -1902,14 +2052,15 @@ function pH_HUD:Update()
     end
 
     -- Icon row: all active
-    hudFrame.pauseResumeBtn:Show()
-    hudFrame.pauseResumeBtn:Enable()
-    hudFrame.pauseResumeBtn:SetAlpha(1)
     hudFrame.historyBtn:Show()
+    hudFrame.overflowBtn:Show()
+    hudFrame.overflowBtn:Enable()
+    hudFrame.overflowBtn:SetAlpha(1)
     hudFrame.minMaxBtn:Show()
     hudFrame.minMaxBtn:Enable()
     hudFrame.minMaxBtn:SetAlpha(1)
     hudFrame.minMaxBtn:SetScript("OnClick", function()
+        HideOverflowMenu()
         pH_HUD:ToggleMinimize()
     end)
     hudFrame.minMaxBtn:SetScript("OnEnter", function(self)
@@ -1917,14 +2068,6 @@ function pH_HUD:Update()
         GameTooltip:SetText(pH_Settings.hudMinimized and "Expand" or "Minimize")
         GameTooltip:Show()
     end)
-
-    -- Update pause/resume icon based on paused state
-    local isPaused = pH_SessionManager:IsPaused(session)
-    if isPaused then
-        hudFrame.pauseResumeBtn:SetNormalTexture(HEADER_ICON_PLAY)
-    else
-        hudFrame.pauseResumeBtn:SetNormalTexture(HEADER_ICON_PAUSE)
-    end
 
     -- Update minimize/maximize icon (handled in ApplyMinimizeState when toggled)
     local isMin = pH_Settings.hudMinimized
@@ -2047,6 +2190,7 @@ end
 -- Hide HUD
 function pH_HUD:Hide()
     if hudFrame then
+        HideOverflowMenu()
         hudFrame:Hide()
 
         -- Save visibility state
@@ -2083,6 +2227,7 @@ function pH_HUD:ApplyMinimizeState()
     if not hudFrame then
         return
     end
+    HideOverflowMenu()
 
     -- Start screen doesn't support minimize/expand (always compact)
     local session = pH_SessionManager:GetActiveSession()
