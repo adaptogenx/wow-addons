@@ -25,7 +25,6 @@ local pH_History = {
         charKeys = nil,
         zone = nil,
         minPerHour = 0,
-        minDurationSec = 300,
         excludeShort = true,
         excludeArchived = true,
         hasGathering = false,
@@ -253,17 +252,15 @@ function pH_History:Show()
         self.frame:SetPoint(pos.point, UIParent, pos.relativePoint, pos.x, pos.y)
     end
 
-    -- Restore only sort (does not exclude sessions)
+    -- Restore persistent list settings.
     if pH_Settings.historyFilters then
         self.filterState.sort = pH_Settings.historyFilters.sort or "totalPerHour"
         self.filterState.sortDesc = pH_Settings.historyFilters.sortDesc ~= false
         self.filterState.excludeShort = pH_Settings.historyFilters.excludeShort ~= false
         self.filterState.excludeArchived = pH_Settings.historyFilters.excludeArchived ~= false
-        self.filterState.minDurationSec = pH_Settings.historyFilters.minDurationSec or
-            (pH_Settings.historyCleanup and pH_Settings.historyCleanup.shortThresholdSec) or 300
     end
 
-    -- Reset all non-persistent filters on open; keep cleanup filters enabled by default
+    -- Reset non-persistent filters on open.
     local currentCharKey = pH_Index:GetCurrentCharKey()
     if currentCharKey then
         self.filterState.charKeys = { [currentCharKey] = true }
