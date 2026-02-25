@@ -173,6 +173,13 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" and addonName == "ph" then
         InitializeSavedVariables()
 
+        if pH_SessionManager and pH_SessionManager.RunPricingV2Migration then
+            local migrated, message = pH_SessionManager:RunPricingV2Migration()
+            if migrated and pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
+                print("[pH] " .. (message or "pricing_v2 migration complete"))
+            end
+        end
+
         -- Initialize UI
         pH_HUD:Initialize()
 
@@ -184,7 +191,7 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
             pH_AutoSession:Initialize()
         end
 
-        print("[pH] Version 0.13.0 loaded. Type /ph help for commands (legacy /goldph still works).")
+        print("[pH] Version 15.0 loaded. Type /ph help for commands (legacy /goldph still works).")
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Ensure settings exist
         if not pH_Settings then
@@ -340,6 +347,7 @@ local function ShowHelp()
     print("|cffffff00/ph history delete <sessionId> confirm|r - Permanently delete session")
     print("|cffffff00/ph history merge <id1> <id2> [idN...] confirm|r - Merge same-character sessions")
     print("|cffffff00/ph history undo|r - Undo the last history action (30s)")
+    print("|cffffff00/ph migrate reprice|r - Reprice historical session items with current valuation rules")
     print("|cffffff00/ph auto status|r - Show source-aware auto-session settings")
     print("|cffffff00/ph auto on|off|r - Enable/disable auto-session management")
     print("|cffffff00/ph auto profile <manual|balanced|handsfree>|r - Apply preset")
@@ -348,6 +356,13 @@ local function ShowHelp()
     print("|cffffff00/ph auto sources|r - List source keys")
     print("|cffffff00/ph auto ui|r - Open Auto Session settings panel")
     print("")
+    print("|cffffff00/ph devhelp|r - Show debug/testing commands")
+    print("|cffffff00/ph help dev|r - Same as /ph devhelp")
+    print("======================")
+end
+
+local function ShowDevHelp()
+    print("|cff00ff00=== pH Developer Commands ===|r")
     print("|cff00ff00=== Debug Commands ===|r")
     print("|cffffff00/ph debug on|off|r - Enable/disable debug mode (auto-run invariants)")
     print("|cffffff00/ph debug verbose on|off|r - Enable/disable verbose logging")
@@ -508,6 +523,16 @@ local function HandleCommand(msg)
             print("[pH] " .. message)
         else
             print("[pH] History commands: archive-short, archive <id>, unarchive <id>, delete <id> confirm, merge <ids...> confirm, undo")
+        end
+
+    elseif cmd == "migrate" then
+        local subCmd = (args[2] or ""):lower()
+        if subCmd == "reprice" then
+            local ok, message = pH_SessionManager:RepriceAllSessions()
+            print("[pH] " .. (message or (ok and "Reprice complete" or "Reprice failed")))
+            pH_HUD:Update()
+        else
+            print("[pH] Usage: /ph migrate reprice")
         end
 
     elseif cmd == "debug" then
@@ -705,10 +730,18 @@ local function HandleCommand(msg)
         end
 
     elseif cmd == "help" then
-        ShowHelp()
+        local topic = (args[2] or ""):lower()
+        if topic == "dev" or topic == "debug" or topic == "test" then
+            ShowDevHelp()
+        else
+            ShowHelp()
+        end
+
+    elseif cmd == "devhelp" then
+        ShowDevHelp()
 
     else
-        print("[pH] Unknown command. Type /goldph help for usage.")
+        print("[pH] Unknown command. Type /ph help for usage.")
     end
 end
 

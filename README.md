@@ -63,7 +63,8 @@ The HUD will display:
 - `/ph stop` - Stop the active session
 - `/ph show` - Show/hide the HUD
 - `/ph status` - Show current session status
-- `/ph help` - Show all commands
+- `/ph help` - Show user commands
+- `/ph devhelp` - Show debug/testing commands
 
 ### Debug Commands
 - `/ph debug on|off` - Enable/disable debug mode (auto-run invariants)
