@@ -55,9 +55,18 @@ function pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSub
 
     -- Rep turn-in items should use market value when configured
     if pH_RepTurninCatalog and pH_RepTurninCatalog.IsRepTurninItem and pH_RepTurninCatalog:IsRepTurninItem(itemID, itemName) then
-        local rule = pH_RepTurninCatalog:GetRepRule(itemID, itemName)
-        if rule and rule.ahPreferred then
-            return "market_items"
+        local rules = pH_RepTurninCatalog.GetRepRules and pH_RepTurninCatalog:GetRepRules(itemID, itemName) or nil
+        if rules then
+            for _, rule in ipairs(rules) do
+                if rule and rule.ahPreferred then
+                    return "market_items"
+                end
+            end
+        else
+            local rule = pH_RepTurninCatalog:GetRepRule(itemID, itemName)
+            if rule and rule.ahPreferred then
+                return "market_items"
+            end
         end
     end
 

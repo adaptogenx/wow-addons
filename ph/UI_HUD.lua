@@ -206,8 +206,9 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
     GameTooltip:SetText(headerText)
     GameTooltip:AddLine(string.format("Current: %s", currentText), 0.86, 0.82, 0.70)
     if metricKey == "rep" then
-        local projectedTotal = tonumber(state.projectedTotal) or 0
-        GameTooltip:AddLine(string.format("Potential: +%d", projectedTotal), 0.3, 1.0, 0.3)
+        local potentialTotal = tonumber(state.projectedTotal) or 0
+        local approxPrefix = state.projectedApprox and "~" or ""
+        GameTooltip:AddLine(string.format("Potential: %s+%d", approxPrefix, potentialTotal), 0.3, 1.0, 0.3)
         if state.projectedItems then
             for i = 1, #state.projectedItems do
                 local item = state.projectedItems[i]
@@ -215,7 +216,14 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
                     local itemName = item.itemName or "Rep Item"
                     local count = tonumber(item.count) or 0
                     local bundleSize = tonumber(item.bundleSize) or 1
-                    GameTooltip:AddLine(string.format("- %s: %d/%d", itemName, count, bundleSize), 0.8, 0.8, 0.8)
+                    local eligibleRep = tonumber(item.eligibleRep) or tonumber(item.potentialRep) or 0
+                    local theoreticalRep = tonumber(item.theoreticalRep) or eligibleRep
+                    local itemApproxPrefix = item.isApprox and "~" or ""
+                    if eligibleRep == theoreticalRep then
+                        GameTooltip:AddLine(string.format("- %s: %d/%d (%s%d rep)", itemName, count, bundleSize, itemApproxPrefix, eligibleRep), 0.8, 0.8, 0.8)
+                    else
+                        GameTooltip:AddLine(string.format("- %s: %d/%d (%s%d/%s%d rep)", itemName, count, bundleSize, itemApproxPrefix, eligibleRep, itemApproxPrefix, theoreticalRep), 0.8, 0.8, 0.8)
+                    end
                 end
             end
         end
@@ -308,8 +316,10 @@ local function UpdateMicroBars(session, metrics)
                 isActive = metrics.repEnabled and rawRate > 0
                 local projectedTotal = metrics.repPotentialTotal or 0
                 local projectedItems = metrics.repPotentialItems or {}
+                local projectedApprox = metrics.repPotentialApprox and true or false
                 state.hasProjected = (#projectedItems > 0)
                 state.projectedTotal = projectedTotal
+                state.projectedApprox = projectedApprox
                 state.projectedItemCount = #projectedItems
                 state.projectedItems = projectedItems
             elseif metricKey == "honor" then
@@ -1589,7 +1599,9 @@ local function UpdateRepPanel(panel, metrics)
     local totalRep = metrics.repGained or 0
     local repHr = metrics.repPerHour or 0
     local potentialTotal = metrics.repPotentialTotal or 0
+    local potentialTheoreticalTotal = metrics.repPotentialTheoreticalTotal or potentialTotal
     local potentialItems = metrics.repPotentialItems or {}
+    local potentialApprox = metrics.repPotentialApprox and true or false
     local hasPotentialInfo = #potentialItems > 0
     local totalStr = totalRep >= 0 and string.format("+%d", totalRep) or string.format("%d", totalRep)
     local rateStr = repHr >= 0 and string.format("+%d/hr", repHr) or string.format("%d/hr", repHr)
@@ -1599,7 +1611,7 @@ local function UpdateRepPanel(panel, metrics)
     panel.rawTotal:SetPoint("RIGHT", panel, "RIGHT", -PANEL_PADDING, 0)
     panel.rawTotal:SetPoint("CENTER", panel.rateText, "CENTER", 0, 0)
     panel.rawTotal:SetJustifyH("RIGHT")
-    panel.rawTotal:SetText(string.format("+%d%s", potentialTotal, hasPotentialInfo and "*" or ""))
+    panel.rawTotal:SetText(string.format("%s+%d%s", potentialApprox and "~" or "", potentialTotal, hasPotentialInfo and "*" or ""))
 
     -- Clear old rows
     for _, row in ipairs(panel.breakdownRows) do
@@ -1627,6 +1639,8 @@ local function UpdateRepPanel(panel, metrics)
     panel.repTooltipData = {
         current = repHr or 0,
         potentialTotal = potentialTotal or 0,
+        potentialTheoreticalTotal = potentialTheoreticalTotal or 0,
+        potentialApprox = potentialApprox,
         potentialItems = potentialItems,
     }
     panel:EnableMouse(true)
@@ -1635,7 +1649,10 @@ local function UpdateRepPanel(panel, metrics)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText("Rep/Hour")
         GameTooltip:AddLine(string.format("Current: %d", data.current or 0), 0.86, 0.82, 0.70)
-        GameTooltip:AddLine(string.format("Potential: +%d", data.potentialTotal or 0), 0.3, 1.0, 0.3)
+        GameTooltip:AddLine(string.format("Potential: %s+%d", data.potentialApprox and "~" or "", data.potentialTotal or 0), 0.3, 1.0, 0.3)
+        if (data.potentialTheoreticalTotal or 0) ~= (data.potentialTotal or 0) then
+            GameTooltip:AddLine(string.format("Theoretical: %s+%d", data.potentialApprox and "~" or "", data.potentialTheoreticalTotal or 0), 0.8, 0.8, 0.8)
+        end
         local items = data.potentialItems or {}
         if #items > 0 then
             GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
@@ -1644,11 +1661,37 @@ local function UpdateRepPanel(panel, metrics)
                 local itemName = item.itemName or "Rep Item"
                 local count = tonumber(item.count) or 0
                 local bundleSize = tonumber(item.bundleSize) or 1
-                local potentialRep = tonumber(item.potentialRep) or 0
-                GameTooltip:AddLine(string.format("%s: %d/%d (%d rep)", itemName, count, bundleSize, potentialRep), 1.0, 1.0, 1.0)
-                GameTooltip:AddLine(string.format("Turn in: %s, %s",
-                    item.turninNpc or "Unknown NPC",
-                    item.turninZone or "Unknown Zone"), 0.8, 0.8, 0.8)
+                local eligibleRep = tonumber(item.eligibleRep) or tonumber(item.potentialRep) or 0
+                local theoreticalRep = tonumber(item.theoreticalRep) or eligibleRep
+                local itemApproxPrefix = item.isApprox and "~" or ""
+                if eligibleRep == theoreticalRep then
+                    GameTooltip:AddLine(string.format("%s: %d/%d (%s%d rep)", itemName, count, bundleSize, itemApproxPrefix, eligibleRep), 1.0, 1.0, 1.0)
+                else
+                    GameTooltip:AddLine(string.format("%s: %d/%d (%s%d eligible / %s%d theoretical rep)", itemName, count, bundleSize, itemApproxPrefix, eligibleRep, itemApproxPrefix, theoreticalRep), 1.0, 1.0, 1.0)
+                end
+                local targets = item.targets or {}
+                if #targets > 0 then
+                    for j = 1, #targets do
+                        local target = targets[j]
+                        local targetEligible = tonumber(target.eligibleRep) or 0
+                        local targetTheoretical = tonumber(target.theoreticalRep) or 0
+                        local targetApproxPrefix = target.isApprox and "~" or ""
+                        local targetLine
+                        if targetEligible == targetTheoretical then
+                            targetLine = string.format("-> %s: %s+%d", target.factionKey or "Unknown", targetApproxPrefix, targetEligible)
+                        else
+                            targetLine = string.format("-> %s: %s+%d eligible / %s+%d theoretical", target.factionKey or "Unknown", targetApproxPrefix, targetEligible, targetApproxPrefix, targetTheoretical)
+                        end
+                        GameTooltip:AddLine(targetLine, 0.85, 0.85, 0.85)
+                        GameTooltip:AddLine(string.format("Turn in: %s, %s",
+                            target.turninNpc or "Unknown NPC",
+                            target.turninZone or "Unknown Zone"), 0.8, 0.8, 0.8)
+                    end
+                else
+                    GameTooltip:AddLine(string.format("Turn in: %s, %s",
+                        item.turninNpc or "Unknown NPC",
+                        item.turninZone or "Unknown Zone"), 0.8, 0.8, 0.8)
+                end
             end
         end
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)

@@ -373,10 +373,15 @@ local function PrintRepProgressMessage(session, itemID, itemName, oldCount)
     if not cfg.showLootProgress then
         return
     end
-    if not pH_RepTurninCatalog or not pH_RepTurninCatalog.GetRepRule then
+    if not pH_RepTurninCatalog or not (pH_RepTurninCatalog.GetPreferredRepRule or pH_RepTurninCatalog.GetRepRule) then
         return
     end
-    local rule = pH_RepTurninCatalog:GetRepRule(itemID, itemName)
+    local rule
+    if pH_RepTurninCatalog.GetPreferredRepRule then
+        rule = pH_RepTurninCatalog:GetPreferredRepRule(itemID, itemName)
+    else
+        rule = pH_RepTurninCatalog:GetRepRule(itemID, itemName)
+    end
     if not rule then
         return
     end
@@ -1701,7 +1706,11 @@ function pH_Events:OnPlayerXPUpdate()
         session.metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
-            repPotential = { total = 0, byFaction = {}, byItem = {} },
+            repPotential = {
+                total = 0, byFaction = {}, byItem = {},
+                eligibleTotal = 0, theoreticalTotal = 0,
+                eligibleByFaction = {}, theoreticalByFaction = {},
+            },
             honor = { gained = 0, enabled = false, kills = 0 },
         }
     end
@@ -1758,7 +1767,11 @@ function pH_Events:OnUpdateFaction()
         session.metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
-            repPotential = { total = 0, byFaction = {}, byItem = {} },
+            repPotential = {
+                total = 0, byFaction = {}, byItem = {},
+                eligibleTotal = 0, theoreticalTotal = 0,
+                eligibleByFaction = {}, theoreticalByFaction = {},
+            },
             honor = { gained = 0, enabled = false, kills = 0 },
         }
     end
@@ -1766,7 +1779,16 @@ function pH_Events:OnUpdateFaction()
         session.metrics.rep = { gained = 0, enabled = false, byFaction = {} }
     end
     if not session.metrics.repPotential then
-        session.metrics.repPotential = { total = 0, byFaction = {}, byItem = {} }
+        session.metrics.repPotential = {
+            total = 0, byFaction = {}, byItem = {},
+            eligibleTotal = 0, theoreticalTotal = 0,
+            eligibleByFaction = {}, theoreticalByFaction = {},
+        }
+    end
+
+    local prevPotentialEligible = 0
+    if session.metrics and session.metrics.repPotential then
+        prevPotentialEligible = session.metrics.repPotential.eligibleTotal or session.metrics.repPotential.total or 0
     end
 
     -- Scan all factions and compute deltas
@@ -1801,11 +1823,20 @@ function pH_Events:OnUpdateFaction()
         end
     end
 
+    if pH_SessionManager and pH_SessionManager.RecomputeRepPotentialForSession then
+        pH_SessionManager:RecomputeRepPotentialForSession(session)
+    end
+    local newPotentialEligible = 0
+    if session.metrics and session.metrics.repPotential then
+        newPotentialEligible = session.metrics.repPotential.eligibleTotal or session.metrics.repPotential.total or 0
+    end
+
     if totalDelta > 0 then
         session.metrics.rep.gained = session.metrics.rep.gained + totalDelta
         session.metrics.rep.enabled = true
+    end
 
-        -- Update HUD
+    if totalDelta > 0 or newPotentialEligible ~= prevPotentialEligible then
         pH_HUD:Update()
     end
 end
@@ -1822,7 +1853,11 @@ function pH_Events:OnHonorGain(message)
         session.metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
-            repPotential = { total = 0, byFaction = {}, byItem = {} },
+            repPotential = {
+                total = 0, byFaction = {}, byItem = {},
+                eligibleTotal = 0, theoreticalTotal = 0,
+                eligibleByFaction = {}, theoreticalByFaction = {},
+            },
             honor = { gained = 0, enabled = false, kills = 0 },
         }
     end

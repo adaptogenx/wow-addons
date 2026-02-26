@@ -4,7 +4,7 @@
     Handles session creation, persistence, and metrics computation.
 ]]
 
--- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax UnitClass pH_DB_Account pH_Settings UnitName GetRealmName UnitFactionGroup pH_AutoSession pH_RepTurninCatalog
+-- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax UnitClass pH_DB_Account pH_Settings UnitName GetRealmName UnitFactionGroup pH_AutoSession pH_RepTurninCatalog GetNumFactions GetFactionInfo
 
 local pH_SessionManager = {}
 local DEFAULT_SHORT_SESSION_SEC = 300
@@ -207,7 +207,11 @@ function pH_SessionManager:StartSession(startReason, startSource)
         metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
-            repPotential = { total = 0, byFaction = {}, byItem = {} },
+            repPotential = {
+                total = 0, byFaction = {}, byItem = {},
+                eligibleTotal = 0, theoreticalTotal = 0,
+                eligibleByFaction = {}, theoreticalByFaction = {},
+            },
             honor = { gained = 0, enabled = false, kills = 0 },
         },
 
@@ -508,7 +512,11 @@ function pH_SessionManager:MergeSessions(sessionIds)
         metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
-            repPotential = { total = 0, byFaction = {}, byItem = {} },
+            repPotential = {
+                total = 0, byFaction = {}, byItem = {},
+                eligibleTotal = 0, theoreticalTotal = 0,
+                eligibleByFaction = {}, theoreticalByFaction = {},
+            },
             honor = { gained = 0, enabled = false, kills = 0 },
         },
         snapshots = {
@@ -593,18 +601,6 @@ function pH_SessionManager:MergeSessions(sessionIds)
             for factionName, value in pairs(mrp.byFaction or {}) do
                 merged.metrics.repPotential.byFaction[factionName] = (merged.metrics.repPotential.byFaction[factionName] or 0) + value
             end
-            for itemID, itemData in pairs(mrp.byItem or {}) do
-                local dst = merged.metrics.repPotential.byItem[itemID]
-                if not dst then
-                    merged.metrics.repPotential.byItem[itemID] = DeepCopy(itemData)
-                else
-                    dst.count = (dst.count or 0) + (itemData.count or 0)
-                    dst.potentialRep = (dst.potentialRep or 0) + (itemData.potentialRep or 0)
-                    dst.factionKey = dst.factionKey or itemData.factionKey
-                    dst.bundleSize = dst.bundleSize or itemData.bundleSize
-                    dst.repPerBundle = dst.repPerBundle or itemData.repPerBundle
-                end
-            end
 
             local mh = s.metrics.honor or {}
             merged.metrics.honor.gained = merged.metrics.honor.gained + (mh.gained or 0)
@@ -616,6 +612,9 @@ function pH_SessionManager:MergeSessions(sessionIds)
     merged.archived = false
     merged.archivedAt = nil
     merged.archivedReason = nil
+
+    -- Recompute rep potential from merged item counts using current rules.
+    self:RecomputeRepPotentialForSession(merged)
 
     local removedSnapshots = {}
     for _, src in ipairs(sourceSessions) do
@@ -741,6 +740,110 @@ function pH_SessionManager:ResumeSession(resumeReason, resumeSource)
     return true, "Session resumed"
 end
 
+local STANDING_TO_ID = {
+    hated = 1,
+    hostile = 2,
+    unfriendly = 3,
+    neutral = 4,
+    friendly = 5,
+    honored = 6,
+    revered = 7,
+    exalted = 8,
+}
+
+local function NormalizeFactionKey(value)
+    if not value then
+        return nil
+    end
+    local s = string.lower(tostring(value))
+    s = s:gsub("[^%w%s']", " ")
+    s = s:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    s = s:gsub("^the ", "")
+    return s
+end
+
+local function ToStandingID(value)
+    if value == nil then
+        return nil
+    end
+    if type(value) == "number" then
+        return value
+    end
+    local key = NormalizeFactionKey(value)
+    return key and STANDING_TO_ID[key] or nil
+end
+
+local function BuildFactionStandingMap()
+    local map = {}
+    local count = GetNumFactions and GetNumFactions() or 0
+    for i = 1, count do
+        local name, _, standingID, _, _, _, _, _, isHeader = GetFactionInfo(i)
+        if not isHeader and name and standingID then
+            map[NormalizeFactionKey(name)] = standingID
+        end
+    end
+    return map
+end
+
+local function IsStandingEligible(rule, standingID)
+    if not rule then
+        return false
+    end
+    if standingID == nil then
+        return false
+    end
+    local minStandingID = ToStandingID(rule.minStanding) or 1
+    local maxStandingID = ToStandingID(rule.maxStanding) or 8
+    return standingID >= minStandingID and standingID <= maxStandingID
+end
+
+local function BuildRepPotentialEntry(itemID, itemName, count, rules, standingByFaction)
+    if not rules or #rules == 0 then
+        return nil
+    end
+    local entry = {
+        count = count,
+        bundleSize = math.max(1, tonumber(rules[1].bundleSize) or 1),
+        repPerBundle = math.max(0, tonumber(rules[1].repPerBundle) or 0),
+        potentialRep = 0,   -- Backward compatibility alias for eligibleRep
+        eligibleRep = 0,
+        theoreticalRep = 0,
+        isApprox = false,
+        factionKey = rules[1].factionKey or "Unknown",
+        targets = {},
+    }
+
+    for _, rule in ipairs(rules) do
+        local bundleSize = math.max(1, tonumber(rule.bundleSize) or 1)
+        local repPerBundle = math.max(0, tonumber(rule.repPerBundle) or 0)
+        local theoreticalRep = math.floor((count / bundleSize) * repPerBundle)
+        local standingID = standingByFaction[NormalizeFactionKey(rule.factionKey)]
+        local eligibleRep = IsStandingEligible(rule, standingID) and theoreticalRep or 0
+        local isApprox = (count % bundleSize) ~= 0
+        table.insert(entry.targets, {
+            factionKey = rule.factionKey or "Unknown",
+            bundleSize = bundleSize,
+            repPerBundle = repPerBundle,
+            theoreticalRep = theoreticalRep,
+            eligibleRep = eligibleRep,
+            isApprox = isApprox,
+            standingID = standingID,
+            minStanding = rule.minStanding,
+            maxStanding = rule.maxStanding,
+            turninNpc = rule.turninNpc,
+            turninZone = rule.turninZone,
+            turninMethod = rule.turninMethod,
+            repeatable = rule.repeatable and true or false,
+        })
+        entry.theoreticalRep = entry.theoreticalRep + theoreticalRep
+        entry.eligibleRep = entry.eligibleRep + eligibleRep
+        entry.isApprox = entry.isApprox or isApprox
+    end
+
+    entry.potentialRep = entry.eligibleRep
+    return entry
+end
+
 local function BuildRepPotentialItems(session)
     local out = {}
     local repPotential = session and session.metrics and session.metrics.repPotential or nil
@@ -757,7 +860,7 @@ local function BuildRepPotentialItems(session)
             local progressCount = count % bundleSize
             local neededForNext = (progressCount == 0) and 0 or (bundleSize - progressCount)
             local itemName = (session.items and session.items[itemID] and session.items[itemID].name) or GetItemInfo(itemID) or ("Item " .. tostring(itemID))
-            local rule = pH_RepTurninCatalog and pH_RepTurninCatalog.GetRepRule and pH_RepTurninCatalog:GetRepRule(itemID, itemName) or nil
+            local firstTarget = entry.targets and entry.targets[1] or nil
             table.insert(out, {
                 itemID = itemID,
                 itemName = itemName,
@@ -765,22 +868,33 @@ local function BuildRepPotentialItems(session)
                 bundleSize = bundleSize,
                 repPerBundle = repPerBundle,
                 potentialRep = math.max(0, tonumber(entry.potentialRep) or 0),
-                factionKey = entry.factionKey or (rule and rule.factionKey) or "Unknown",
+                eligibleRep = math.max(0, tonumber(entry.eligibleRep) or 0),
+                theoreticalRep = math.max(0, tonumber(entry.theoreticalRep) or 0),
+                factionKey = entry.factionKey or (firstTarget and firstTarget.factionKey) or "Unknown",
                 progressCount = progressCount,
                 neededForNext = neededForNext,
-                turninNpc = rule and rule.turninNpc or nil,
-                turninZone = rule and rule.turninZone or nil,
-                turninMethod = rule and rule.turninMethod or nil,
-                repeatable = (rule and rule.repeatable) and true or false,
+                turninNpc = (firstTarget and firstTarget.turninNpc) or nil,
+                turninZone = (firstTarget and firstTarget.turninZone) or nil,
+                turninMethod = (firstTarget and firstTarget.turninMethod) or nil,
+                repeatable = (firstTarget and firstTarget.repeatable) and true or false,
+                isApprox = entry.isApprox and true or false,
+                targets = entry.targets or {},
             })
         end
     end
 
     table.sort(out, function(a, b)
-        if (a.potentialRep or 0) == (b.potentialRep or 0) then
-            return (a.count or 0) > (b.count or 0)
+        local ae = a.eligibleRep or a.potentialRep or 0
+        local be = b.eligibleRep or b.potentialRep or 0
+        if ae == be then
+            local at = a.theoreticalRep or 0
+            local bt = b.theoreticalRep or 0
+            if at == bt then
+                return (a.count or 0) > (b.count or 0)
+            end
+            return at > bt
         end
-        return (a.potentialRep or 0) > (b.potentialRep or 0)
+        return ae > be
     end)
 
     return out
@@ -928,14 +1042,29 @@ function pH_SessionManager:GetMetrics(session)
         end
     end
 
-    local repPotentialTotal = (session.metrics and session.metrics.repPotential and session.metrics.repPotential.total) or 0
+    local repPotentialTotal = (session.metrics and session.metrics.repPotential and (session.metrics.repPotential.eligibleTotal or session.metrics.repPotential.total)) or 0
+    local repPotentialTheoreticalTotal = (session.metrics and session.metrics.repPotential and session.metrics.repPotential.theoreticalTotal) or 0
     local repPotentialByFaction = {}
-    if session.metrics and session.metrics.repPotential and session.metrics.repPotential.byFaction then
-        for factionName, value in pairs(session.metrics.repPotential.byFaction) do
+    if session.metrics and session.metrics.repPotential and (session.metrics.repPotential.eligibleByFaction or session.metrics.repPotential.byFaction) then
+        local byFaction = session.metrics.repPotential.eligibleByFaction or session.metrics.repPotential.byFaction
+        for factionName, value in pairs(byFaction) do
             repPotentialByFaction[factionName] = value
         end
     end
+    local repPotentialTheoreticalByFaction = {}
+    if session.metrics and session.metrics.repPotential and session.metrics.repPotential.theoreticalByFaction then
+        for factionName, value in pairs(session.metrics.repPotential.theoreticalByFaction) do
+            repPotentialTheoreticalByFaction[factionName] = value
+        end
+    end
     local repPotentialItems = BuildRepPotentialItems(session)
+    local repPotentialApprox = false
+    for _, item in ipairs(repPotentialItems) do
+        if item and item.isApprox then
+            repPotentialApprox = true
+            break
+        end
+    end
 
     return {
         durationSec = durationSec,
@@ -985,8 +1114,11 @@ function pH_SessionManager:GetMetrics(session)
         repEnabled = repEnabled,
         repTopFactions = repTopFactions,
         repPotentialTotal = repPotentialTotal,
+        repPotentialTheoreticalTotal = repPotentialTheoreticalTotal,
         repPotentialByFaction = repPotentialByFaction,
+        repPotentialTheoreticalByFaction = repPotentialTheoreticalByFaction,
         repPotentialItems = repPotentialItems,
+        repPotentialApprox = repPotentialApprox,
         honorGained = honorGained,
         honorPerHour = honorPerHour,
         honorEnabled = honorEnabled,
@@ -1137,7 +1269,17 @@ local function EnsureRepPotential(session)
         session.metrics = {}
     end
     if not session.metrics.repPotential then
-        session.metrics.repPotential = { total = 0, byFaction = {}, byItem = {} }
+        session.metrics.repPotential = {
+            total = 0, byFaction = {}, byItem = {},
+            eligibleTotal = 0, theoreticalTotal = 0,
+            eligibleByFaction = {}, theoreticalByFaction = {},
+        }
+    end
+    if session.metrics.repPotential.eligibleTotal == nil then
+        session.metrics.repPotential.eligibleTotal = session.metrics.repPotential.total or 0
+    end
+    if session.metrics.repPotential.theoreticalTotal == nil then
+        session.metrics.repPotential.theoreticalTotal = 0
     end
     if not session.metrics.repPotential.byFaction then
         session.metrics.repPotential.byFaction = {}
@@ -1145,51 +1287,23 @@ local function EnsureRepPotential(session)
     if not session.metrics.repPotential.byItem then
         session.metrics.repPotential.byItem = {}
     end
+    if not session.metrics.repPotential.eligibleByFaction then
+        session.metrics.repPotential.eligibleByFaction = {}
+    end
+    if not session.metrics.repPotential.theoreticalByFaction then
+        session.metrics.repPotential.theoreticalByFaction = {}
+    end
 end
 
 function pH_SessionManager:AdjustRepPotentialForItem(session, itemID, deltaCount, itemName)
     if not session or not itemID or not deltaCount or deltaCount == 0 then
         return
     end
-    if not pH_RepTurninCatalog or not pH_RepTurninCatalog.GetRepRule then
+    if not pH_RepTurninCatalog or not pH_RepTurninCatalog.GetRepRules then
         return
     end
-
-    local rule = pH_RepTurninCatalog:GetRepRule(itemID, itemName)
-    if not rule then
-        return
-    end
-
-    EnsureRepPotential(session)
-    local byItem = session.metrics.repPotential.byItem
-    local byFaction = session.metrics.repPotential.byFaction
-    local entry = byItem[itemID]
-    if not entry then
-        entry = {
-            count = 0,
-            potentialRep = 0,
-            factionKey = rule.factionKey,
-            bundleSize = rule.bundleSize,
-            repPerBundle = rule.repPerBundle,
-        }
-        byItem[itemID] = entry
-    end
-
-    local oldRep = entry.potentialRep or 0
-    entry.count = math.max(0, (entry.count or 0) + deltaCount)
-    entry.potentialRep = math.floor((entry.count / rule.bundleSize) * rule.repPerBundle)
-    local repDelta = entry.potentialRep - oldRep
-
-    if repDelta ~= 0 then
-        byFaction[rule.factionKey] = (byFaction[rule.factionKey] or 0) + repDelta
-        session.metrics.repPotential.total = (session.metrics.repPotential.total or 0) + repDelta
-        if byFaction[rule.factionKey] < 0 then
-            byFaction[rule.factionKey] = 0
-        end
-        if session.metrics.repPotential.total < 0 then
-            session.metrics.repPotential.total = 0
-        end
-    end
+    -- Source of truth is session.items count; recompute all per-item/faction totals.
+    self:RecomputeRepPotentialForSession(session)
 end
 
 function pH_SessionManager:RecomputeRepPotentialForSession(session)
@@ -1198,14 +1312,40 @@ function pH_SessionManager:RecomputeRepPotentialForSession(session)
     end
     EnsureRepPotential(session)
     session.metrics.repPotential.total = 0
+    session.metrics.repPotential.eligibleTotal = 0
+    session.metrics.repPotential.theoreticalTotal = 0
     session.metrics.repPotential.byFaction = {}
+    session.metrics.repPotential.eligibleByFaction = {}
+    session.metrics.repPotential.theoreticalByFaction = {}
     session.metrics.repPotential.byItem = {}
 
+    local standings = BuildFactionStandingMap()
     for itemID, itemData in pairs(session.items or {}) do
         local count = (itemData and itemData.count) or 0
-        if count > 0 then
-            self:AdjustRepPotentialForItem(session, itemID, count, itemData and itemData.name)
+        local itemName = itemData and itemData.name or nil
+        if count > 0 and pH_RepTurninCatalog and pH_RepTurninCatalog.GetRepRules then
+            local rules = pH_RepTurninCatalog:GetRepRules(itemID, itemName)
+            local entry = BuildRepPotentialEntry(itemID, itemName, count, rules, standings)
+            if entry then
+                session.metrics.repPotential.byItem[itemID] = entry
+                session.metrics.repPotential.eligibleTotal = session.metrics.repPotential.eligibleTotal + (entry.eligibleRep or 0)
+                session.metrics.repPotential.theoreticalTotal = session.metrics.repPotential.theoreticalTotal + (entry.theoreticalRep or 0)
+
+                for _, target in ipairs(entry.targets or {}) do
+                    local factionKey = target.factionKey or "Unknown"
+                    session.metrics.repPotential.eligibleByFaction[factionKey] =
+                        (session.metrics.repPotential.eligibleByFaction[factionKey] or 0) + (target.eligibleRep or 0)
+                    session.metrics.repPotential.theoreticalByFaction[factionKey] =
+                        (session.metrics.repPotential.theoreticalByFaction[factionKey] or 0) + (target.theoreticalRep or 0)
+                end
+            end
         end
+    end
+
+    -- Backward-compatible fields
+    session.metrics.repPotential.total = session.metrics.repPotential.eligibleTotal
+    for factionName, value in pairs(session.metrics.repPotential.eligibleByFaction) do
+        session.metrics.repPotential.byFaction[factionName] = value
     end
 end
 
