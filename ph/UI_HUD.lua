@@ -190,6 +190,150 @@ local function FormatRateForMicroBar(metricKey, rate)
     end
 end
 
+local function FormatEtaInfinity()
+    return "∞"
+end
+
+local function FormatEtaCompact(seconds)
+    if not seconds or seconds <= 0 then
+        return "<1m"
+    end
+    if seconds < 60 then
+        return "<1m"
+    end
+
+    local totalMinutes = math.floor(seconds / 60)
+    if totalMinutes < 60 then
+        return string.format("%dm", totalMinutes)
+    end
+
+    local hours = math.floor(totalMinutes / 60)
+    local minutes = totalMinutes % 60
+    return string.format("%dh %02dm", hours, minutes)
+end
+
+local function GetStandingLabel(standingID)
+    local globalLabel = _G["FACTION_STANDING_LABEL" .. tostring(standingID)]
+    if globalLabel and globalLabel ~= "" then
+        return globalLabel
+    end
+    local fallback = {
+        [1] = "Hated",
+        [2] = "Hostile",
+        [3] = "Unfriendly",
+        [4] = "Neutral",
+        [5] = "Friendly",
+        [6] = "Honored",
+        [7] = "Revered",
+        [8] = "Exalted",
+    }
+    return fallback[standingID] or "Unknown"
+end
+
+local function BuildXPEtaData(xpPerHour)
+    local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or MAX_PLAYER_LEVEL
+    local level = UnitLevel("player") or 0
+    if level >= maxLevel then
+        return {
+            isCapped = true,
+            remainingXP = 0,
+            etaText = FormatEtaInfinity(),
+        }
+    end
+
+    local currentXP = UnitXP("player") or 0
+    local maxXP = UnitXPMax("player") or 0
+    local remainingXP = math.max(0, maxXP - currentXP)
+    local rate = tonumber(xpPerHour) or 0
+    if rate <= 0 then
+        return {
+            isCapped = false,
+            remainingXP = remainingXP,
+            etaText = FormatEtaInfinity(),
+        }
+    end
+
+    local etaSeconds = math.floor((remainingXP / rate) * 3600)
+    return {
+        isCapped = false,
+        remainingXP = remainingXP,
+        etaText = FormatEtaCompact(etaSeconds),
+    }
+end
+
+local function BuildRepEtaData(metrics)
+    local topFaction = metrics and metrics.repTopFactions and metrics.repTopFactions[1]
+    local factionName = topFaction and topFaction.name or nil
+    local rate = metrics and tonumber(metrics.repPerHour) or 0
+    local out = {
+        factionName = factionName or "N/A",
+        nextStanding = "Unknown",
+        remainingRep = 0,
+        etaText = FormatEtaInfinity(),
+        isCapped = false,
+    }
+    if not factionName or factionName == "" then
+        return out
+    end
+
+    local numFactions = GetNumFactions and GetNumFactions() or 0
+    for i = 1, numFactions do
+        local name, _, standingID, _, barMax, barValue, _, _, isHeader = GetFactionInfo(i)
+        if not isHeader and name == factionName then
+            local standing = tonumber(standingID) or 0
+            local remainingRep = math.max(0, (tonumber(barMax) or 0) - (tonumber(barValue) or 0))
+            local isCapped = standing >= 8
+            local nextStandingID = isCapped and standing or (standing + 1)
+
+            out.factionName = factionName
+            out.remainingRep = remainingRep
+            out.isCapped = isCapped
+            out.nextStanding = GetStandingLabel(nextStandingID)
+
+            if (not isCapped) and rate > 0 then
+                local etaSeconds = math.floor((remainingRep / rate) * 3600)
+                out.etaText = FormatEtaCompact(etaSeconds)
+            end
+            return out
+        end
+    end
+    return out
+end
+
+local function BuildXPEtaLine(data)
+    local remainingXP = data and tonumber(data.remainingXP) or 0
+    local etaText = (data and data.etaText) or FormatEtaInfinity()
+    return string.format("To next level: %d (ETA: %s)", remainingXP, etaText)
+end
+
+local function BuildRepEtaLines(data)
+    local factionName = (data and data.factionName) or "N/A"
+    local nextStanding = (data and data.nextStanding) or "Unknown"
+    local remainingRep = data and tonumber(data.remainingRep) or 0
+    local etaText = (data and data.etaText) or FormatEtaInfinity()
+    return {
+        string.format("Faction: %s", factionName),
+        string.format("To %s: %d (ETA: %s)", nextStanding, remainingRep, etaText),
+    }
+end
+
+local function FormatRepRateLine(ratePerHour)
+    local value = tonumber(ratePerHour) or 0
+    return string.format("Rate: %d/hr", value)
+end
+
+local function FormatRepGainedLine(gainedTotal)
+    local value = tonumber(gainedTotal) or 0
+    local prefix = value >= 0 and "+" or ""
+    return string.format("Gained: %s%d", prefix, value)
+end
+
+local function FormatRepPotentialLine(label, value, isEstimated)
+    local amount = tonumber(value) or 0
+    local suffix = isEstimated and " (est)" or ""
+    return string.format("%s: +%d%s", label, amount, suffix)
+end
+
 local function ShowMicroMetricTooltip(anchor, metricKey, state)
     if not anchor or not metricKey or not state then
         return
@@ -199,16 +343,26 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
         headerText = "Rep/Hour"
     end
     local currentText = state.lastUpdatedText ~= "" and state.lastUpdatedText or "0"
-    if metricKey == "rep" then
-        currentText = tostring(currentText):gsub("%*$", "")
-    end
     GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
     GameTooltip:SetText(headerText)
-    GameTooltip:AddLine(string.format("Current: %s", currentText), 0.86, 0.82, 0.70)
     if metricKey == "rep" then
+        GameTooltip:AddLine(FormatRepRateLine(state.displayRate or 0), 0.86, 0.82, 0.70)
+    else
+        GameTooltip:AddLine(string.format("Current: %s", currentText), 0.86, 0.82, 0.70)
+    end
+    if metricKey == "xp" then
+        GameTooltip:AddLine(BuildXPEtaLine(state.tooltipData), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("Bar shows current rate relative to this session's peak (with a minimum baseline).", 0.62, 0.58, 0.50, true)
+        if state.icon and state.icon:GetAlpha() < 1 then
+            GameTooltip:AddLine("No tracked gain this session.", 0.62, 0.58, 0.50)
+        end
+    elseif metricKey == "rep" then
         local potentialTotal = tonumber(state.projectedTotal) or 0
-        local approxPrefix = state.projectedApprox and "~" or ""
-        GameTooltip:AddLine(string.format("Potential: %s+%d", approxPrefix, potentialTotal), 0.3, 1.0, 0.3)
+        GameTooltip:AddLine(FormatRepPotentialLine("Potential", potentialTotal, state.projectedApprox), 0.3, 1.0, 0.3)
+        local repEtaLines = BuildRepEtaLines(state.tooltipData)
+        GameTooltip:AddLine(repEtaLines[1], 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(repEtaLines[2], 0.8, 0.8, 0.8)
         if state.projectedItems then
             for i = 1, #state.projectedItems do
                 local item = state.projectedItems[i]
@@ -218,11 +372,11 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
                     local bundleSize = tonumber(item.bundleSize) or 1
                     local eligibleRep = tonumber(item.eligibleRep) or tonumber(item.potentialRep) or 0
                     local theoreticalRep = tonumber(item.theoreticalRep) or eligibleRep
-                    local itemApproxPrefix = item.isApprox and "~" or ""
+                    local itemApproxSuffix = item.isApprox and " (est)" or ""
                     if eligibleRep == theoreticalRep then
-                        GameTooltip:AddLine(string.format("- %s: %d/%d (%s%d rep)", itemName, count, bundleSize, itemApproxPrefix, eligibleRep), 0.8, 0.8, 0.8)
+                        GameTooltip:AddLine(string.format("- %s: %d/%d (%d rep%s)", itemName, count, bundleSize, eligibleRep, itemApproxSuffix), 0.8, 0.8, 0.8)
                     else
-                        GameTooltip:AddLine(string.format("- %s: %d/%d (%s%d/%s%d rep)", itemName, count, bundleSize, itemApproxPrefix, eligibleRep, itemApproxPrefix, theoreticalRep), 0.8, 0.8, 0.8)
+                        GameTooltip:AddLine(string.format("- %s: %d/%d (%d eligible / %d theoretical rep%s)", itemName, count, bundleSize, eligibleRep, theoreticalRep, itemApproxSuffix), 0.8, 0.8, 0.8)
                     end
                 end
             end
@@ -311,6 +465,7 @@ local function UpdateMicroBars(session, metrics)
             elseif metricKey == "xp" then
                 rawRate = metrics.xpPerHour or 0
                 isActive = metrics.xpEnabled and rawRate > 0
+                state.tooltipData = BuildXPEtaData(rawRate)
             elseif metricKey == "rep" then
                 rawRate = metrics.repPerHour or 0
                 isActive = metrics.repEnabled and rawRate > 0
@@ -322,6 +477,7 @@ local function UpdateMicroBars(session, metrics)
                 state.projectedApprox = projectedApprox
                 state.projectedItemCount = #projectedItems
                 state.projectedItems = projectedItems
+                state.tooltipData = BuildRepEtaData(metrics)
             elseif metricKey == "honor" then
                 rawRate = metrics.honorPerHour or 0
                 isActive = metrics.honorEnabled and rawRate > 0
@@ -1584,10 +1740,29 @@ local function UpdateXPPanel(panel, metrics)
 
     local xpGained = metrics.xpGained or 0
     local xpPerHour = metrics.xpPerHour or 0
+    local xpEtaData = BuildXPEtaData(xpPerHour)
 
     panel.totalValue:SetText(FormatNumber(xpGained))
     panel.rateText:SetText(FormatNumber(xpPerHour) .. "/hr")
     panel.rawTotal:SetText(string.format("%s XP", FormatNumber(xpGained)))
+    panel.xpTooltipData = {
+        current = xpPerHour,
+        eta = xpEtaData,
+    }
+    panel:EnableMouse(true)
+    panel:SetScript("OnEnter", function(self)
+        local data = self.xpTooltipData or {}
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("XP/Hour")
+        GameTooltip:AddLine(string.format("Current: %d", tonumber(data.current) or 0), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(BuildXPEtaLine(data.eta), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("Bar shows current rate relative to this session's peak (with a minimum baseline).", 0.62, 0.58, 0.50, true)
+        GameTooltip:Show()
+    end)
+    panel:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
 
     -- XP sources (TODO: need to add quest vs mob tracking to SessionManager)
     -- For now, show placeholder or single total
@@ -1602,16 +1777,15 @@ local function UpdateRepPanel(panel, metrics)
     local potentialTheoreticalTotal = metrics.repPotentialTheoreticalTotal or potentialTotal
     local potentialItems = metrics.repPotentialItems or {}
     local potentialApprox = metrics.repPotentialApprox and true or false
+    local repEtaData = BuildRepEtaData(metrics)
     local hasPotentialInfo = #potentialItems > 0
-    local totalStr = totalRep >= 0 and string.format("+%d", totalRep) or string.format("%d", totalRep)
-    local rateStr = repHr >= 0 and string.format("+%d/hr", repHr) or string.format("%d/hr", repHr)
-    panel.totalValue:SetText(totalStr)
-    panel.rateText:SetText(rateStr)
+    panel.totalValue:SetText(FormatRepGainedLine(totalRep))
+    panel.rateText:SetText(FormatRepRateLine(repHr))
     panel.rawTotal:ClearAllPoints()
     panel.rawTotal:SetPoint("RIGHT", panel, "RIGHT", -PANEL_PADDING, 0)
     panel.rawTotal:SetPoint("CENTER", panel.rateText, "CENTER", 0, 0)
     panel.rawTotal:SetJustifyH("RIGHT")
-    panel.rawTotal:SetText(string.format("%s+%d%s", potentialApprox and "~" or "", potentialTotal, hasPotentialInfo and "*" or ""))
+    panel.rawTotal:SetText(string.format("%s%s", FormatRepPotentialLine("Potential", potentialTotal, potentialApprox), hasPotentialInfo and "*" or ""))
 
     -- Clear old rows
     for _, row in ipairs(panel.breakdownRows) do
@@ -1642,17 +1816,22 @@ local function UpdateRepPanel(panel, metrics)
         potentialTheoreticalTotal = potentialTheoreticalTotal or 0,
         potentialApprox = potentialApprox,
         potentialItems = potentialItems,
+        eta = repEtaData,
     }
     panel:EnableMouse(true)
     panel:SetScript("OnEnter", function(self)
         local data = self.repTooltipData or {}
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText("Rep/Hour")
-        GameTooltip:AddLine(string.format("Current: %d", data.current or 0), 0.86, 0.82, 0.70)
-        GameTooltip:AddLine(string.format("Potential: %s+%d", data.potentialApprox and "~" or "", data.potentialTotal or 0), 0.3, 1.0, 0.3)
+        GameTooltip:AddLine(FormatRepRateLine(data.current or 0), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(FormatRepGainedLine(totalRep), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(FormatRepPotentialLine("Potential", data.potentialTotal or 0, data.potentialApprox), 0.3, 1.0, 0.3)
         if (data.potentialTheoreticalTotal or 0) ~= (data.potentialTotal or 0) then
-            GameTooltip:AddLine(string.format("Theoretical: %s+%d", data.potentialApprox and "~" or "", data.potentialTheoreticalTotal or 0), 0.8, 0.8, 0.8)
+            GameTooltip:AddLine(FormatRepPotentialLine("Theoretical", data.potentialTheoreticalTotal or 0, data.potentialApprox), 0.8, 0.8, 0.8)
         end
+        local repEtaLines = BuildRepEtaLines(data.eta)
+        GameTooltip:AddLine(repEtaLines[1], 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(repEtaLines[2], 0.8, 0.8, 0.8)
         local items = data.potentialItems or {}
         if #items > 0 then
             GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
@@ -1663,11 +1842,11 @@ local function UpdateRepPanel(panel, metrics)
                 local bundleSize = tonumber(item.bundleSize) or 1
                 local eligibleRep = tonumber(item.eligibleRep) or tonumber(item.potentialRep) or 0
                 local theoreticalRep = tonumber(item.theoreticalRep) or eligibleRep
-                local itemApproxPrefix = item.isApprox and "~" or ""
+                local itemApproxSuffix = item.isApprox and " (est)" or ""
                 if eligibleRep == theoreticalRep then
-                    GameTooltip:AddLine(string.format("%s: %d/%d (%s%d rep)", itemName, count, bundleSize, itemApproxPrefix, eligibleRep), 1.0, 1.0, 1.0)
+                    GameTooltip:AddLine(string.format("%s: %d/%d (%d rep%s)", itemName, count, bundleSize, eligibleRep, itemApproxSuffix), 1.0, 1.0, 1.0)
                 else
-                    GameTooltip:AddLine(string.format("%s: %d/%d (%s%d eligible / %s%d theoretical rep)", itemName, count, bundleSize, itemApproxPrefix, eligibleRep, itemApproxPrefix, theoreticalRep), 1.0, 1.0, 1.0)
+                    GameTooltip:AddLine(string.format("%s: %d/%d (%d eligible / %d theoretical rep%s)", itemName, count, bundleSize, eligibleRep, theoreticalRep, itemApproxSuffix), 1.0, 1.0, 1.0)
                 end
                 local targets = item.targets or {}
                 if #targets > 0 then
@@ -1675,12 +1854,12 @@ local function UpdateRepPanel(panel, metrics)
                         local target = targets[j]
                         local targetEligible = tonumber(target.eligibleRep) or 0
                         local targetTheoretical = tonumber(target.theoreticalRep) or 0
-                        local targetApproxPrefix = target.isApprox and "~" or ""
+                        local targetApproxSuffix = target.isApprox and " (est)" or ""
                         local targetLine
                         if targetEligible == targetTheoretical then
-                            targetLine = string.format("-> %s: %s+%d", target.factionKey or "Unknown", targetApproxPrefix, targetEligible)
+                            targetLine = string.format("-> %s: +%d%s", target.factionKey or "Unknown", targetEligible, targetApproxSuffix)
                         else
-                            targetLine = string.format("-> %s: %s+%d eligible / %s+%d theoretical", target.factionKey or "Unknown", targetApproxPrefix, targetEligible, targetApproxPrefix, targetTheoretical)
+                            targetLine = string.format("-> %s: +%d eligible / +%d theoretical%s", target.factionKey or "Unknown", targetEligible, targetTheoretical, targetApproxSuffix)
                         end
                         GameTooltip:AddLine(targetLine, 0.85, 0.85, 0.85)
                         GameTooltip:AddLine(string.format("Turn in: %s, %s",
