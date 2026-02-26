@@ -4,7 +4,7 @@
     Handles WoW events and routes them to accounting actions.
 ]]
 
--- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax GetNumFactions GetFactionInfo pH_DB_Account pH_AutoSession
+-- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax GetNumFactions GetFactionInfo pH_DB_Account pH_AutoSession pH_Settings pH_RepTurninCatalog
 -- luacheck: ignore delta
 
 local pH_Events = {}
@@ -16,6 +16,10 @@ local GATHERING_SPELLS = {
     [2366] = "Herbalism",   -- Herb Gathering
     [8613] = "Skinning",    -- Skinning
     [7620] = "Fishing",     -- Fishing
+}
+
+local DISENCHANT_SPELLS = {
+    [13262] = true, -- Disenchant
 }
 
 --------------------------------------------------
@@ -74,6 +78,16 @@ local state = {
     xpLast = nil,
     xpMaxLast = nil,
     repCache = {},  -- [factionID] = barValue (for delta computation)
+
+    -- Pricing v2: DE attribution window
+    deUntil = 0,
+    deSpellSeenAt = 0,
+    dePreBagSnapshot = nil,
+    deLastReason = nil,
+
+    -- Rep progress notification throttling
+    lastRepProgressPrintAt = {},       -- [itemID] = GetTime()
+    lastRepProgressCountPrinted = {},  -- [itemID] = count
 }
 
 -- Initialize event system
@@ -310,6 +324,136 @@ end
 -- Phase 3: Item Looting
 --------------------------------------------------
 
+local function EnsurePickpocketStruct(session)
+    if session.pickpocket then
+        return
+    end
+    session.pickpocket = {
+        gold = 0,
+        value = 0,
+        lockboxesLooted = 0,
+        lockboxesOpened = 0,
+        fromLockbox = { gold = 0, value = 0 },
+    }
+end
+
+local function GetRepNotifyCfg()
+    local cfg = (pH_Settings and pH_Settings.repPotential) or nil
+    return {
+        showLootProgress = (cfg == nil or cfg.showLootProgress == nil) and true or (cfg.showLootProgress and true or false),
+        logMode = (cfg and cfg.logMode) or "rate_limited",
+        rateLimitSec = (cfg and cfg.rateLimitSec) or 2,
+    }
+end
+
+local function ShouldPrintRepProgress(itemID, oldCount, newCount, bundleSize, cfg)
+    local oldBundles = math.floor((oldCount or 0) / bundleSize)
+    local newBundles = math.floor((newCount or 0) / bundleSize)
+    local crossedBundle = newBundles > oldBundles
+    if cfg.logMode == "every_loot" then
+        return true
+    end
+    if cfg.logMode == "milestones" then
+        return crossedBundle
+    end
+    -- rate_limited default: always print milestones, otherwise throttle
+    if crossedBundle then
+        return true
+    end
+    local now = GetTime()
+    local lastAt = state.lastRepProgressPrintAt[itemID] or 0
+    return (now - lastAt) >= math.max(0, cfg.rateLimitSec or 2)
+end
+
+local function PrintRepProgressMessage(session, itemID, itemName, oldCount)
+    if not session or not itemID then
+        return
+    end
+    local cfg = GetRepNotifyCfg()
+    if not cfg.showLootProgress then
+        return
+    end
+    if not pH_RepTurninCatalog or not pH_RepTurninCatalog.GetRepRule then
+        return
+    end
+    local rule = pH_RepTurninCatalog:GetRepRule(itemID, itemName)
+    if not rule then
+        return
+    end
+    local entry = session.metrics and session.metrics.repPotential and session.metrics.repPotential.byItem and session.metrics.repPotential.byItem[itemID] or nil
+    if not entry then
+        return
+    end
+    local newCount = tonumber(entry.count) or 0
+    local bundleSize = tonumber(rule.bundleSize) or 1
+    if newCount <= 0 or bundleSize <= 0 then
+        return
+    end
+    if state.lastRepProgressCountPrinted[itemID] and newCount == state.lastRepProgressCountPrinted[itemID] then
+        return
+    end
+
+    if not ShouldPrintRepProgress(itemID, oldCount or 0, newCount, bundleSize, cfg) then
+        return
+    end
+
+    local potentialRep = tonumber(entry.potentialRep) or 0
+    local progress = newCount % bundleSize
+    local neededForNext = (progress == 0) and 0 or (bundleSize - progress)
+    if neededForNext == 0 then
+        print(string.format("[pH] %d %s(s) collected, ready for rep turn-in (+%d projected).", newCount, itemName, potentialRep))
+    else
+        local nextThreshold = newCount + neededForNext
+        local nextProjected = math.floor((nextThreshold / bundleSize) * (rule.repPerBundle or 0))
+        print(string.format("[pH] %d %s(s) collected, %d more till rep turn-in (+%d projected at %d).",
+            newCount, itemName, neededForNext, nextProjected, nextThreshold))
+    end
+
+    state.lastRepProgressPrintAt[itemID] = GetTime()
+    state.lastRepProgressCountPrinted[itemID] = newCount
+end
+
+function pH_Events:PostLootedItem(session, itemID, itemName, quality, itemClass, itemSubClass, count, options)
+    options = options or {}
+    if not session or not itemID or not itemName or not count or count <= 0 then
+        return false, "INVALID_INPUT"
+    end
+
+    local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+    if bucket == "other" then
+        return false, "UNTRACKED_BUCKET"
+    end
+
+    local expectedEach = pH_Valuation:ComputeExpectedValue(itemID, bucket)
+    local expectedTotal = count * expectedEach
+
+    if bucket == "container_lockbox" then
+        pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
+        return true, bucket, expectedEach, expectedTotal
+    end
+
+    local assetAccount = "Assets:Inventory:" .. self:BucketToAccountName(bucket)
+    local incomeAccount = "Income:ItemsLooted:" .. self:BucketToAccountName(bucket)
+    pH_Ledger:Post(session, assetAccount, incomeAccount, expectedTotal)
+    pH_Holdings:AddLot(session, itemID, count, expectedEach, bucket)
+    pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
+
+    if options.includePickpocket then
+        EnsurePickpocketStruct(session)
+        if options.isPickpocket then
+            session.pickpocket.value = session.pickpocket.value + expectedTotal
+            session.ledger.balances["Income:Pickpocket:Items"] = (session.ledger.balances["Income:Pickpocket:Items"] or 0) + expectedTotal
+        end
+        if options.isFromLockbox then
+            session.pickpocket.fromLockbox.value = session.pickpocket.fromLockbox.value + expectedTotal
+            session.ledger.balances["Income:Pickpocket:FromLockbox:Items"] =
+                (session.ledger.balances["Income:Pickpocket:FromLockbox:Items"] or 0) + expectedTotal
+        end
+    end
+
+    return true, bucket, expectedEach, expectedTotal
+end
+
 -- Handle CHAT_MSG_LOOT event (items)
 function pH_Events:OnLootedItem(message)
     local session = pH_SessionManager:GetActiveSession()
@@ -338,103 +482,49 @@ function pH_Events:OnLootedItem(message)
     local itemName, quality, itemClass, itemSubClass, vendorPrice = pH_Valuation:GetItemInfo(itemID)
 
     if not itemName then
-        -- Item not in cache yet, defer processing
-        -- TODO Phase 3+: Queue for retry
+        -- Cache miss fallback: derive display name from link and continue.
+        -- This preserves accounting for known rep-turnin items even when
+        -- item metadata hasn't been cached yet.
+        itemName = itemLink:match("%[(.+)%]") or ("Item " .. tostring(itemID))
         if pH_DB_Account.debug.verbose then
-            print(string.format("[pH] Item cache miss: itemID=%d, will retry", itemID))
+            print(string.format("[pH] Item cache miss fallback: itemID=%d, name=%s", itemID, itemName))
         end
-        return
-    end
-
-    -- Classify item into bucket
-    local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
-
-    if bucket == "other" then
-        -- Not tracked
-        return
     end
 
     -- Phase 6: Determine attribution context (pickpocket or lockbox)
     local currentTime = GetTime()
     local isPickpocket = (currentTime <= state.pickpocketActiveUntil)
     local isFromLockbox = (currentTime <= state.openingLockboxUntil)
-
-    -- Ensure pickpocket structure exists
-    if not session.pickpocket then
-        session.pickpocket = {
-            gold = 0,
-            value = 0,
-            lockboxesLooted = 0,
-            lockboxesOpened = 0,
-            fromLockbox = { gold = 0, value = 0 },
-        }
+    local preRepCount = 0
+    if session.metrics and session.metrics.repPotential and session.metrics.repPotential.byItem and session.metrics.repPotential.byItem[itemID] then
+        preRepCount = session.metrics.repPotential.byItem[itemID].count or 0
     end
 
-    -- Compute expected value
-    local expectedEach = pH_Valuation:ComputeExpectedValue(itemID, bucket)
-    local expectedTotal = count * expectedEach
-
-    -- Special handling for lockboxes (Phase 6)
-    if bucket == "container_lockbox" then
-        -- Lockboxes have 0 expected value, don't post to ledger
-        -- Just track in items aggregate
-        pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
-
-        -- If looted via pickpocket, increment lockboxesLooted counter
-        if isPickpocket then
-            session.pickpocket.lockboxesLooted = session.pickpocket.lockboxesLooted + count
-
-            if pH_DB_Account.debug.verbose then
-                print(string.format("[pH] Pickpocket lockbox looted: %s x%d", itemName, count))
-            end
-        end
-
+    local ok, bucket, expectedEach, expectedTotal = self:PostLootedItem(
+        session, itemID, itemName, quality, itemClass, itemSubClass, count,
+        { includePickpocket = true, isPickpocket = isPickpocket, isFromLockbox = isFromLockbox }
+    )
+    if not ok then
         return
     end
 
-    -- Post to ledger: Dr Assets:Inventory:<bucket>, Cr Income:ItemsLooted:<bucket>
-    local assetAccount = "Assets:Inventory:" .. self:BucketToAccountName(bucket)
-    local incomeAccount = "Income:ItemsLooted:" .. self:BucketToAccountName(bucket)
-
-    pH_Ledger:Post(session, assetAccount, incomeAccount, expectedTotal)
-
-    -- Add to holdings (FIFO lot)
-    pH_Holdings:AddLot(session, itemID, count, expectedEach, bucket)
-
-    -- Add to items aggregate
-    pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
-
-    -- Phase 6: Pickpocket and lockbox attribution (reporting only, no double-post)
-    if isPickpocket then
-        session.pickpocket.value = session.pickpocket.value + expectedTotal
-        -- Reporting only: update ledger balance directly (no second Post to Assets)
-        if not session.ledger.balances["Income:Pickpocket:Items"] then
-            session.ledger.balances["Income:Pickpocket:Items"] = 0
-        end
-        session.ledger.balances["Income:Pickpocket:Items"] = session.ledger.balances["Income:Pickpocket:Items"] + expectedTotal
-
-        if pH_DB_Account.debug.verbose then
-            print(string.format("[pH] Pickpocket item: %s x%d (%s)", itemName, count, pH_Ledger:FormatMoney(expectedTotal)))
-        end
+    if bucket == "container_lockbox" and isPickpocket then
+        EnsurePickpocketStruct(session)
+        session.pickpocket.lockboxesLooted = session.pickpocket.lockboxesLooted + count
     end
 
-    if isFromLockbox then
-        session.pickpocket.fromLockbox.value = session.pickpocket.fromLockbox.value + expectedTotal
-        -- Reporting only: update ledger balance directly (no second Post to Assets)
-        if not session.ledger.balances["Income:Pickpocket:FromLockbox:Items"] then
-            session.ledger.balances["Income:Pickpocket:FromLockbox:Items"] = 0
-        end
-        session.ledger.balances["Income:Pickpocket:FromLockbox:Items"] = session.ledger.balances["Income:Pickpocket:FromLockbox:Items"] + expectedTotal
-
-        if pH_DB_Account.debug.verbose then
-            print(string.format("[pH] Lockbox item: %s x%d (%s)", itemName, count, pH_Ledger:FormatMoney(expectedTotal)))
-        end
+    if pH_RepTurninCatalog and pH_RepTurninCatalog.IsRepTurninItem and pH_RepTurninCatalog:IsRepTurninItem(itemID, itemName) then
+        PrintRepProgressMessage(session, itemID, itemName, preRepCount)
     end
 
     -- Debug logging
     if pH_DB_Account.debug.verbose then
         print(string.format("[pH] Looted: %s x%d (%s, %s each)",
             itemName, count, bucket, pH_Ledger:FormatMoney(expectedEach)))
+        if expectedEach == 0 then
+            local reason = pH_Valuation:GetLastZeroReason(itemID) or "UNKNOWN"
+            print(string.format("[pH Price] Zero-value reason: itemID=%d, reason=%s", itemID, reason))
+        end
     end
 
     -- Run invariants if debug mode enabled
@@ -480,10 +570,12 @@ end
 function pH_Events:BucketToAccountName(bucket)
     if bucket == "vendor_trash" then
         return "VendorTrash"
-    elseif bucket == "rare_multi" then
-        return "RareMulti"
+    elseif bucket == "market_items" then
+        return "MarketItems"
     elseif bucket == "gathering" then
         return "Gathering"
+    elseif bucket == "enchanting" then
+        return "Enchanting"
     elseif bucket == "container_lockbox" then
         return "Containers:Lockbox"
     else
@@ -724,6 +816,16 @@ function pH_Events:OnUnitSpellcastSucceeded(unitTarget, castGUID, spellID)
     local spellName = GetSpellInfo(spellID)
     if not spellName then
         return
+    end
+
+    if DISENCHANT_SPELLS[spellID] or spellName == "Disenchant" then
+        state.deSpellSeenAt = GetTime()
+        state.deUntil = state.deSpellSeenAt + 3.0
+        state.dePreBagSnapshot = self:SnapshotBags()
+        state.deLastReason = "PENDING"
+        if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
+            print("[pH] Disenchant detected, awaiting bag delta attribution")
+        end
     end
 
     --------------------------------------------------
@@ -981,6 +1083,119 @@ function pH_Events:SnapshotBags()
     return snapshot
 end
 
+local function ResetDEState()
+    state.deUntil = 0
+    state.deSpellSeenAt = 0
+    state.dePreBagSnapshot = nil
+end
+
+function pH_Events:TryProcessDisenchant(session)
+    if not session then
+        return false
+    end
+    if not state.dePreBagSnapshot then
+        state.dePreBagSnapshot = self:SnapshotBags()
+        state.deLastReason = "NO_PRE_SNAPSHOT"
+        return false
+    end
+    if GetTime() > (state.deUntil or 0) then
+        state.deLastReason = "DE_WINDOW_EXPIRED"
+        ResetDEState()
+        return false
+    end
+
+    local current = self:SnapshotBags()
+    local consumed = {}
+    local produced = {}
+
+    for itemID, prevCount in pairs(state.dePreBagSnapshot) do
+        local curr = current[itemID] or 0
+        if curr < prevCount then
+            consumed[itemID] = prevCount - curr
+        end
+    end
+    for itemID, currCount in pairs(current) do
+        local prev = state.dePreBagSnapshot[itemID] or 0
+        if currCount > prev then
+            produced[itemID] = currCount - prev
+        end
+    end
+
+    local sourceItemID = nil
+    local sourceCount = 0
+    local candidateCount = 0
+    for itemID, delta in pairs(consumed) do
+        local held = pH_Holdings:GetCount(session, itemID)
+        local itemData = session.items and session.items[itemID] or nil
+        if held >= delta and itemData and itemData.bucket == "market_items" then
+            candidateCount = candidateCount + 1
+            sourceItemID = itemID
+            sourceCount = delta
+        end
+    end
+
+    local enchantingOutputs = {}
+    local enchantingOutputCount = 0
+    for itemID, delta in pairs(produced) do
+        local itemName, quality, itemClass, itemSubClass = pH_Valuation:GetItemInfo(itemID)
+        if itemName and pH_Valuation:IsEnchantingMat(itemID, itemClass, itemSubClass, itemName) then
+            enchantingOutputs[itemID] = { count = delta, name = itemName, quality = quality, class = itemClass, subClass = itemSubClass }
+            enchantingOutputCount = enchantingOutputCount + delta
+        end
+    end
+
+    -- Keep waiting while bag changes are still in flight
+    if candidateCount == 0 or enchantingOutputCount == 0 then
+        state.dePreBagSnapshot = current
+        state.deLastReason = "DELTAS_INCOMPLETE"
+        return false
+    end
+
+    if candidateCount ~= 1 then
+        state.deLastReason = "AMBIGUOUS_DE_SOURCE"
+        ResetDEState()
+        return false
+    end
+
+    if sourceCount ~= 1 then
+        state.deLastReason = "AMBIGUOUS_DE_COUNT"
+        ResetDEState()
+        return false
+    end
+
+    local bucketValues = pH_Holdings:ConsumeFIFO(session, sourceItemID, 1)
+    local sourceHeldValue = 0
+    for bucketName, heldValue in pairs(bucketValues) do
+        sourceHeldValue = sourceHeldValue + heldValue
+        if heldValue > 0 then
+            local assetAccount = "Assets:Inventory:" .. self:BucketToAccountName(bucketName)
+            pH_Ledger:Post(session, "Equity:InventoryRealization", assetAccount, heldValue)
+        end
+    end
+
+    if session.items and session.items[sourceItemID] then
+        session.items[sourceItemID].count = math.max(0, (session.items[sourceItemID].count or 0) - 1)
+    end
+    if pH_SessionManager and pH_SessionManager.AdjustRepPotentialForItem then
+        local sourceItemName = session.items and session.items[sourceItemID] and session.items[sourceItemID].name or nil
+        pH_SessionManager:AdjustRepPotentialForItem(session, sourceItemID, -1, sourceItemName)
+    end
+
+    for itemID, out in pairs(enchantingOutputs) do
+        self:PostLootedItem(session, itemID, out.name, out.quality, out.class, out.subClass, out.count)
+    end
+
+    if pH_DB_Account.debug.verbose then
+        local srcName = GetItemInfo(sourceItemID) or tostring(sourceItemID)
+        print(string.format("[pH] DE rebucket: consumed %s x1 (held=%s), produced %d enchanting mats",
+            srcName, pH_Ledger:FormatMoney(sourceHeldValue), enchantingOutputCount))
+    end
+
+    state.deLastReason = "OK"
+    ResetDEState()
+    return true
+end
+
 -- Build per-slot snapshot of lockbox items only (for BAG_UPDATE lockbox-open detection)
 -- Returns: [ "bag_slot" ] = { itemID = n, count = n }
 function pH_Events:SnapshotLockboxesBySlot()
@@ -1076,6 +1291,9 @@ function pH_Events:OnBagUpdateAtMerchant()
     -- Phase 6: When NOT at merchant, detect lockbox opening via bag diff (UseContainerItem often not hookable in Classic)
     if not state.merchantOpen then
         self:OnBagUpdateLockboxCheck(session)
+        if GetTime() <= (state.deUntil or 0) then
+            self:TryProcessDisenchant(session)
+        end
         return
     end
 
@@ -1257,6 +1475,9 @@ function pH_Events:ProcessVendorSale(session, itemID, itemName, count, vendorPro
             session.items[itemID].count = 0
         end
     end
+    if pH_SessionManager and pH_SessionManager.AdjustRepPotentialForItem then
+        pH_SessionManager:AdjustRepPotentialForItem(session, itemID, -count, itemName)
+    end
 
     -- Debug logging
     if pH_DB_Account.debug.verbose then
@@ -1364,33 +1585,18 @@ function pH_Events:InjectLootItem(itemID, count)
         return false, string.format("Item not in cache: itemID=%d (try mousing over it first)", itemID)
     end
 
-    -- Classify and value item
-    local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
-
-    if bucket == "other" then
+    local ok, bucket, expectedEach = self:PostLootedItem(session, itemID, itemName, quality, itemClass, itemSubClass, count)
+    if not ok then
         return false, string.format("Item not tracked: %s (bucket=other)", itemName)
     end
-
-    local expectedEach = pH_Valuation:ComputeExpectedValue(itemID, bucket)
-
-    -- Post to ledger (unless lockbox)
-    if bucket ~= "container_lockbox" then
-        local assetAccount = "Assets:Inventory:" .. self:BucketToAccountName(bucket)
-        local incomeAccount = "Income:ItemsLooted:" .. self:BucketToAccountName(bucket)
-
-        local expectedTotal = count * expectedEach
-        pH_Ledger:Post(session, assetAccount, incomeAccount, expectedTotal)
-
-        -- Add to holdings
-        pH_Holdings:AddLot(session, itemID, count, expectedEach, bucket)
-    end
-
-    -- Add to items aggregate
-    pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
 
     -- Debug logging
     print(string.format("[pH Test] Injected loot: %s x%d (bucket=%s, %s each)",
         itemName, count, bucket, pH_Ledger:FormatMoney(expectedEach)))
+    if expectedEach == 0 then
+        local reason = pH_Valuation:GetLastZeroReason(itemID) or "UNKNOWN"
+        print(string.format("[pH Price] Zero-value reason: itemID=%d, reason=%s", itemID, reason))
+    end
 
     -- Run invariants if debug mode enabled
     if pH_DB_Account.debug.enabled then
@@ -1495,6 +1701,7 @@ function pH_Events:OnPlayerXPUpdate()
         session.metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
+            repPotential = { total = 0, byFaction = {}, byItem = {} },
             honor = { gained = 0, enabled = false, kills = 0 },
         }
     end
@@ -1551,11 +1758,15 @@ function pH_Events:OnUpdateFaction()
         session.metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
+            repPotential = { total = 0, byFaction = {}, byItem = {} },
             honor = { gained = 0, enabled = false, kills = 0 },
         }
     end
     if not session.metrics.rep then
         session.metrics.rep = { gained = 0, enabled = false, byFaction = {} }
+    end
+    if not session.metrics.repPotential then
+        session.metrics.repPotential = { total = 0, byFaction = {}, byItem = {} }
     end
 
     -- Scan all factions and compute deltas
@@ -1611,6 +1822,7 @@ function pH_Events:OnHonorGain(message)
         session.metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
+            repPotential = { total = 0, byFaction = {}, byItem = {} },
             honor = { gained = 0, enabled = false, kills = 0 },
         }
     end
@@ -1643,6 +1855,10 @@ function pH_Events:OnHonorGain(message)
         -- Update HUD
         pH_HUD:Update()
     end
+end
+
+function pH_Events:GetLastDEResolutionReason()
+    return state.deLastReason
 end
 
 -- Export module

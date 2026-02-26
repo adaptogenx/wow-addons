@@ -838,8 +838,9 @@ function pH_History_Detail:RenderSummaryTab()
             local rawGold = pH_Ledger:GetBalance(session, "Income:LootedCoin") or 0
             -- NOTE: Ledger posts vendor trash income to Income:ItemsLooted:VendorTrash
             local vendorTrash = pH_Ledger:GetBalance(session, "Income:ItemsLooted:VendorTrash") or 0
-            local rareItems = pH_Ledger:GetBalance(session, "Income:ItemsLooted:RareMulti") or 0
+            local marketItems = pH_Ledger:GetBalance(session, "Income:ItemsLooted:MarketItems") or 0
             local gathering = pH_Ledger:GetBalance(session, "Income:ItemsLooted:Gathering") or 0
+            local enchanting = pH_Ledger:GetBalance(session, "Income:ItemsLooted:Enchanting") or 0
             local questRewards = pH_Ledger:GetBalance(session, "Income:Quest") or 0
             local vendorSales = pH_Ledger:GetBalance(session, "Income:VendorSales") or 0
             local pickpocketCoin = pH_Ledger:GetBalance(session, "Income:Pickpocket:Coin") or 0
@@ -847,7 +848,7 @@ function pH_History_Detail:RenderSummaryTab()
             local lockboxCoin = pH_Ledger:GetBalance(session, "Income:Pickpocket:FromLockbox:Coin") or 0
             local lockboxItems = pH_Ledger:GetBalance(session, "Income:Pickpocket:FromLockbox:Items") or 0
             local pickpocketTotal = pickpocketCoin + pickpocketItems + lockboxCoin + lockboxItems
-            local totalGold = rawGold + vendorTrash + rareItems + gathering + questRewards + vendorSales + pickpocketTotal
+            local totalGold = rawGold + vendorTrash + marketItems + gathering + enchanting + questRewards + vendorSales + pickpocketTotal
 
             local durationHours = metrics.durationSec / 3600
             if durationHours == 0 then durationHours = 1 end
@@ -857,8 +858,9 @@ function pH_History_Detail:RenderSummaryTab()
                 {"Quest Rewards", questRewards},
                 {"Vendor Sales", vendorSales},
                 {"Vendor Trash", vendorTrash},
-                {"AH / Rare Items", rareItems},
+                {"Market Items", marketItems},
                 {"Gathering", gathering},
+                {"Enchanting", enchanting},
                 {"Pickpocketing", pickpocketTotal},
             }
 
@@ -1015,8 +1017,9 @@ function pH_History_Detail:RenderSummaryTab()
     -- Inventory Breakdown
     AddHeader("Inventory Expected")
     AddRow("Vendor Trash", pH_Ledger:FormatMoney(metrics.invVendorTrash))
-    AddRow("Rare/Multi", pH_Ledger:FormatMoney(metrics.invRareMulti))
+    AddRow("Market Items", pH_Ledger:FormatMoney(metrics.invMarketItems))
     AddRow("Gathering", pH_Ledger:FormatMoney(metrics.invGathering))
+    AddRow("Enchanting", pH_Ledger:FormatMoney(metrics.invEnchanting or 0))
 
     -- Pickpocket Summary (if present)
     if session.pickpocket and (metrics.pickpocketGold > 0 or metrics.pickpocketValue > 0) then

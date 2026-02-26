@@ -27,6 +27,8 @@ local PROMPT_ALWAYS = "always"
 
 local INSTANCE_START_PAUSED = "paused"
 local INSTANCE_START_ACTIVE = "active"
+local QUEST_TURNIN_WINDOW_SEC = 8.0
+local REP_KILL_SIGNAL_SEC = 2.5
 
 local SOURCE_LABELS = {
     ["xp.mob_kill"] = "XP: Mob kill",
@@ -110,7 +112,7 @@ local function BuildProfile(profile)
         start["xp.zone_discovery"].action = ACTION_OFF
         resume["xp.zone_discovery"].action = ACTION_OFF
 
-        start["xp.quest_turnin"].action = ACTION_OFF
+        start["xp.quest_turnin"].action = ACTION_PROMPT
         resume["xp.quest_turnin"].action = ACTION_OFF
 
         start["gold.quest_reward"].action = ACTION_OFF
@@ -143,8 +145,8 @@ local function BuildProfile(profile)
         start["rep.item_turnin"].action = ACTION_OFF
         resume["rep.item_turnin"].action = ACTION_OFF
 
-        start["rep.other"].action = ACTION_PROMPT
-        resume["rep.other"].action = ACTION_AUTO
+        start["rep.other"].action = ACTION_OFF
+        resume["rep.other"].action = ACTION_OFF
     end
 
     return start, resume
@@ -254,6 +256,26 @@ local function MigrateSettings()
         end
     end
 
+    -- One-time migration to updated source defaults (0.14.x):
+    -- - Quest turn-in XP should prompt to start.
+    -- - Ambiguous rep should be safe/off by default.
+    if cfg._sourceRulesMigrationV1400 ~= true then
+        local xpStart = cfg.start.rules["xp.quest_turnin"] and cfg.start.rules["xp.quest_turnin"].action
+        local xpResume = cfg.resume.rules["xp.quest_turnin"] and cfg.resume.rules["xp.quest_turnin"].action
+        if xpStart == ACTION_OFF and xpResume == ACTION_OFF then
+            cfg.start.rules["xp.quest_turnin"].action = ACTION_PROMPT
+        end
+
+        local repOtherStart = cfg.start.rules["rep.other"] and cfg.start.rules["rep.other"].action
+        local repOtherResume = cfg.resume.rules["rep.other"] and cfg.resume.rules["rep.other"].action
+        if repOtherStart == ACTION_PROMPT and repOtherResume == ACTION_AUTO then
+            cfg.start.rules["rep.other"].action = ACTION_OFF
+            cfg.resume.rules["rep.other"].action = ACTION_OFF
+        end
+
+        cfg._sourceRulesMigrationV1400 = true
+    end
+
 end
 
 local function SourceLabel(source)
@@ -283,6 +305,8 @@ local state = {
     pendingXPSourceUntil = 0,
     pendingRepSource = nil,
     pendingRepSourceUntil = 0,
+    pendingRepHint = nil,
+    repKillSignalUntil = 0,
 
     toastFrame = nil,
     promptFrame = nil,
@@ -454,14 +478,14 @@ end
 
 function pH_AutoSession:MarkQuestTurnIn(hasXP, hasMoney)
     local now = GetTime()
-    state.questTurnInUntil = now + 2.0
+    state.questTurnInUntil = now + QUEST_TURNIN_WINDOW_SEC
     if hasXP then
         state.pendingXPSource = "xp.quest_turnin"
-        state.pendingXPSourceUntil = now + 2.0
+        state.pendingXPSourceUntil = now + QUEST_TURNIN_WINDOW_SEC
     end
     if hasMoney then
         -- used by CHAT_MSG_MONEY classification shortly after turn-in
-        state.questTurnInUntil = now + 2.0
+        state.questTurnInUntil = now + QUEST_TURNIN_WINDOW_SEC
     end
 end
 
@@ -497,21 +521,32 @@ function pH_AutoSession:MarkXPContextFromMessage(message)
     if lower:find("experience") then
         if now <= state.questTurnInUntil then
             state.pendingXPSource = "xp.quest_turnin"
+            state.repKillSignalUntil = 0
         else
             state.pendingXPSource = "xp.mob_kill"
+            state.repKillSignalUntil = now + REP_KILL_SIGNAL_SEC
         end
         state.pendingXPSourceUntil = now + 2.0
     end
 end
 
-function pH_AutoSession:MarkRepContextFromMessage(_message)
+function pH_AutoSession:MarkRepContextFromMessage(message)
+    state.pendingRepHint = nil
+    if type(message) == "string" then
+        local lower = message:lower()
+        if lower:find("mark of", 1, true) or lower:find("arakkoa feather", 1, true) then
+            self:MarkItemTurnIn()
+            state.pendingRepHint = "rep.item_turnin"
+        end
+    end
     local now = GetTime()
     if now <= state.questTurnInUntil then
         state.pendingRepSource = "rep.quest_turnin"
     elseif now <= state.itemTurnInUntil then
         state.pendingRepSource = "rep.item_turnin"
     else
-        state.pendingRepSource = "rep.mob_kill"
+        -- Ambiguous until UPDATE_FACTION resolves source precedence.
+        state.pendingRepSource = nil
     end
     state.pendingRepSourceUntil = now + 2.0
 end
@@ -686,12 +721,22 @@ function pH_AutoSession:ClassifyActivity(event, ...)
         end
 
         local source = "rep.other"
-        if now <= state.pendingRepSourceUntil and state.pendingRepSource then
-            source = state.pendingRepSource
-        elseif now <= state.questTurnInUntil then
+        if now <= state.questTurnInUntil then
             source = "rep.quest_turnin"
         elseif now <= state.itemTurnInUntil then
             source = "rep.item_turnin"
+        elseif now <= state.repKillSignalUntil then
+            source = "rep.mob_kill"
+        elseif now <= state.pendingRepSourceUntil and state.pendingRepSource then
+            source = state.pendingRepSource
+        end
+
+        -- Consume hints to avoid stale/circular misclassification.
+        state.pendingRepSource = nil
+        state.pendingRepSourceUntil = 0
+        state.pendingRepHint = nil
+        if source == "rep.mob_kill" then
+            state.repKillSignalUntil = 0
         end
 
         return { source = source, confidence = "medium", amount = totalDelta, shouldSuppress = false }

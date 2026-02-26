@@ -4,7 +4,7 @@
     Handles session creation, persistence, and metrics computation.
 ]]
 
--- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax UnitClass pH_DB_Account pH_Settings UnitName GetRealmName UnitFactionGroup pH_AutoSession
+-- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax UnitClass pH_DB_Account pH_Settings UnitName GetRealmName UnitFactionGroup pH_AutoSession pH_RepTurninCatalog
 
 local pH_SessionManager = {}
 local DEFAULT_SHORT_SESSION_SEC = 300
@@ -207,6 +207,7 @@ function pH_SessionManager:StartSession(startReason, startSource)
         metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
+            repPotential = { total = 0, byFaction = {}, byItem = {} },
             honor = { gained = 0, enabled = false, kills = 0 },
         },
 
@@ -507,6 +508,7 @@ function pH_SessionManager:MergeSessions(sessionIds)
         metrics = {
             xp = { gained = 0, enabled = false },
             rep = { gained = 0, enabled = false, byFaction = {} },
+            repPotential = { total = 0, byFaction = {}, byItem = {} },
             honor = { gained = 0, enabled = false, kills = 0 },
         },
         snapshots = {
@@ -584,6 +586,24 @@ function pH_SessionManager:MergeSessions(sessionIds)
             merged.metrics.rep.enabled = merged.metrics.rep.enabled or (mr.enabled and true or false)
             for factionName, gain in pairs(mr.byFaction or {}) do
                 merged.metrics.rep.byFaction[factionName] = (merged.metrics.rep.byFaction[factionName] or 0) + gain
+            end
+
+            local mrp = s.metrics.repPotential or {}
+            merged.metrics.repPotential.total = (merged.metrics.repPotential.total or 0) + (mrp.total or 0)
+            for factionName, value in pairs(mrp.byFaction or {}) do
+                merged.metrics.repPotential.byFaction[factionName] = (merged.metrics.repPotential.byFaction[factionName] or 0) + value
+            end
+            for itemID, itemData in pairs(mrp.byItem or {}) do
+                local dst = merged.metrics.repPotential.byItem[itemID]
+                if not dst then
+                    merged.metrics.repPotential.byItem[itemID] = DeepCopy(itemData)
+                else
+                    dst.count = (dst.count or 0) + (itemData.count or 0)
+                    dst.potentialRep = (dst.potentialRep or 0) + (itemData.potentialRep or 0)
+                    dst.factionKey = dst.factionKey or itemData.factionKey
+                    dst.bundleSize = dst.bundleSize or itemData.bundleSize
+                    dst.repPerBundle = dst.repPerBundle or itemData.repPerBundle
+                end
             end
 
             local mh = s.metrics.honor or {}
@@ -721,6 +741,51 @@ function pH_SessionManager:ResumeSession(resumeReason, resumeSource)
     return true, "Session resumed"
 end
 
+local function BuildRepPotentialItems(session)
+    local out = {}
+    local repPotential = session and session.metrics and session.metrics.repPotential or nil
+    local byItem = repPotential and repPotential.byItem or nil
+    if not byItem then
+        return out
+    end
+
+    for itemID, entry in pairs(byItem) do
+        local count = math.max(0, tonumber(entry.count) or 0)
+        local bundleSize = math.max(1, tonumber(entry.bundleSize) or 1)
+        local repPerBundle = math.max(0, tonumber(entry.repPerBundle) or 0)
+        if count > 0 then
+            local progressCount = count % bundleSize
+            local neededForNext = (progressCount == 0) and 0 or (bundleSize - progressCount)
+            local itemName = (session.items and session.items[itemID] and session.items[itemID].name) or GetItemInfo(itemID) or ("Item " .. tostring(itemID))
+            local rule = pH_RepTurninCatalog and pH_RepTurninCatalog.GetRepRule and pH_RepTurninCatalog:GetRepRule(itemID, itemName) or nil
+            table.insert(out, {
+                itemID = itemID,
+                itemName = itemName,
+                count = count,
+                bundleSize = bundleSize,
+                repPerBundle = repPerBundle,
+                potentialRep = math.max(0, tonumber(entry.potentialRep) or 0),
+                factionKey = entry.factionKey or (rule and rule.factionKey) or "Unknown",
+                progressCount = progressCount,
+                neededForNext = neededForNext,
+                turninNpc = rule and rule.turninNpc or nil,
+                turninZone = rule and rule.turninZone or nil,
+                turninMethod = rule and rule.turninMethod or nil,
+                repeatable = (rule and rule.repeatable) and true or false,
+            })
+        end
+    end
+
+    table.sort(out, function(a, b)
+        if (a.potentialRep or 0) == (b.potentialRep or 0) then
+            return (a.count or 0) > (b.count or 0)
+        end
+        return (a.potentialRep or 0) > (b.potentialRep or 0)
+    end)
+
+    return out
+end
+
 -- Compute derived metrics for display
 function pH_SessionManager:GetMetrics(session)
     if not session then
@@ -769,9 +834,10 @@ function pH_SessionManager:GetMetrics(session)
 
     -- Phase 3: Expected inventory value
     local invVendorTrash = pH_Ledger:GetBalance(session, "Assets:Inventory:VendorTrash")
-    local invRareMulti = pH_Ledger:GetBalance(session, "Assets:Inventory:RareMulti")
+    local invMarketItems = pH_Ledger:GetBalance(session, "Assets:Inventory:MarketItems")
     local invGathering = pH_Ledger:GetBalance(session, "Assets:Inventory:Gathering")
-    local expectedInventory = invVendorTrash + invRareMulti + invGathering
+    local invEnchanting = pH_Ledger:GetBalance(session, "Assets:Inventory:Enchanting")
+    local expectedInventory = invVendorTrash + invMarketItems + invGathering + invEnchanting
 
     local expectedPerHour = 0
     if durationHours > 0 then
@@ -862,6 +928,15 @@ function pH_SessionManager:GetMetrics(session)
         end
     end
 
+    local repPotentialTotal = (session.metrics and session.metrics.repPotential and session.metrics.repPotential.total) or 0
+    local repPotentialByFaction = {}
+    if session.metrics and session.metrics.repPotential and session.metrics.repPotential.byFaction then
+        for factionName, value in pairs(session.metrics.repPotential.byFaction) do
+            repPotentialByFaction[factionName] = value
+        end
+    end
+    local repPotentialItems = BuildRepPotentialItems(session)
+
     return {
         durationSec = durationSec,
         durationHours = durationHours,
@@ -880,8 +955,9 @@ function pH_SessionManager:GetMetrics(session)
         expectedInventory = expectedInventory,
         expectedPerHour = expectedPerHour,
         invVendorTrash = invVendorTrash,
-        invRareMulti = invRareMulti,
+        invMarketItems = invMarketItems,
         invGathering = invGathering,
+        invEnchanting = invEnchanting,
 
         -- Phase 3: Total economic value
         totalValue = totalValue,
@@ -908,6 +984,9 @@ function pH_SessionManager:GetMetrics(session)
         repPerHour = repPerHour,
         repEnabled = repEnabled,
         repTopFactions = repTopFactions,
+        repPotentialTotal = repPotentialTotal,
+        repPotentialByFaction = repPotentialByFaction,
+        repPotentialItems = repPotentialItems,
         honorGained = honorGained,
         honorPerHour = honorPerHour,
         honorEnabled = honorEnabled,
@@ -1053,6 +1132,258 @@ end
 -- Phase 3: Item Aggregation
 --------------------------------------------------
 
+local function EnsureRepPotential(session)
+    if not session.metrics then
+        session.metrics = {}
+    end
+    if not session.metrics.repPotential then
+        session.metrics.repPotential = { total = 0, byFaction = {}, byItem = {} }
+    end
+    if not session.metrics.repPotential.byFaction then
+        session.metrics.repPotential.byFaction = {}
+    end
+    if not session.metrics.repPotential.byItem then
+        session.metrics.repPotential.byItem = {}
+    end
+end
+
+function pH_SessionManager:AdjustRepPotentialForItem(session, itemID, deltaCount, itemName)
+    if not session or not itemID or not deltaCount or deltaCount == 0 then
+        return
+    end
+    if not pH_RepTurninCatalog or not pH_RepTurninCatalog.GetRepRule then
+        return
+    end
+
+    local rule = pH_RepTurninCatalog:GetRepRule(itemID, itemName)
+    if not rule then
+        return
+    end
+
+    EnsureRepPotential(session)
+    local byItem = session.metrics.repPotential.byItem
+    local byFaction = session.metrics.repPotential.byFaction
+    local entry = byItem[itemID]
+    if not entry then
+        entry = {
+            count = 0,
+            potentialRep = 0,
+            factionKey = rule.factionKey,
+            bundleSize = rule.bundleSize,
+            repPerBundle = rule.repPerBundle,
+        }
+        byItem[itemID] = entry
+    end
+
+    local oldRep = entry.potentialRep or 0
+    entry.count = math.max(0, (entry.count or 0) + deltaCount)
+    entry.potentialRep = math.floor((entry.count / rule.bundleSize) * rule.repPerBundle)
+    local repDelta = entry.potentialRep - oldRep
+
+    if repDelta ~= 0 then
+        byFaction[rule.factionKey] = (byFaction[rule.factionKey] or 0) + repDelta
+        session.metrics.repPotential.total = (session.metrics.repPotential.total or 0) + repDelta
+        if byFaction[rule.factionKey] < 0 then
+            byFaction[rule.factionKey] = 0
+        end
+        if session.metrics.repPotential.total < 0 then
+            session.metrics.repPotential.total = 0
+        end
+    end
+end
+
+function pH_SessionManager:RecomputeRepPotentialForSession(session)
+    if not session then
+        return
+    end
+    EnsureRepPotential(session)
+    session.metrics.repPotential.total = 0
+    session.metrics.repPotential.byFaction = {}
+    session.metrics.repPotential.byItem = {}
+
+    for itemID, itemData in pairs(session.items or {}) do
+        local count = (itemData and itemData.count) or 0
+        if count > 0 then
+            self:AdjustRepPotentialForItem(session, itemID, count, itemData and itemData.name)
+        end
+    end
+end
+
+function pH_SessionManager:RunPricingV2Migration()
+    if not pH_DB_Account then
+        return false, "No account DB"
+    end
+    pH_DB_Account.meta = pH_DB_Account.meta or {}
+    pH_DB_Account.meta.migrations = pH_DB_Account.meta.migrations or {}
+    if pH_DB_Account.meta.migrations.pricing_v2 then
+        return false, "Already migrated"
+    end
+
+    local function MigrateSession(session)
+        if not session then
+            return
+        end
+        -- Migrate holdings lot buckets
+        for _, holding in pairs(session.holdings or {}) do
+            for _, lot in ipairs(holding.lots or {}) do
+                if lot.bucket == "rare_multi" then
+                    lot.bucket = "market_items"
+                end
+            end
+        end
+
+        -- Migrate aggregated item buckets
+        for _, itemData in pairs(session.items or {}) do
+            if itemData.bucket == "rare_multi" then
+                itemData.bucket = "market_items"
+            end
+        end
+
+        -- Migrate ledger accounts
+        if session.ledger and session.ledger.balances then
+            local balances = session.ledger.balances
+            balances["Assets:Inventory:MarketItems"] =
+                (balances["Assets:Inventory:MarketItems"] or 0) + (balances["Assets:Inventory:RareMulti"] or 0)
+            balances["Income:ItemsLooted:MarketItems"] =
+                (balances["Income:ItemsLooted:MarketItems"] or 0) + (balances["Income:ItemsLooted:RareMulti"] or 0)
+            balances["Assets:Inventory:RareMulti"] = nil
+            balances["Income:ItemsLooted:RareMulti"] = nil
+        end
+
+        EnsureRepPotential(session)
+        self:RecomputeRepPotentialForSession(session)
+    end
+
+    for _, session in pairs(pH_DB_Account.sessions or {}) do
+        MigrateSession(session)
+    end
+    for _, session in pairs(pH_DB_Account.activeSessions or {}) do
+        MigrateSession(session)
+    end
+
+    pH_DB_Account.meta.migrations.pricing_v2 = true
+    return true, "pricing_v2 migration complete"
+end
+
+local function ResolveItemMeta(itemID, itemData)
+    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = GetItemInfo(itemID)
+    if itemName then
+        return itemName, quality, itemClass, itemSubClass
+    end
+    if itemData then
+        return itemData.name, itemData.quality, nil, nil
+    end
+    return nil, nil, nil, nil
+end
+
+local function RebuildItemLedgerBalances(session)
+    if not session or not session.ledger or not session.ledger.balances then
+        return
+    end
+
+    local balances = session.ledger.balances
+    local bucketToAccount = {
+        vendor_trash = "VendorTrash",
+        market_items = "MarketItems",
+        gathering = "Gathering",
+        enchanting = "Enchanting",
+        container_lockbox = "Containers:Lockbox",
+    }
+
+    -- Reset item-ledger balances we own
+    for _, accountSuffix in pairs(bucketToAccount) do
+        balances["Income:ItemsLooted:" .. accountSuffix] = 0
+        if accountSuffix ~= "Containers:Lockbox" then
+            balances["Assets:Inventory:" .. accountSuffix] = 0
+        end
+    end
+    -- Legacy cleanup
+    balances["Income:ItemsLooted:RareMulti"] = nil
+    balances["Assets:Inventory:RareMulti"] = nil
+
+    -- Rebuild income from session item aggregates (looted value snapshot)
+    for _, itemData in pairs(session.items or {}) do
+        local bucket = itemData.bucket
+        local accountSuffix = bucketToAccount[bucket]
+        if accountSuffix and bucket ~= "container_lockbox" then
+            local account = "Income:ItemsLooted:" .. accountSuffix
+            balances[account] = (balances[account] or 0) + (itemData.expectedTotal or 0)
+        end
+    end
+
+    -- Rebuild inventory assets from remaining holdings lots
+    for _, holding in pairs(session.holdings or {}) do
+        for _, lot in ipairs(holding.lots or {}) do
+            local accountSuffix = bucketToAccount[lot.bucket]
+            if accountSuffix and lot.bucket ~= "container_lockbox" then
+                local account = "Assets:Inventory:" .. accountSuffix
+                balances[account] = (balances[account] or 0) + ((lot.count or 0) * (lot.expectedEach or 0))
+            end
+        end
+    end
+end
+
+function pH_SessionManager:RepriceSessionItems(session)
+    if not session or not session.items then
+        return false, "Invalid session", 0, 0
+    end
+
+    local repriced = 0
+    local skipped = 0
+
+    for itemID, itemData in pairs(session.items) do
+        local itemName, quality, itemClass, itemSubClass = ResolveItemMeta(itemID, itemData)
+        if not itemName then
+            skipped = skipped + 1
+        else
+            local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+            local expectedEach = pH_Valuation:ComputeExpectedValue(itemID, bucket)
+            local lootedCount = (itemData.countLooted or itemData.count or 0)
+            itemData.bucket = bucket
+            itemData.expectedTotal = lootedCount * expectedEach
+
+            -- Keep remaining holdings lots aligned with repriced bucket/value
+            local holding = session.holdings and session.holdings[itemID]
+            if holding and holding.lots then
+                for _, lot in ipairs(holding.lots) do
+                    lot.bucket = bucket
+                    lot.expectedEach = expectedEach
+                end
+            end
+
+            repriced = repriced + 1
+        end
+    end
+
+    -- Recompute rep potential from repriced item counts
+    self:RecomputeRepPotentialForSession(session)
+    RebuildItemLedgerBalances(session)
+    return true, "Repriced session items", repriced, skipped
+end
+
+function pH_SessionManager:RepriceAllSessions()
+    local totalSessions = 0
+    local totalItems = 0
+    local totalSkipped = 0
+
+    for _, session in pairs(pH_DB_Account.sessions or {}) do
+        totalSessions = totalSessions + 1
+        local _, _, repriced, skipped = self:RepriceSessionItems(session)
+        totalItems = totalItems + (repriced or 0)
+        totalSkipped = totalSkipped + (skipped or 0)
+    end
+
+    for _, session in pairs(pH_DB_Account.activeSessions or {}) do
+        totalSessions = totalSessions + 1
+        local _, _, repriced, skipped = self:RepriceSessionItems(session)
+        totalItems = totalItems + (repriced or 0)
+        totalSkipped = totalSkipped + (skipped or 0)
+    end
+
+    MarkIndexStale()
+    return true, string.format("Repriced %d items across %d sessions (skipped=%d)", totalItems, totalSessions, totalSkipped)
+end
+
 -- Add or update item in session.items aggregate
 function pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
     if not session.items[itemID] then
@@ -1072,6 +1403,8 @@ function pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, c
     session.items[itemID].count = session.items[itemID].count + count
     session.items[itemID].countLooted = (session.items[itemID].countLooted or 0) + count
     session.items[itemID].expectedTotal = session.items[itemID].expectedTotal + (count * expectedEach)
+
+    self:AdjustRepPotentialForItem(session, itemID, count, itemName)
 end
 
 -- Increment gathering node counters

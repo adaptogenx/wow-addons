@@ -4,7 +4,7 @@
     Provides invariant checks, test injection, and debugging tools.
 ]]
 
--- luacheck: globals pH_DB_Account pH_SessionManager pH_Index GetRealmName UnitName UnitFactionGroup
+-- luacheck: globals pH_DB_Account pH_SessionManager pH_Index pH_Settings GetRealmName UnitName UnitFactionGroup
 
 local pH_Debug = {}
 
@@ -88,8 +88,9 @@ function pH_Debug:ValidateHoldings(session)
     -- Sum up expected values from holdings by bucket
     local holdingsByBucket = {
         vendor_trash = 0,
-        rare_multi = 0,
+        market_items = 0,
         gathering = 0,
+        enchanting = 0,
         container_lockbox = 0,
     }
 
@@ -103,21 +104,26 @@ function pH_Debug:ValidateHoldings(session)
 
     -- Compare with ledger accounts
     local vendorTrash = pH_Ledger:GetBalance(session, "Assets:Inventory:VendorTrash")
-    local rareMulti = pH_Ledger:GetBalance(session, "Assets:Inventory:RareMulti")
+    local marketItems = pH_Ledger:GetBalance(session, "Assets:Inventory:MarketItems")
     local gathering = pH_Ledger:GetBalance(session, "Assets:Inventory:Gathering")
+    local enchanting = pH_Ledger:GetBalance(session, "Assets:Inventory:Enchanting")
 
     local errors = {}
     if holdingsByBucket.vendor_trash ~= vendorTrash then
         table.insert(errors, string.format("VendorTrash: holdings=%d, ledger=%d",
             holdingsByBucket.vendor_trash, vendorTrash))
     end
-    if holdingsByBucket.rare_multi ~= rareMulti then
-        table.insert(errors, string.format("RareMulti: holdings=%d, ledger=%d",
-            holdingsByBucket.rare_multi, rareMulti))
+    if holdingsByBucket.market_items ~= marketItems then
+        table.insert(errors, string.format("MarketItems: holdings=%d, ledger=%d",
+            holdingsByBucket.market_items, marketItems))
     end
     if holdingsByBucket.gathering ~= gathering then
         table.insert(errors, string.format("Gathering: holdings=%d, ledger=%d",
             holdingsByBucket.gathering, gathering))
+    end
+    if holdingsByBucket.enchanting ~= enchanting then
+        table.insert(errors, string.format("Enchanting: holdings=%d, ledger=%d",
+            holdingsByBucket.enchanting, enchanting))
     end
 
     if #errors > 0 then
@@ -850,8 +856,25 @@ function pH_Debug:ShowPriceSources()
 
     print("\n  Priority order: Manual Overrides > Custom AH > TSM")
     print("  Set manual override: /script pH_DB_Account.priceOverrides[itemID] = price")
+    if pH_Events and pH_Events.GetLastDEResolutionReason then
+        local reason = pH_Events:GetLastDEResolutionReason() or "none"
+        print("  Last DE resolution: " .. tostring(reason))
+    end
 
     print(COLOR_YELLOW .. "=====================" .. COLOR_RESET)
+end
+
+function pH_Debug:ShowRepNotifications()
+    local cfg = (pH_Settings and pH_Settings.repPotential) or {}
+    local showLootProgress = (cfg.showLootProgress == nil) and true or (cfg.showLootProgress and true or false)
+    local logMode = cfg.logMode or "rate_limited"
+    local rateLimitSec = cfg.rateLimitSec or 2
+    print(COLOR_YELLOW .. "=== Rep Progress Notifications ===" .. COLOR_RESET)
+    print(string.format("  Enabled: %s", showLootProgress and "yes" or "no"))
+    print(string.format("  Mode: %s", tostring(logMode)))
+    print(string.format("  Rate Limit: %ss", tostring(rateLimitSec)))
+    print("  Commands: /ph repnotify on|off|mode <rate_limited|every_loot|milestones>|status")
+    print(COLOR_YELLOW .. "==================================" .. COLOR_RESET)
 end
 
 -- Show pickpocket statistics (Phase 6)

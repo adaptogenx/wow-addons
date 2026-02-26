@@ -119,7 +119,7 @@ local colorKeys = { gold = "GOLD", xp = "XP", rep = "REP", honor = "HONOR" }
 local metricStates = {
     gold = { key = "gold", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
     xp = { key = "xp", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
-    rep = { key = "rep", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
+    rep = { key = "rep", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil, hasProjected = false, projectedTotal = 0, projectedItems = {}, projectedItemCount = 0 },
     honor = { key = "honor", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
 }
 
@@ -194,12 +194,38 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
     if not anchor or not metricKey or not state then
         return
     end
+    local headerText = METRIC_TOOLTIP_LABELS[metricKey] or metricKey
+    if metricKey == "rep" then
+        headerText = "Rep/Hour"
+    end
+    local currentText = state.lastUpdatedText ~= "" and state.lastUpdatedText or "0"
+    if metricKey == "rep" then
+        currentText = tostring(currentText):gsub("%*$", "")
+    end
     GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
-    GameTooltip:SetText(METRIC_TOOLTIP_LABELS[metricKey] or metricKey)
-    GameTooltip:AddLine(string.format("Current: %s", state.lastUpdatedText ~= "" and state.lastUpdatedText or "0"), 0.86, 0.82, 0.70)
-    GameTooltip:AddLine("Bar shows current rate relative to this session's peak (with a minimum baseline).", 0.62, 0.58, 0.50, true)
-    if state.icon and state.icon:GetAlpha() < 1 then
-        GameTooltip:AddLine("No tracked gain this session.", 0.62, 0.58, 0.50)
+    GameTooltip:SetText(headerText)
+    GameTooltip:AddLine(string.format("Current: %s", currentText), 0.86, 0.82, 0.70)
+    if metricKey == "rep" then
+        local projectedTotal = tonumber(state.projectedTotal) or 0
+        GameTooltip:AddLine(string.format("Potential: +%d", projectedTotal), 0.3, 1.0, 0.3)
+        if state.projectedItems then
+            for i = 1, #state.projectedItems do
+                local item = state.projectedItems[i]
+                if item then
+                    local itemName = item.itemName or "Rep Item"
+                    local count = tonumber(item.count) or 0
+                    local bundleSize = tonumber(item.bundleSize) or 1
+                    GameTooltip:AddLine(string.format("- %s: %d/%d", itemName, count, bundleSize), 0.8, 0.8, 0.8)
+                end
+            end
+        end
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("Potential or actual rep gained. Bar shows current rep/hour rate relative to session's peak rep gain. Potential rep will be converted to rep gain upon turn-in.", 0.62, 0.58, 0.50, true)
+    else
+        GameTooltip:AddLine("Bar shows current rate relative to this session's peak (with a minimum baseline).", 0.62, 0.58, 0.50, true)
+        if state.icon and state.icon:GetAlpha() < 1 then
+            GameTooltip:AddLine("No tracked gain this session.", 0.62, 0.58, 0.50)
+        end
     end
     GameTooltip:Show()
 end
@@ -280,6 +306,12 @@ local function UpdateMicroBars(session, metrics)
             elseif metricKey == "rep" then
                 rawRate = metrics.repPerHour or 0
                 isActive = metrics.repEnabled and rawRate > 0
+                local projectedTotal = metrics.repPotentialTotal or 0
+                local projectedItems = metrics.repPotentialItems or {}
+                state.hasProjected = (#projectedItems > 0)
+                state.projectedTotal = projectedTotal
+                state.projectedItemCount = #projectedItems
+                state.projectedItems = projectedItems
             elseif metricKey == "honor" then
                 rawRate = metrics.honorPerHour or 0
                 isActive = metrics.honorEnabled and rawRate > 0
@@ -306,6 +338,9 @@ local function UpdateMicroBars(session, metrics)
 
                 -- Update text (avoid string churn)
                 local newText = FormatRateForMicroBar(metricKey, state.displayRate)
+                if metricKey == "rep" and state.hasProjected then
+                    newText = newText .. "*"
+                end
                 if state.lastUpdatedText ~= newText then
                     state.valueText:SetText(newText)
                     state.lastUpdatedText = newText
@@ -321,7 +356,12 @@ local function UpdateMicroBars(session, metrics)
             else
                 -- Inactive: gray out (reduced opacity)
                 state.bar:SetValue(0)  -- Empty bar
-                state.valueText:SetText("0")
+                local inactiveText = "0"
+                if metricKey == "rep" and state.hasProjected then
+                    inactiveText = "0*"
+                end
+                state.valueText:SetText(inactiveText)
+                state.lastUpdatedText = inactiveText
                 
                 -- Gray out icon (keep visible but muted - use gray tint with reduced opacity)
                 state.icon:SetVertexColor(0.6, 0.6, 0.6)  -- Gray tint
@@ -1319,20 +1359,55 @@ local function AddBreakdownRow(panel, yOffset, label, perHourValue, totalValue, 
 end
 
 -- Add rep breakdown row (label + total only, no per-hour column)
-local function AddRepBreakdownRow(panel, yOffset, label, totalValue)
+local function AddRepBreakdownRow(panel, yOffset, label, totalValue, tooltipData)
     local row = CreateFrame("Frame", nil, panel)
     row:SetSize(panel:GetWidth() - 2*PANEL_PADDING, 14)
     row:SetPoint("TOPLEFT", panel, "TOPLEFT", PANEL_PADDING, yOffset)
 
     row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     row.label:SetPoint("LEFT", row, "LEFT", 0, 0)
+    row.label:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+    row.label:SetJustifyH("LEFT")
     row.label:SetText(label)
+    if row.label.SetWordWrap then
+        row.label:SetWordWrap(false)
+    end
     row.label:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
 
     row.total = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     row.total:SetPoint("RIGHT", row, "RIGHT", 0, 0)
-    row.total:SetText(totalValue)
+    row.total:SetText(totalValue or "")
     row.total:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
+
+    if tooltipData then
+        row:EnableMouse(true)
+        row:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(tooltipData.itemName or "Rep Item", 1, 1, 1)
+            if tooltipData.count and tooltipData.bundleSize then
+                GameTooltip:AddLine(string.format("Collected: %d / %d", tooltipData.count, tooltipData.bundleSize), 0.8, 0.8, 0.8)
+            end
+            if tooltipData.potentialRep then
+                GameTooltip:AddLine(string.format("Potential Rep: +%d", tooltipData.potentialRep), 0.3, 1.0, 0.3)
+            end
+            if tooltipData.turninNpc or tooltipData.turninZone then
+                GameTooltip:AddLine(string.format("Turn-in: %s, %s",
+                    tooltipData.turninNpc or "Unknown NPC",
+                    tooltipData.turninZone or "Unknown Zone"), 0.8, 0.8, 0.8)
+            end
+            if tooltipData.turninMethod then
+                GameTooltip:AddLine("Method: " .. tooltipData.turninMethod, 0.8, 0.8, 0.8)
+            end
+            if tooltipData.repeatable then
+                GameTooltip:AddLine("Repeatable", 0.8, 0.8, 0.8)
+            end
+            GameTooltip:AddLine("Potential only. Actual rep counted on turn-in.", 1.0, 0.82, 0.0, true)
+            GameTooltip:Show()
+        end)
+        row:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+    end
 
     table.insert(panel.breakdownRows, row)
     return row
@@ -1353,7 +1428,7 @@ end
 -- Update Gold Panel with breakdown
 local function UpdateGoldPanel(panel, metrics, session)
     -- Header: Total value (right-aligned)
-    panel.totalValue:SetText(string.format("Total: %s", FormatAccounting(metrics.totalValue)))
+    panel.totalValue:SetText(FormatAccounting(metrics.totalValue))
 
     -- Primary: Per-hour rate (large)
     panel.rateText:SetText(FormatAccountingShort(metrics.totalPerHour) .. "/hr")
@@ -1365,8 +1440,9 @@ local function UpdateGoldPanel(panel, metrics, session)
     local rawGold = pH_Ledger:GetBalance(session, "Income:LootedCoin") or 0
     -- NOTE: Ledger posts vendor trash income to Income:ItemsLooted:VendorTrash
     local vendorTrash = pH_Ledger:GetBalance(session, "Income:ItemsLooted:VendorTrash") or 0
-    local rareItems = pH_Ledger:GetBalance(session, "Income:ItemsLooted:RareMulti") or 0
+    local marketItems = pH_Ledger:GetBalance(session, "Income:ItemsLooted:MarketItems") or 0
     local gathering = pH_Ledger:GetBalance(session, "Income:ItemsLooted:Gathering") or 0
+    local enchanting = pH_Ledger:GetBalance(session, "Income:ItemsLooted:Enchanting") or 0
     local questRewards = pH_Ledger:GetBalance(session, "Income:Quest") or 0
     local vendorSales = pH_Ledger:GetBalance(session, "Income:VendorSales") or 0
 
@@ -1377,7 +1453,7 @@ local function UpdateGoldPanel(panel, metrics, session)
     local lockboxItems = pH_Ledger:GetBalance(session, "Income:Pickpocket:FromLockbox:Items") or 0
     local pickpocketTotal = pickpocketCoin + pickpocketItems + lockboxCoin + lockboxItems
 
-    local totalGold = rawGold + vendorTrash + rareItems + gathering + questRewards + vendorSales + pickpocketTotal
+    local totalGold = rawGold + vendorTrash + marketItems + gathering + enchanting + questRewards + vendorSales + pickpocketTotal
 
     -- Ensure sparkline exists and update it
     if not panel.sparklineFrame then
@@ -1412,8 +1488,9 @@ local function UpdateGoldPanel(panel, metrics, session)
         {"Quest Rewards", questRewards},
         {"Vendor Sales", vendorSales},
         {"Vendor Trash", vendorTrash},
-        {"AH / Rare Items", rareItems},
+        {"Market Items", marketItems},
         {"Gathering", gathering},
+        {"Enchanting", enchanting},
         {"Pickpocketing", pickpocketTotal},
     }
 
@@ -1498,7 +1575,7 @@ local function UpdateXPPanel(panel, metrics)
     local xpGained = metrics.xpGained or 0
     local xpPerHour = metrics.xpPerHour or 0
 
-    panel.totalValue:SetText(string.format("Total: %s", FormatNumber(xpGained)))
+    panel.totalValue:SetText(FormatNumber(xpGained))
     panel.rateText:SetText(FormatNumber(xpPerHour) .. "/hr")
     panel.rawTotal:SetText(string.format("%s XP", FormatNumber(xpGained)))
 
@@ -1511,11 +1588,18 @@ end
 local function UpdateRepPanel(panel, metrics)
     local totalRep = metrics.repGained or 0
     local repHr = metrics.repPerHour or 0
-    local totalStr = totalRep >= 0 and string.format("Total: +%d", totalRep) or string.format("Total: %d", totalRep)
+    local potentialTotal = metrics.repPotentialTotal or 0
+    local potentialItems = metrics.repPotentialItems or {}
+    local hasPotentialInfo = #potentialItems > 0
+    local totalStr = totalRep >= 0 and string.format("+%d", totalRep) or string.format("%d", totalRep)
     local rateStr = repHr >= 0 and string.format("+%d/hr", repHr) or string.format("%d/hr", repHr)
     panel.totalValue:SetText(totalStr)
     panel.rateText:SetText(rateStr)
-    panel.rawTotal:SetText("")  -- Clear raw total for rep
+    panel.rawTotal:ClearAllPoints()
+    panel.rawTotal:SetPoint("RIGHT", panel, "RIGHT", -PANEL_PADDING, 0)
+    panel.rawTotal:SetPoint("CENTER", panel.rateText, "CENTER", 0, 0)
+    panel.rawTotal:SetJustifyH("RIGHT")
+    panel.rawTotal:SetText(string.format("+%d%s", potentialTotal, hasPotentialInfo and "*" or ""))
 
     -- Clear old rows
     for _, row in ipairs(panel.breakdownRows) do
@@ -1523,28 +1607,57 @@ local function UpdateRepPanel(panel, metrics)
     end
     panel.breakdownRows = {}
 
-    -- Show top 2 factions (SessionManager uses .gain per faction, can be negative)
-    local factions = metrics.repTopFactions or {}
-    local yOffset = -44  -- Tighter gap below rate text so 2 rows fit in 80px panel
+    local yOffset = -46
 
-    for i = 1, math.min(2, #factions) do
-        local faction = factions[i]
-        if not faction then break end
-        local gain = faction.gain or 0  -- .gain from SessionManager (not .gained)
-        local gainStr = gain >= 0 and string.format("+%d", gain) or string.format("%d", gain)
-        AddRepBreakdownRow(panel, yOffset, faction.name or "?", gainStr)
-        yOffset = yOffset - 16
+    -- Potential rep items (HUD only, compact list)
+    local shownPotential = 0
+    if #potentialItems > 0 then
+        for i = 1, math.min(2, #potentialItems) do
+            local item = potentialItems[i]
+            if item then
+                local label = string.format("%s (%d)", item.itemName or "Rep Item", item.count or 0)
+                AddRepBreakdownRow(panel, yOffset, label, nil)
+                yOffset = yOffset - 16
+                shownPotential = shownPotential + 1
+            end
+        end
     end
 
-    -- "+X more..." text if more than 2 factions
-    if #factions > 2 then
-        local moreText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        moreText:SetPoint("TOPLEFT", panel, "TOPLEFT", PANEL_PADDING, yOffset)
-        moreText:SetText(string.format("+%d more…", #factions - 2))
-        moreText:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
-        -- Add to breakdown rows so it gets cleaned up next update
-        table.insert(panel.breakdownRows, {Hide = function() moreText:Hide() end, moreText = moreText})
-    end
+    -- Whole-panel rep tooltip with full potential detail list.
+    panel.repTooltipData = {
+        current = repHr or 0,
+        potentialTotal = potentialTotal or 0,
+        potentialItems = potentialItems,
+    }
+    panel:EnableMouse(true)
+    panel:SetScript("OnEnter", function(self)
+        local data = self.repTooltipData or {}
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Rep/Hour")
+        GameTooltip:AddLine(string.format("Current: %d", data.current or 0), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(string.format("Potential: +%d", data.potentialTotal or 0), 0.3, 1.0, 0.3)
+        local items = data.potentialItems or {}
+        if #items > 0 then
+            GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+            for i = 1, #items do
+                local item = items[i]
+                local itemName = item.itemName or "Rep Item"
+                local count = tonumber(item.count) or 0
+                local bundleSize = tonumber(item.bundleSize) or 1
+                local potentialRep = tonumber(item.potentialRep) or 0
+                GameTooltip:AddLine(string.format("%s: %d/%d (%d rep)", itemName, count, bundleSize, potentialRep), 1.0, 1.0, 1.0)
+                GameTooltip:AddLine(string.format("Turn in: %s, %s",
+                    item.turninNpc or "Unknown NPC",
+                    item.turninZone or "Unknown Zone"), 0.8, 0.8, 0.8)
+            end
+        end
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("Potential or actual rep gained. Bar shows current rep/hour rate relative to session's peak rep gain. Potential rep will be converted to rep gain upon turn-in.", 0.62, 0.58, 0.50, true)
+        GameTooltip:Show()
+    end)
+    panel:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
 
     panel:Show()
 end
@@ -1556,7 +1669,7 @@ local function UpdateHonorPanel(panel, metrics)
         return
     end
 
-    panel.totalValue:SetText(string.format("Total: %d", metrics.honorGained))
+    panel.totalValue:SetText(string.format("%d", metrics.honorGained))
     panel.rateText:SetText(string.format("%d/hr", metrics.honorPerHour or 0))
     panel.rawTotal:SetText(string.format("%d honor", metrics.honorGained))
 
@@ -1647,16 +1760,18 @@ local function GetMetricBreakdown(metricKey, session, metrics)
     if metricKey == "gold" then
         -- Parse Income:ItemsLooted:* accounts from ledger
     local vendorTrash = pH_Ledger:GetBalance(session, "Income:ItemsLooted:VendorTrash") or 0
-    local rareMulti = pH_Ledger:GetBalance(session, "Income:ItemsLooted:RareMulti") or 0
+    local marketItems = pH_Ledger:GetBalance(session, "Income:ItemsLooted:MarketItems") or 0
     local gathering = pH_Ledger:GetBalance(session, "Income:ItemsLooted:Gathering") or 0
-        local total = vendorTrash + rareMulti + gathering
+    local enchanting = pH_Ledger:GetBalance(session, "Income:ItemsLooted:Enchanting") or 0
+        local total = vendorTrash + marketItems + gathering + enchanting
 
         if total > 0 then
             local pctVendor = math.floor((vendorTrash / total) * 100)
-            local pctRare = math.floor((rareMulti / total) * 100)
+            local pctMarket = math.floor((marketItems / total) * 100)
             local pctGath = math.floor((gathering / total) * 100)
-            return string.format("Loot Breakdown: Vendor %d%% | Rare %d%% | Gathering %d%%",
-                pctVendor, pctRare, pctGath)
+            local pctEnchanting = math.floor((enchanting / total) * 100)
+            return string.format("Loot Breakdown: Vendor %d%% | Market %d%% | Gathering %d%% | Enchanting %d%%",
+                pctVendor, pctMarket, pctGath, pctEnchanting)
         end
     elseif metricKey == "rep" then
         -- Show top 3 factions if available

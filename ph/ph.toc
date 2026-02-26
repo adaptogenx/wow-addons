@@ -2,7 +2,7 @@
 ## Title: pH
 ## Notes: Session-based gold-per-hour tracking with double-ledger accounting. Features minimize/maximize HUD, real-time metrics, and conservative item valuation (WoW Classic Anniversary)
 ## Author: Claude Code
-## Version: 0.14.0
+## Version: 15.0
 ## SavedVariables: pH_DB_Account
 ## SavedVariablesPerCharacter: pH_DB
 ## SavedVariablesPerCharacter: pH_Settings
@@ -10,6 +10,8 @@
 # Core modules (load order matters)
 Ledger.lua
 PriceSources.lua
+EnchantingCatalog.lua
+RepTurninCatalog.lua
 Valuation.lua
 Holdings.lua
 SessionManager.lua

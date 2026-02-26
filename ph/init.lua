@@ -98,6 +98,11 @@ local function InitializeSavedVariables()
                 sparklineMinutes = 15,
                 showInactive = false,
             },
+            repPotential = {
+                showLootProgress = true,
+                logMode = "rate_limited",
+                rateLimitSec = 2,
+            },
         }
     end
     -- Ensure microBars exists (migration for existing pH_Settings without it)
@@ -124,6 +129,22 @@ local function InitializeSavedVariables()
             sparklineMinutes = 15,
             showInactive = false,
         }
+    end
+    if pH_Settings.repPotential == nil then
+        pH_Settings.repPotential = {
+            showLootProgress = true,
+            logMode = "rate_limited",
+            rateLimitSec = 2,
+        }
+    end
+    if pH_Settings.repPotential.showLootProgress == nil then
+        pH_Settings.repPotential.showLootProgress = true
+    end
+    if pH_Settings.repPotential.logMode == nil then
+        pH_Settings.repPotential.logMode = "rate_limited"
+    end
+    if pH_Settings.repPotential.rateLimitSec == nil or pH_Settings.repPotential.rateLimitSec < 0 then
+        pH_Settings.repPotential.rateLimitSec = 2
     end
     -- Migration: add useGridLayout to existing settings
     if pH_Settings.metricCards.useGridLayout == nil then
@@ -224,14 +245,19 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
                     minRefFloors = { gold = 50000, xp = 5000, rep = 50, honor = 100 },
                     updateThresholds = { gold = 1000, xp = 100, rep = 5, honor = 10 },
                 },
-            metricCards = {
-                enabled = true,
-                useGridLayout = true,  -- Enable 2x2 grid layout
-                sampleInterval = 10,
-                bufferMinutes = 60,
-                sparklineMinutes = 15,
-                showInactive = false,
-            },
+                metricCards = {
+                    enabled = true,
+                    useGridLayout = true,  -- Enable 2x2 grid layout
+                    sampleInterval = 10,
+                    bufferMinutes = 60,
+                    sparklineMinutes = 15,
+                    showInactive = false,
+                },
+                repPotential = {
+                    showLootProgress = true,
+                    logMode = "rate_limited",
+                    rateLimitSec = 2,
+                },
             }
         end
         if pH_Settings.hudVisible == nil then
@@ -261,6 +287,22 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
                 sparklineMinutes = 15,
                 showInactive = false,
             }
+        end
+        if pH_Settings.repPotential == nil then
+            pH_Settings.repPotential = {
+                showLootProgress = true,
+                logMode = "rate_limited",
+                rateLimitSec = 2,
+            }
+        end
+        if pH_Settings.repPotential.showLootProgress == nil then
+            pH_Settings.repPotential.showLootProgress = true
+        end
+        if pH_Settings.repPotential.logMode == nil then
+            pH_Settings.repPotential.logMode = "rate_limited"
+        end
+        if pH_Settings.repPotential.rateLimitSec == nil or pH_Settings.repPotential.rateLimitSec < 0 then
+            pH_Settings.repPotential.rateLimitSec = 2
         end
 
         -- Ensure active session has duration tracking fields (only for this character's session)
@@ -355,6 +397,9 @@ local function ShowHelp()
     print("|cffffff00/ph auto prompt <never|smart|always>|r - Configure start prompts")
     print("|cffffff00/ph auto sources|r - List source keys")
     print("|cffffff00/ph auto ui|r - Open Auto Session settings panel")
+    print("|cffffff00/ph repnotify on|off|r - Enable/disable rep turn-in loot progress messages")
+    print("|cffffff00/ph repnotify mode <rate_limited|every_loot|milestones>|r - Set rep progress message mode")
+    print("|cffffff00/ph repnotify status|r - Show rep progress notification settings")
     print("")
     print("|cffffff00/ph devhelp|r - Show debug/testing commands")
     print("|cffffff00/ph help dev|r - Same as /ph devhelp")
@@ -370,6 +415,7 @@ local function ShowDevHelp()
     print("|cffffff00/ph debug ledger|r - Show ledger balances")
     print("|cffffff00/ph debug holdings|r - Show holdings (Phase 3+)")
     print("|cffffff00/ph debug prices|r - Show available price sources (TSM, Custom AH)")
+    print("|cffffff00/ph debug rep|r - Show rep progress notification settings")
     print("|cffffff00/ph debug pickpocket|r - Show pickpocket statistics (Phase 6)")
     print("|cffffff00/ph debug gathering|r - Show gathering node statistics")
     print("|cffffff00/ph debug data|r - Show session counts and per-character breakdown")
@@ -383,6 +429,7 @@ local function ShowDevHelp()
     print("|cffffff00/ph test lootitem <itemID> <count>|r - Inject looted item (Phase 3+)")
     print("|cffffff00/ph test vendoritem <itemID> <count>|r - Inject vendor sale (Phase 4+)")
     print("|cffffff00/ph test gathernode <name> [count] [copperValueEach]|r - Inject gathering node + value")
+    print("|cffffff00/ph repnotify on|off|mode <rate_limited|every_loot|milestones>|status|r - Rep progress notifications")
     print("======================")
 end
 
@@ -396,7 +443,7 @@ local function HandleCommand(msg)
     cmd = cmd:lower()
 
     local debugShortcuts = {
-        dump = true, ledger = true, holdings = true, prices = true, pickpocket = true,
+        dump = true, ledger = true, holdings = true, prices = true, rep = true, pickpocket = true,
         gathering = true, data = true, on = true, off = true, verbose = true,
     }
     if debugShortcuts[cmd] then
@@ -535,6 +582,32 @@ local function HandleCommand(msg)
             print("[pH] Usage: /ph migrate reprice")
         end
 
+    elseif cmd == "repnotify" then
+        pH_Settings.repPotential = pH_Settings.repPotential or { showLootProgress = true, logMode = "rate_limited", rateLimitSec = 2 }
+        local subCmd = (args[2] or "status"):lower()
+        if subCmd == "on" then
+            pH_Settings.repPotential.showLootProgress = true
+            print("[pH] Rep progress notifications enabled")
+        elseif subCmd == "off" then
+            pH_Settings.repPotential.showLootProgress = false
+            print("[pH] Rep progress notifications disabled")
+        elseif subCmd == "mode" then
+            local mode = (args[3] or ""):lower()
+            if mode == "rate_limited" or mode == "every_loot" or mode == "milestones" then
+                pH_Settings.repPotential.logMode = mode
+                print("[pH] Rep progress notification mode set to " .. mode)
+            else
+                print("[pH] Usage: /ph repnotify mode <rate_limited|every_loot|milestones>")
+            end
+        elseif subCmd == "status" then
+            print(string.format("[pH] Rep progress notifications: %s | mode=%s | rateLimitSec=%s",
+                pH_Settings.repPotential.showLootProgress and "on" or "off",
+                pH_Settings.repPotential.logMode or "rate_limited",
+                tostring(pH_Settings.repPotential.rateLimitSec or 2)))
+        else
+            print("[pH] Usage: /ph repnotify on|off|mode <rate_limited|every_loot|milestones>|status")
+        end
+
     elseif cmd == "debug" then
         local subCmd = args[2] or ""
         subCmd = subCmd:lower()
@@ -563,6 +636,8 @@ local function HandleCommand(msg)
             pH_Debug:ShowHoldings()
         elseif subCmd == "prices" then
             pH_Debug:ShowPriceSources()
+        elseif subCmd == "rep" then
+            pH_Debug:ShowRepNotifications()
         elseif subCmd == "pickpocket" then
             pH_Debug:ShowPickpocket()
         elseif subCmd == "gathering" then
@@ -570,7 +645,7 @@ local function HandleCommand(msg)
         elseif subCmd == "data" then
             pH_Debug:ShowData()
         else
-            print("[pH] Debug commands: on, off, verbose, dump, ledger, holdings, prices, pickpocket, gathering, data")
+            print("[pH] Debug commands: on, off, verbose, dump, ledger, holdings, prices, rep, pickpocket, gathering, data")
         end
 
     elseif cmd == "test" then
