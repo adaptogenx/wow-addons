@@ -117,47 +117,21 @@ local colorKeys = { gold = "GOLD", xp = "XP", rep = "REP", honor = "HONOR" }
 
 -- Runtime state for micro-bars (not persisted)
 local metricStates = {
-    gold = { key = "gold", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
-    xp = { key = "xp", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
-    rep = { key = "rep", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil, hasProjected = false, projectedTotal = 0, projectedItems = {}, projectedItemCount = 0 },
-    honor = { key = "honor", displayRate = 0, peak = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
+    gold = { key = "gold", displayRate = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
+    xp = { key = "xp", displayRate = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
+    rep = { key = "rep", displayRate = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil, hasProjected = false, projectedTotal = 0, projectedItems = {}, projectedItemCount = 0 },
+    honor = { key = "honor", displayRate = 0, lastUpdatedText = "", tile = nil, bar = nil, valueText = nil, icon = nil },
 }
 
 -- Fixed order for metric display: gold, rep, xp, honor
 local METRIC_ORDER = { "gold", "rep", "xp", "honor" }
 
-local lastUpdateTime = 0
 local HideOverflowMenu
 local lastSessionStateKey = nil
 
 --------------------------------------------------
 -- Micro-Bar Helper Functions
 --------------------------------------------------
-
--- Exponential smoothing for rate display
-local function SmoothRate(prevDisplayRate, currentRate, alpha)
-    if prevDisplayRate == 0 then
-        return currentRate  -- First time: initialize
-    end
-    return (alpha * currentRate) + ((1 - alpha) * prevDisplayRate)
-end
-
--- Normalize rate to [0,1] for micro-bar fill
-local function NormalizeRate(displayRate, peak, minFloor)
-    local refMax = math.max(peak, minFloor)
-    if refMax == 0 then return 0 end
-    return math.min(math.max(displayRate / refMax, 0), 1)
-end
-
--- Optional peak decay over time
-local function DecayPeak(currentPeak, currentRate, minutesSinceLastTick, cfg)
-    if not cfg.peakDecay.enabled then
-        return math.max(currentPeak, currentRate)
-    end
-    local decayFactor = 1 - (cfg.peakDecay.ratePerMin * minutesSinceLastTick)
-    local decayedPeak = currentPeak * decayFactor
-    return math.max(decayedPeak, currentRate)
-end
 
 -- Format rate for micro-bar display (ultra-compact, no /h suffix to save space)
 local function FormatRateForMicroBar(metricKey, rate)
@@ -212,6 +186,18 @@ local function FormatEtaCompact(seconds)
     return string.format("%dh %02dm", hours, minutes)
 end
 
+local function FormatInt(value)
+    local n = tonumber(value) or 0
+    local isNegative = n < 0
+    n = math.floor(math.abs(n))
+    local s = tostring(n)
+    local formatted = s:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+    if isNegative then
+        return "-" .. formatted
+    end
+    return formatted
+end
+
 local function GetStandingLabel(standingID)
     local globalLabel = _G["FACTION_STANDING_LABEL" .. tostring(standingID)]
     if globalLabel and globalLabel ~= "" then
@@ -230,35 +216,68 @@ local function GetStandingLabel(standingID)
     return fallback[standingID] or "Unknown"
 end
 
-local function BuildXPEtaData(xpPerHour)
+local function BuildXPEtaData(metrics)
     local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or MAX_PLAYER_LEVEL
     local level = UnitLevel("player") or 0
-    if level >= maxLevel then
-        return {
-            isCapped = true,
-            remainingXP = 0,
-            etaText = FormatEtaInfinity(),
-        }
-    end
-
     local currentXP = UnitXP("player") or 0
     local maxXP = UnitXPMax("player") or 0
     local remainingXP = math.max(0, maxXP - currentXP)
-    local rate = tonumber(xpPerHour) or 0
-    if rate <= 0 then
-        return {
-            isCapped = false,
-            remainingXP = remainingXP,
-            etaText = FormatEtaInfinity(),
-        }
+    local recentPerHour = metrics and (tonumber(metrics.xpRecentPerHourBucketed) or 0) or 0
+    local sessionPerHour = metrics and (tonumber(metrics.xpPerHour) or 0) or 0
+    local capped = level >= maxLevel
+    local etaRecentSec = nil
+    local etaSessionSec = nil
+    if (not capped) and recentPerHour > 0 then
+        etaRecentSec = math.floor((remainingXP / recentPerHour) * 3600)
     end
-
-    local etaSeconds = math.floor((remainingXP / rate) * 3600)
+    if (not capped) and sessionPerHour > 0 then
+        etaSessionSec = math.floor((remainingXP / sessionPerHour) * 3600)
+    end
     return {
-        isCapped = false,
-        remainingXP = remainingXP,
-        etaText = FormatEtaCompact(etaSeconds),
+        isCapped = capped,
+        recentPerHour = recentPerHour,
+        sessionPerHour = sessionPerHour,
+        remainingXP = capped and 0 or remainingXP,
+        etaRecentSec = etaRecentSec,
+        etaSessionSec = etaSessionSec,
     }
+end
+
+local function BuildEtaRangeText(aSec, bSec)
+    if not aSec and not bSec then
+        return FormatEtaInfinity()
+    end
+    if aSec and (not bSec) then
+        return FormatEtaCompact(aSec)
+    end
+    if bSec and (not aSec) then
+        return FormatEtaCompact(bSec)
+    end
+    local lo = math.min(aSec, bSec)
+    local hi = math.max(aSec, bSec)
+    if lo == hi then
+        return FormatEtaCompact(lo)
+    end
+    return string.format("%s - %s", FormatEtaCompact(lo), FormatEtaCompact(hi))
+end
+
+local function BuildXPEtaLine(data)
+    local remainingXP = data and tonumber(data.remainingXP) or 0
+    local etaText = BuildEtaRangeText(
+        data and tonumber(data.etaRecentSec) or nil,
+        data and tonumber(data.etaSessionSec) or nil
+    )
+    return string.format("To level: %s xp (%s)", FormatInt(remainingXP), etaText)
+end
+
+local function BuildXPSessionAvgLine(data)
+    local sessionRate = data and tonumber(data.sessionPerHour) or 0
+    return string.format("Session avg: %s/hr", FormatInt(sessionRate))
+end
+
+local function BuildXPRecentAvgLine(data)
+    local recentRate = data and tonumber(data.recentPerHour) or 0
+    return string.format("Recent avg: %s/hr", FormatInt(recentRate))
 end
 
 local function BuildRepEtaData(metrics)
@@ -300,12 +319,6 @@ local function BuildRepEtaData(metrics)
     return out
 end
 
-local function BuildXPEtaLine(data)
-    local remainingXP = data and tonumber(data.remainingXP) or 0
-    local etaText = (data and data.etaText) or FormatEtaInfinity()
-    return string.format("To next level: %d (ETA: %s)", remainingXP, etaText)
-end
-
 local function BuildRepEtaLines(data)
     local factionName = (data and data.factionName) or "N/A"
     local nextStanding = (data and data.nextStanding) or "Unknown"
@@ -313,25 +326,56 @@ local function BuildRepEtaLines(data)
     local etaText = (data and data.etaText) or FormatEtaInfinity()
     return {
         string.format("Faction: %s", factionName),
-        string.format("To %s: %d (ETA: %s)", nextStanding, remainingRep, etaText),
+        string.format("To %s: %s (ETA: %s)", nextStanding, FormatInt(remainingRep), etaText),
     }
+end
+
+local function BuildPotentialByFactionTop(metrics)
+    local out = {}
+    local byFaction = metrics and metrics.repPotentialByFaction or nil
+    if not byFaction then
+        return out
+    end
+
+    for factionName, amount in pairs(byFaction) do
+        local value = tonumber(amount) or 0
+        if value > 0 then
+            table.insert(out, {
+                name = factionName,
+                value = value,
+            })
+        end
+    end
+
+    table.sort(out, function(a, b)
+        if a.value == b.value then
+            return (a.name or "") < (b.name or "")
+        end
+        return a.value > b.value
+    end)
+
+    while #out > 3 do
+        table.remove(out)
+    end
+
+    return out
 end
 
 local function FormatRepRateLine(ratePerHour)
     local value = tonumber(ratePerHour) or 0
-    return string.format("Rate: %d/hr", value)
+    return string.format("Rate: %s/hr", FormatInt(value))
 end
 
 local function FormatRepGainedLine(gainedTotal)
     local value = tonumber(gainedTotal) or 0
     local prefix = value >= 0 and "+" or ""
-    return string.format("Gained: %s%d", prefix, value)
+    return string.format("Gained: %s%s", prefix, FormatInt(value))
 end
 
 local function FormatRepPotentialLine(label, value, isEstimated)
     local amount = tonumber(value) or 0
     local suffix = isEstimated and " (est)" or ""
-    return string.format("%s: +%d%s", label, amount, suffix)
+    return string.format("%s: +%s%s", label, FormatInt(amount), suffix)
 end
 
 local function ShowMicroMetricTooltip(anchor, metricKey, state)
@@ -345,24 +389,46 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
     local currentText = state.lastUpdatedText ~= "" and state.lastUpdatedText or "0"
     GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
     GameTooltip:SetText(headerText)
-    if metricKey == "rep" then
-        GameTooltip:AddLine(FormatRepRateLine(state.displayRate or 0), 0.86, 0.82, 0.70)
-    else
+    if metricKey ~= "rep" and metricKey ~= "xp" then
         GameTooltip:AddLine(string.format("Current: %s", currentText), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(string.format("Session avg: %s/hr", FormatInt(state.sessionAvgRate or 0)), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(string.format("Recent avg: %s/hr", FormatInt(state.recentAvgRate or 0)), 0.8, 0.8, 0.8)
     end
     if metricKey == "xp" then
+        local xpData = state.tooltipData or {}
+        GameTooltip:AddLine(BuildXPSessionAvgLine(xpData), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(BuildXPRecentAvgLine(xpData), 0.8, 0.8, 0.8)
         GameTooltip:AddLine(BuildXPEtaLine(state.tooltipData), 0.8, 0.8, 0.8)
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Bar shows current rate relative to this session's peak (with a minimum baseline).", 0.62, 0.58, 0.50, true)
-        if state.icon and state.icon:GetAlpha() < 1 then
-            GameTooltip:AddLine("No tracked gain this session.", 0.62, 0.58, 0.50)
-        end
+        GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
     elseif metricKey == "rep" then
+        local approxPrefix = state.projectedApprox and "~" or ""
         local potentialTotal = tonumber(state.projectedTotal) or 0
-        GameTooltip:AddLine(FormatRepPotentialLine("Potential", potentialTotal, state.projectedApprox), 0.3, 1.0, 0.3)
+        local potentialByFactionTop = state.potentialByFactionTop or {}
+
+        GameTooltip:AddLine(string.format("Session avg: %s/hr", FormatInt(state.sessionAvgRate or 0)), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(string.format("Recent avg: %s/hr", FormatInt(state.recentAvgRate or 0)), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+
+        GameTooltip:AddLine("Current Session", 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(FormatRepRateLine(state.sessionAvgRate or 0), 0.86, 0.82, 0.70)
+
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("ETA Target (Current Faction)", 0.8, 0.8, 0.8)
         local repEtaLines = BuildRepEtaLines(state.tooltipData)
         GameTooltip:AddLine(repEtaLines[1], 0.8, 0.8, 0.8)
         GameTooltip:AddLine(repEtaLines[2], 0.8, 0.8, 0.8)
+
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("Potential (All Factions)", 0.3, 1.0, 0.3)
+        GameTooltip:AddLine(FormatRepPotentialLine("Potential Total", potentialTotal, state.projectedApprox), 0.3, 1.0, 0.3)
+        if #potentialByFactionTop > 0 then
+            GameTooltip:AddLine("Potential by Faction:", 0.8, 0.8, 0.8)
+            for i = 1, #potentialByFactionTop do
+                local row = potentialByFactionTop[i]
+                GameTooltip:AddLine(string.format("- %s: %s+%s", row.name or "Unknown", approxPrefix, FormatInt(row.value or 0)), 0.8, 0.8, 0.8)
+            end
+        end
         if state.projectedItems then
             for i = 1, #state.projectedItems do
                 local item = state.projectedItems[i]
@@ -374,17 +440,17 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
                     local theoreticalRep = tonumber(item.theoreticalRep) or eligibleRep
                     local itemApproxSuffix = item.isApprox and " (est)" or ""
                     if eligibleRep == theoreticalRep then
-                        GameTooltip:AddLine(string.format("- %s: %d/%d (%d rep%s)", itemName, count, bundleSize, eligibleRep, itemApproxSuffix), 0.8, 0.8, 0.8)
+                        GameTooltip:AddLine(string.format("- %s: %s/%s (%s rep%s)", itemName, FormatInt(count), FormatInt(bundleSize), FormatInt(eligibleRep), itemApproxSuffix), 0.8, 0.8, 0.8)
                     else
-                        GameTooltip:AddLine(string.format("- %s: %d/%d (%d eligible / %d theoretical rep%s)", itemName, count, bundleSize, eligibleRep, theoreticalRep, itemApproxSuffix), 0.8, 0.8, 0.8)
+                        GameTooltip:AddLine(string.format("- %s: %s/%s (%s eligible / %s theoretical rep%s)", itemName, FormatInt(count), FormatInt(bundleSize), FormatInt(eligibleRep), FormatInt(theoreticalRep), itemApproxSuffix), 0.8, 0.8, 0.8)
                     end
                 end
             end
         end
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Potential or actual rep gained. Bar shows current rep/hour rate relative to session's peak rep gain. Potential rep will be converted to rep gain upon turn-in.", 0.62, 0.58, 0.50, true)
+        GameTooltip:AddLine("Potential or actual rep gained. Bar shows recent rate compared to session avg. Potential rep will be converted to rep gain upon turn-in.", 0.62, 0.58, 0.50, true)
     else
-        GameTooltip:AddLine("Bar shows current rate relative to this session's peak (with a minimum baseline).", 0.62, 0.58, 0.50, true)
+        GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
         if state.icon and state.icon:GetAlpha() < 1 then
             GameTooltip:AddLine("No tracked gain this session.", 0.62, 0.58, 0.50)
         end
@@ -438,37 +504,24 @@ local function UpdateMicroBars(session, metrics)
     local cfg = pH_Settings.microBars
     if not cfg then return end
 
-    -- Skip if paused (freeze bars)
-    local isPaused = pH_SessionManager:IsPaused(session)
-    if isPaused then
-        -- When paused, keep current display but don't update
-        RepositionTiles(true)
-        return
-    end
-
-    -- Time delta for peak decay
-    local now = GetTime()
-    local deltaMinutes = (now - lastUpdateTime) / 60
-    lastUpdateTime = now
-
     -- Update each metric in fixed order
     for _, metricKey in ipairs(METRIC_ORDER) do
         local state = metricStates[metricKey]
         if state and state.tile then
-            local rawRate = 0
-            local isActive = false
+            local sessionAvgRate = 0
+            local recentAvgRate = 0
 
             -- Extract raw rate from metrics
             if metricKey == "gold" then
-                rawRate = metrics.totalPerHour
-                isActive = true  -- Gold is always active
+                sessionAvgRate = metrics.totalPerHour or 0
+                recentAvgRate = metrics.goldRecentPerHourBucketed or 0
             elseif metricKey == "xp" then
-                rawRate = metrics.xpPerHour or 0
-                isActive = metrics.xpEnabled and rawRate > 0
-                state.tooltipData = BuildXPEtaData(rawRate)
+                sessionAvgRate = metrics.xpPerHour or 0
+                recentAvgRate = metrics.xpRecentPerHourBucketed or 0
+                state.tooltipData = BuildXPEtaData(metrics)
             elseif metricKey == "rep" then
-                rawRate = metrics.repPerHour or 0
-                isActive = metrics.repEnabled and rawRate > 0
+                sessionAvgRate = metrics.repPerHour or 0
+                recentAvgRate = metrics.repRecentPerHourBucketed or 0
                 local projectedTotal = metrics.repPotentialTotal or 0
                 local projectedItems = metrics.repPotentialItems or {}
                 local projectedApprox = metrics.repPotentialApprox and true or false
@@ -477,29 +530,32 @@ local function UpdateMicroBars(session, metrics)
                 state.projectedApprox = projectedApprox
                 state.projectedItemCount = #projectedItems
                 state.projectedItems = projectedItems
+                state.potentialByFactionTop = BuildPotentialByFactionTop(metrics)
                 state.tooltipData = BuildRepEtaData(metrics)
             elseif metricKey == "honor" then
-                rawRate = metrics.honorPerHour or 0
-                isActive = metrics.honorEnabled and rawRate > 0
+                sessionAvgRate = metrics.honorPerHour or 0
+                recentAvgRate = metrics.honorRecentPerHourBucketed or 0
             end
 
             -- Always show tiles, but gray out inactive ones
             state.tile:Show()
             state.icon:Show()  -- Ensure icon is always visible
+            state.sessionAvgRate = sessionAvgRate
+            state.recentAvgRate = recentAvgRate
+
+            local isActive = (sessionAvgRate > 0) or (recentAvgRate > 0)
 
             if isActive then
-                -- Active: normal colors and updates
-                -- Apply smoothing
-                state.displayRate = SmoothRate(state.displayRate, rawRate, cfg.smoothingAlpha)
-
-                -- Update peak (with optional decay)
-                state.peak = DecayPeak(state.peak, state.displayRate, deltaMinutes, cfg.normalization)
-
-                -- Normalize for bar
-                local minFloor = cfg.minRefFloors[metricKey]
-                local normalized = NormalizeRate(state.displayRate, state.peak, minFloor)
-
-                -- Update bar fill
+                -- Keep tile text stable with session context while bar fill reflects recent pace.
+                state.displayRate = sessionAvgRate
+                local normalized = 0
+                if sessionAvgRate > 0 then
+                    normalized = recentAvgRate / sessionAvgRate
+                elseif recentAvgRate > 0 then
+                    normalized = 1
+                end
+                if normalized < 0 then normalized = 0 end
+                if normalized > 1 then normalized = 1 end
                 state.bar:SetValue(normalized)
 
                 -- Update text (avoid string churn)
@@ -1457,7 +1513,7 @@ local function FormatAccountingShort(copper)
     end
 end
 
--- Format number helper (for XP display)
+-- Format compact number helper for panel totals
 local function FormatNumber(num)
     if not num or num == 0 then
         return "0"
@@ -1551,10 +1607,10 @@ local function AddRepBreakdownRow(panel, yOffset, label, totalValue, tooltipData
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText(tooltipData.itemName or "Rep Item", 1, 1, 1)
             if tooltipData.count and tooltipData.bundleSize then
-                GameTooltip:AddLine(string.format("Collected: %d / %d", tooltipData.count, tooltipData.bundleSize), 0.8, 0.8, 0.8)
+                GameTooltip:AddLine(string.format("Collected: %s / %s", FormatInt(tooltipData.count), FormatInt(tooltipData.bundleSize)), 0.8, 0.8, 0.8)
             end
             if tooltipData.potentialRep then
-                GameTooltip:AddLine(string.format("Potential Rep: +%d", tooltipData.potentialRep), 0.3, 1.0, 0.3)
+                GameTooltip:AddLine(string.format("Potential Rep: +%s", FormatInt(tooltipData.potentialRep)), 0.3, 1.0, 0.3)
             end
             if tooltipData.turninNpc or tooltipData.turninZone then
                 GameTooltip:AddLine(string.format("Turn-in: %s, %s",
@@ -1740,13 +1796,12 @@ local function UpdateXPPanel(panel, metrics)
 
     local xpGained = metrics.xpGained or 0
     local xpPerHour = metrics.xpPerHour or 0
-    local xpEtaData = BuildXPEtaData(xpPerHour)
+    local xpEtaData = BuildXPEtaData(metrics)
 
     panel.totalValue:SetText(FormatNumber(xpGained))
     panel.rateText:SetText(FormatNumber(xpPerHour) .. "/hr")
     panel.rawTotal:SetText(string.format("%s XP", FormatNumber(xpGained)))
     panel.xpTooltipData = {
-        current = xpPerHour,
         eta = xpEtaData,
     }
     panel:EnableMouse(true)
@@ -1754,10 +1809,11 @@ local function UpdateXPPanel(panel, metrics)
         local data = self.xpTooltipData or {}
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText("XP/Hour")
-        GameTooltip:AddLine(string.format("Current: %d", tonumber(data.current) or 0), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(BuildXPSessionAvgLine(data.eta), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(BuildXPRecentAvgLine(data.eta), 0.8, 0.8, 0.8)
         GameTooltip:AddLine(BuildXPEtaLine(data.eta), 0.8, 0.8, 0.8)
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Bar shows current rate relative to this session's peak (with a minimum baseline).", 0.62, 0.58, 0.50, true)
+        GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
         GameTooltip:Show()
     end)
     panel:SetScript("OnLeave", function()
@@ -1778,6 +1834,7 @@ local function UpdateRepPanel(panel, metrics)
     local potentialItems = metrics.repPotentialItems or {}
     local potentialApprox = metrics.repPotentialApprox and true or false
     local repEtaData = BuildRepEtaData(metrics)
+    local potentialByFactionTop = BuildPotentialByFactionTop(metrics)
     local hasPotentialInfo = #potentialItems > 0
     panel.totalValue:SetText(FormatRepGainedLine(totalRep))
     panel.rateText:SetText(FormatRepRateLine(repHr))
@@ -1812,10 +1869,12 @@ local function UpdateRepPanel(panel, metrics)
     -- Whole-panel rep tooltip with full potential detail list.
     panel.repTooltipData = {
         current = repHr or 0,
+        recent = metrics.repRecentPerHourBucketed or 0,
         potentialTotal = potentialTotal or 0,
         potentialTheoreticalTotal = potentialTheoreticalTotal or 0,
         potentialApprox = potentialApprox,
         potentialItems = potentialItems,
+        potentialByFactionTop = potentialByFactionTop,
         eta = repEtaData,
     }
     panel:EnableMouse(true)
@@ -1823,15 +1882,32 @@ local function UpdateRepPanel(panel, metrics)
         local data = self.repTooltipData or {}
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText("Rep/Hour")
-        GameTooltip:AddLine(FormatRepRateLine(data.current or 0), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(string.format("Session avg: %s/hr", FormatInt(data.current or 0)), 0.86, 0.82, 0.70)
+        GameTooltip:AddLine(string.format("Recent avg: %s/hr", FormatInt(data.recent or 0)), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("Current Session", 0.86, 0.82, 0.70)
         GameTooltip:AddLine(FormatRepGainedLine(totalRep), 0.86, 0.82, 0.70)
-        GameTooltip:AddLine(FormatRepPotentialLine("Potential", data.potentialTotal or 0, data.potentialApprox), 0.3, 1.0, 0.3)
-        if (data.potentialTheoreticalTotal or 0) ~= (data.potentialTotal or 0) then
-            GameTooltip:AddLine(FormatRepPotentialLine("Theoretical", data.potentialTheoreticalTotal or 0, data.potentialApprox), 0.8, 0.8, 0.8)
-        end
+
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("ETA Target (Current Faction)", 0.8, 0.8, 0.8)
         local repEtaLines = BuildRepEtaLines(data.eta)
         GameTooltip:AddLine(repEtaLines[1], 0.8, 0.8, 0.8)
         GameTooltip:AddLine(repEtaLines[2], 0.8, 0.8, 0.8)
+
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine("Potential (All Factions)", 0.3, 1.0, 0.3)
+        GameTooltip:AddLine(FormatRepPotentialLine("Potential Total", data.potentialTotal or 0, data.potentialApprox), 0.3, 1.0, 0.3)
+        if (data.potentialTheoreticalTotal or 0) ~= (data.potentialTotal or 0) then
+            GameTooltip:AddLine(FormatRepPotentialLine("Potential Theoretical", data.potentialTheoreticalTotal or 0, data.potentialApprox), 0.8, 0.8, 0.8)
+        end
+        if data.potentialByFactionTop and #data.potentialByFactionTop > 0 then
+            local approxPrefix = data.potentialApprox and "~" or ""
+            GameTooltip:AddLine("Potential by Faction:", 0.8, 0.8, 0.8)
+            for i = 1, #data.potentialByFactionTop do
+                local row = data.potentialByFactionTop[i]
+                GameTooltip:AddLine(string.format("- %s: %s+%s", row.name or "Unknown", approxPrefix, FormatInt(row.value or 0)), 0.8, 0.8, 0.8)
+            end
+        end
         local items = data.potentialItems or {}
         if #items > 0 then
             GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
@@ -1844,9 +1920,9 @@ local function UpdateRepPanel(panel, metrics)
                 local theoreticalRep = tonumber(item.theoreticalRep) or eligibleRep
                 local itemApproxSuffix = item.isApprox and " (est)" or ""
                 if eligibleRep == theoreticalRep then
-                    GameTooltip:AddLine(string.format("%s: %d/%d (%d rep%s)", itemName, count, bundleSize, eligibleRep, itemApproxSuffix), 1.0, 1.0, 1.0)
+                    GameTooltip:AddLine(string.format("%s: %s/%s (%s rep%s)", itemName, FormatInt(count), FormatInt(bundleSize), FormatInt(eligibleRep), itemApproxSuffix), 1.0, 1.0, 1.0)
                 else
-                    GameTooltip:AddLine(string.format("%s: %d/%d (%d eligible / %d theoretical rep%s)", itemName, count, bundleSize, eligibleRep, theoreticalRep, itemApproxSuffix), 1.0, 1.0, 1.0)
+                    GameTooltip:AddLine(string.format("%s: %s/%s (%s eligible / %s theoretical rep%s)", itemName, FormatInt(count), FormatInt(bundleSize), FormatInt(eligibleRep), FormatInt(theoreticalRep), itemApproxSuffix), 1.0, 1.0, 1.0)
                 end
                 local targets = item.targets or {}
                 if #targets > 0 then
@@ -1857,9 +1933,9 @@ local function UpdateRepPanel(panel, metrics)
                         local targetApproxSuffix = target.isApprox and " (est)" or ""
                         local targetLine
                         if targetEligible == targetTheoretical then
-                            targetLine = string.format("-> %s: +%d%s", target.factionKey or "Unknown", targetEligible, targetApproxSuffix)
+                            targetLine = string.format("-> %s: +%s%s", target.factionKey or "Unknown", FormatInt(targetEligible), targetApproxSuffix)
                         else
-                            targetLine = string.format("-> %s: +%d eligible / +%d theoretical%s", target.factionKey or "Unknown", targetEligible, targetTheoretical, targetApproxSuffix)
+                            targetLine = string.format("-> %s: +%s eligible / +%s theoretical%s", target.factionKey or "Unknown", FormatInt(targetEligible), FormatInt(targetTheoretical), targetApproxSuffix)
                         end
                         GameTooltip:AddLine(targetLine, 0.85, 0.85, 0.85)
                         GameTooltip:AddLine(string.format("Turn in: %s, %s",
@@ -1874,7 +1950,7 @@ local function UpdateRepPanel(panel, metrics)
             end
         end
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Potential or actual rep gained. Bar shows current rep/hour rate relative to session's peak rep gain. Potential rep will be converted to rep gain upon turn-in.", 0.62, 0.58, 0.50, true)
+        GameTooltip:AddLine("Potential or actual rep gained. Bar shows recent rate compared to session avg. Potential rep will be converted to rep gain upon turn-in.", 0.62, 0.58, 0.50, true)
         GameTooltip:Show()
     end)
     panel:SetScript("OnLeave", function()
@@ -2355,7 +2431,6 @@ function pH_HUD:Update()
         for _, state in pairs(metricStates) do
             if state.tile then state.tile:Hide() end
             state.displayRate = 0
-            state.peak = 0
             state.lastUpdatedText = ""
         end
 

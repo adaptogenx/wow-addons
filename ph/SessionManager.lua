@@ -10,6 +10,8 @@ local pH_SessionManager = {}
 local DEFAULT_SHORT_SESSION_SEC = 300
 local HISTORY_UNDO_WINDOW_SEC = 30
 local HISTORY_UNDO_MAX = 20
+local RATE_BUCKET_SIZE_SEC = 30
+local RATE_BUCKET_MAX = 6
 
 --------------------------------------------------
 -- Owner identity (session belongs to current character)
@@ -213,6 +215,8 @@ function pH_SessionManager:StartSession(startReason, startSource)
                 eligibleByFaction = {}, theoreticalByFaction = {},
             },
             honor = { gained = 0, enabled = false, kills = 0 },
+            recentBuckets = {},
+            recentBucketLastTotals = {},
         },
 
         -- Phase 9: Snapshots for delta computation
@@ -518,6 +522,8 @@ function pH_SessionManager:MergeSessions(sessionIds)
                 eligibleByFaction = {}, theoreticalByFaction = {},
             },
             honor = { gained = 0, enabled = false, kills = 0 },
+            recentBuckets = {},
+            recentBucketLastTotals = {},
         },
         snapshots = {
             xp = { cur = 0, max = 0 },
@@ -900,13 +906,124 @@ local function BuildRepPotentialItems(session)
     return out
 end
 
+function pH_SessionManager:EnsureRecentBucketsDefaults(session)
+    if not session then return end
+    if not session.metrics then
+        session.metrics = {}
+    end
+    if type(session.metrics.recentBuckets) ~= "table" then
+        session.metrics.recentBuckets = {}
+    end
+    if type(session.metrics.recentBucketLastTotals) ~= "table" then
+        session.metrics.recentBucketLastTotals = {}
+    end
+    local keys = { "gold", "xp", "rep", "honor" }
+    for i = 1, #keys do
+        local key = keys[i]
+        if type(session.metrics.recentBuckets[key]) ~= "table" then
+            session.metrics.recentBuckets[key] = {
+                bucketSizeSec = RATE_BUCKET_SIZE_SEC,
+                maxBuckets = RATE_BUCKET_MAX,
+                buckets = {},
+            }
+        else
+            local bucket = session.metrics.recentBuckets[key]
+            if type(bucket.buckets) ~= "table" then
+                bucket.buckets = {}
+            end
+            bucket.bucketSizeSec = bucket.bucketSizeSec or RATE_BUCKET_SIZE_SEC
+            bucket.maxBuckets = bucket.maxBuckets or RATE_BUCKET_MAX
+        end
+    end
+end
+
+function pH_SessionManager:RecordMetricDelta(session, metricKey, delta, atTime)
+    if not session or not metricKey then return end
+    self:EnsureRecentBucketsDefaults(session)
+    local bucketState = session.metrics.recentBuckets[metricKey]
+    if not bucketState then return end
+
+    local value = tonumber(delta) or 0
+    if value <= 0 then
+        return
+    end
+
+    local at = math.floor(tonumber(atTime) or time())
+    local size = bucketState.bucketSizeSec or RATE_BUCKET_SIZE_SEC
+    local bucketStart = at - (at % size)
+    local bucketEnd = bucketStart + size
+    local buckets = bucketState.buckets
+    local current = buckets[#buckets]
+    if not current or current.startAt ~= bucketStart then
+        current = { startAt = bucketStart, endAt = bucketEnd, delta = 0 }
+        table.insert(buckets, current)
+    end
+    current.delta = (current.delta or 0) + value
+
+    local maxBuckets = bucketState.maxBuckets or RATE_BUCKET_MAX
+    while #buckets > maxBuckets do
+        table.remove(buckets, 1)
+    end
+end
+
+function pH_SessionManager:ComputeBucketedRecentRate(session, metricKey, nowTs)
+    if not session or not metricKey then
+        return 0
+    end
+    self:EnsureRecentBucketsDefaults(session)
+    local bucketState = session.metrics.recentBuckets[metricKey]
+    if not bucketState then
+        return 0
+    end
+    local buckets = bucketState.buckets or {}
+    local count = #buckets
+    if count == 0 then
+        return 0
+    end
+
+    local nowLocal = math.floor(tonumber(nowTs) or time())
+    local size = bucketState.bucketSizeSec or RATE_BUCKET_SIZE_SEC
+    local maxAgeSec = (bucketState.maxBuckets or RATE_BUCKET_MAX) * size
+    local weights = {0.6, 0.3, 0.1}
+    local weightedSum = 0
+    local totalWeight = 0
+
+    local used = 0
+    for i = count, 1, -1 do
+        if used >= 3 then
+            break
+        end
+        local bucket = buckets[i]
+        local endAt = tonumber(bucket and bucket.endAt) or 0
+        local age = nowLocal - endAt
+        if age <= maxAgeSec then
+            local delta = tonumber(bucket and bucket.delta) or 0
+            local rate = 0
+            if delta > 0 then
+                rate = (delta / size) * 3600
+            end
+            used = used + 1
+            local w = weights[used] or 0
+            weightedSum = weightedSum + (rate * w)
+            totalWeight = totalWeight + w
+        end
+    end
+
+    if totalWeight <= 0 then
+        return 0
+    end
+    return math.floor(weightedSum / totalWeight)
+end
+
 -- Compute derived metrics for display
 function pH_SessionManager:GetMetrics(session)
     if not session then
         return nil
     end
+    self:EnsureRecentBucketsDefaults(session)
 
-    local now = time()
+    -- Freeze "current time" during pause so recent-rate views remain stable for QA.
+    local now = session.pausedAt or time()
     local durationSec
 
     -- When paused, use only accumulated duration (no live addition)
@@ -964,6 +1081,13 @@ function pH_SessionManager:GetMetrics(session)
     if durationHours > 0 then
         totalPerHour = math.floor(totalValue / durationHours)
     end
+    local lastTotals = session.metrics.recentBucketLastTotals or {}
+    local lastGoldTotal = tonumber(lastTotals.goldTotal) or nil
+    if lastGoldTotal ~= nil then
+        self:RecordMetricDelta(session, "gold", totalValue - lastGoldTotal, now)
+    end
+    lastTotals.goldTotal = totalValue
+    session.metrics.recentBucketLastTotals = lastTotals
 
     -- Phase 6: Pickpocket metrics
     local pickpocketGold = 0
@@ -995,12 +1119,14 @@ function pH_SessionManager:GetMetrics(session)
     local xpPerHour = 0
     local xpEnabled = false
     if session.metrics and session.metrics.xp then
-        xpGained = session.metrics.xp.gained or 0
-        xpEnabled = session.metrics.xp.enabled or false
+        local xpMetrics = session.metrics.xp
+        xpGained = xpMetrics.gained or 0
+        xpEnabled = xpMetrics.enabled or false
         if durationHours > 0 and xpGained > 0 then
             xpPerHour = math.floor(xpGained / durationHours)
         end
     end
+    local xpRecentPerHourBucketed = self:ComputeBucketedRecentRate(session, "xp", now)
 
     -- Phase 9: Compute Rep metrics
     local repGained = 0
@@ -1027,6 +1153,7 @@ function pH_SessionManager:GetMetrics(session)
             end
         end
     end
+    local repRecentPerHourBucketed = self:ComputeBucketedRecentRate(session, "rep", now)
 
     -- Phase 9: Compute Honor metrics
     local honorGained = 0
@@ -1041,6 +1168,8 @@ function pH_SessionManager:GetMetrics(session)
             honorPerHour = math.floor(honorGained / durationHours)
         end
     end
+    local honorRecentPerHourBucketed = self:ComputeBucketedRecentRate(session, "honor", now)
+    local goldRecentPerHourBucketed = self:ComputeBucketedRecentRate(session, "gold", now)
 
     local repPotentialTotal = (session.metrics and session.metrics.repPotential and (session.metrics.repPotential.eligibleTotal or session.metrics.repPotential.total)) or 0
     local repPotentialTheoreticalTotal = (session.metrics and session.metrics.repPotential and session.metrics.repPotential.theoreticalTotal) or 0
@@ -1108,9 +1237,11 @@ function pH_SessionManager:GetMetrics(session)
         -- Phase 9: XP/Rep/Honor metrics
         xpGained = xpGained,
         xpPerHour = xpPerHour,
+        xpRecentPerHourBucketed = xpRecentPerHourBucketed,
         xpEnabled = xpEnabled,
         repGained = repGained,
         repPerHour = repPerHour,
+        repRecentPerHourBucketed = repRecentPerHourBucketed,
         repEnabled = repEnabled,
         repTopFactions = repTopFactions,
         repPotentialTotal = repPotentialTotal,
@@ -1121,8 +1252,10 @@ function pH_SessionManager:GetMetrics(session)
         repPotentialApprox = repPotentialApprox,
         honorGained = honorGained,
         honorPerHour = honorPerHour,
+        honorRecentPerHourBucketed = honorRecentPerHourBucketed,
         honorEnabled = honorEnabled,
         honorKills = honorKills,
+        goldRecentPerHourBucketed = goldRecentPerHourBucketed,
     }
 end
 

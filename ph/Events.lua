@@ -1742,6 +1742,9 @@ function pH_Events:OnPlayerXPUpdate()
     -- Update session metrics
     session.metrics.xp.gained = session.metrics.xp.gained + delta
     session.metrics.xp.enabled = true
+    if type(pH_SessionManager) == "table" and pH_SessionManager.RecordMetricDelta then
+        pH_SessionManager:RecordMetricDelta(session, "xp", delta, time())
+    end
 
     -- Update runtime state
     state.xpLast = newXP
@@ -1834,6 +1837,9 @@ function pH_Events:OnUpdateFaction()
     if totalDelta > 0 then
         session.metrics.rep.gained = session.metrics.rep.gained + totalDelta
         session.metrics.rep.enabled = true
+        if type(pH_SessionManager) == "table" and pH_SessionManager.RecordMetricDelta then
+            pH_SessionManager:RecordMetricDelta(session, "rep", totalDelta, time())
+        end
     end
 
     if totalDelta > 0 or newPotentialEligible ~= prevPotentialEligible then
@@ -1876,6 +1882,9 @@ function pH_Events:OnHonorGain(message)
         amount = tonumber(amount)
         session.metrics.honor.gained = session.metrics.honor.gained + amount
         session.metrics.honor.enabled = true
+        if type(pH_SessionManager) == "table" and pH_SessionManager.RecordMetricDelta then
+            pH_SessionManager:RecordMetricDelta(session, "honor", amount, time())
+        end
 
         -- Optional: detect HK with "killing blow"
         if message:find("killing blow") then
