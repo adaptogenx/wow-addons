@@ -40,6 +40,7 @@ local SOURCE_LABELS = {
     ["gold.treasure_or_container_coin"] = "Gold: Treasure/container",
     ["gold.lockbox_coin"] = "Gold: Lockbox",
     ["gold.pickpocket_coin"] = "Gold: Pickpocket",
+    ["gold.vendor_trash_loot"] = "Gold: Vendor trash loot",
     ["gold.quest_reward"] = "Gold: Quest reward",
     ["gold.vendor_sale"] = "Gold: Vendor sale",
     ["gold.mail"] = "Gold: Mail",
@@ -59,7 +60,7 @@ local SOURCE_LABELS = {
 local ALL_SOURCES = {
     "xp.mob_kill", "xp.quest_turnin", "xp.zone_discovery", "xp.other",
     "gold.mob_loot_coin", "gold.treasure_or_container_coin", "gold.lockbox_coin", "gold.pickpocket_coin",
-    "gold.quest_reward", "gold.vendor_sale", "gold.mail", "gold.auction_payout", "gold.trade_or_cod", "gold.other",
+    "gold.vendor_trash_loot", "gold.quest_reward", "gold.vendor_sale", "gold.mail", "gold.auction_payout", "gold.trade_or_cod", "gold.other",
     "rep.mob_kill", "rep.quest_turnin", "rep.item_turnin", "rep.other",
     "gathering.node", "honor.gain",
 }
@@ -108,6 +109,9 @@ local function BuildProfile(profile)
 
         start["gold.pickpocket_coin"].action = ACTION_AUTO
         resume["gold.pickpocket_coin"].action = ACTION_AUTO
+
+        start["gold.vendor_trash_loot"].action = ACTION_AUTO
+        resume["gold.vendor_trash_loot"].action = ACTION_AUTO
 
         start["xp.zone_discovery"].action = ACTION_OFF
         resume["xp.zone_discovery"].action = ACTION_OFF
@@ -276,6 +280,16 @@ local function MigrateSettings()
         cfg._sourceRulesMigrationV1400 = true
     end
 
+    -- One-time migration (15.0.1):
+    -- vendor trash loot should be a first-class auto-start source.
+    if cfg._sourceRulesMigrationV1501VendorTrash ~= true then
+        cfg.start.rules["gold.vendor_trash_loot"] = cfg.start.rules["gold.vendor_trash_loot"] or { action = ACTION_OFF }
+        cfg.resume.rules["gold.vendor_trash_loot"] = cfg.resume.rules["gold.vendor_trash_loot"] or { action = ACTION_OFF }
+        cfg.start.rules["gold.vendor_trash_loot"].action = ACTION_AUTO
+        cfg.resume.rules["gold.vendor_trash_loot"].action = ACTION_AUTO
+        cfg._sourceRulesMigrationV1501VendorTrash = true
+    end
+
 end
 
 local function SourceLabel(source)
@@ -362,6 +376,19 @@ local function ParseHonor(message)
     return tonumber(amount) or 0
 end
 
+local function ResolveXPSource(now)
+    if now <= state.pendingXPSourceUntil and state.pendingXPSource then
+        return state.pendingXPSource
+    end
+    if now <= state.zoneDiscoveryUntil then
+        return "xp.zone_discovery"
+    end
+    if now <= state.questTurnInUntil then
+        return "xp.quest_turnin"
+    end
+    return "xp.other"
+end
+
 local function NormalizeAction(value, allowPrompt)
     if value == ACTION_OFF then
         return ACTION_OFF
@@ -404,6 +431,7 @@ end
 function pH_AutoSession:Initialize()
     MigrateSettings()
     self:InitializeRepCache()
+    state.xpLastSeen = UnitXP and UnitXP("player") or state.xpLastSeen
 
     state.timerFrame = CreateFrame("Frame")
     state.timerFrame:SetScript("OnUpdate", function(selfFrame, elapsed)
@@ -556,7 +584,8 @@ function pH_AutoSession:ClassifyActivity(event, ...)
 
     if event == "CHAT_MSG_COMBAT_XP_GAIN" then
         self:MarkXPContextFromMessage(select(1, ...))
-        return nil
+        local source = ResolveXPSource(now)
+        return { source = source, confidence = "high", amount = 0, shouldSuppress = false }
     end
 
     if event == "CHAT_MSG_SYSTEM" then
@@ -631,6 +660,9 @@ function pH_AutoSession:ClassifyActivity(event, ...)
             if bucket == "container_lockbox" then
                 return { source = "gold.treasure_or_container_coin", confidence = "medium", amount = 0, shouldSuppress = false }
             end
+            if bucket == "vendor_trash" then
+                return { source = "gold.vendor_trash_loot", confidence = "high", amount = 0, shouldSuppress = false }
+            end
         end
         return { source = "gold.other", confidence = "low", amount = 0, shouldSuppress = false }
     end
@@ -689,14 +721,7 @@ function pH_AutoSession:ClassifyActivity(event, ...)
             return nil
         end
 
-        local source = "xp.other"
-        if now <= state.pendingXPSourceUntil and state.pendingXPSource then
-            source = state.pendingXPSource
-        elseif now <= state.zoneDiscoveryUntil then
-            source = "xp.zone_discovery"
-        elseif now <= state.questTurnInUntil then
-            source = "xp.quest_turnin"
-        end
+        local source = ResolveXPSource(now)
 
         return { source = source, confidence = "high", amount = delta, shouldSuppress = false }
     end
@@ -1014,6 +1039,8 @@ function pH_AutoSession:OnPlayerEnteringWorld()
     if not cfg or not cfg.enabled then
         return
     end
+
+    state.xpLastSeen = UnitXP and UnitXP("player") or state.xpLastSeen
 
     if not cfg.instanceStart or not cfg.instanceStart.enabled then
         return
