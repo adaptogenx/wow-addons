@@ -1132,6 +1132,7 @@ function pH_SessionManager:GetMetrics(session)
     local repGained = 0
     local repPerHour = 0
     local repEnabled = false
+    local repFactions = {}
     local repTopFactions = {}
     if session.metrics and session.metrics.rep then
         repGained = session.metrics.rep.gained or 0
@@ -1146,7 +1147,13 @@ function pH_SessionManager:GetMetrics(session)
             for factionName, gain in pairs(session.metrics.rep.byFaction) do
                 table.insert(allFactions, {name = factionName, gain = gain})
             end
-            table.sort(allFactions, function(a, b) return a.gain > b.gain end)
+            table.sort(allFactions, function(a, b)
+                if a.gain == b.gain then
+                    return (a.name or "") < (b.name or "")
+                end
+                return a.gain > b.gain
+            end)
+            repFactions = allFactions
             -- Take top 3
             for i = 1, math.min(3, #allFactions) do
                 table.insert(repTopFactions, allFactions[i])
@@ -1243,6 +1250,7 @@ function pH_SessionManager:GetMetrics(session)
         repPerHour = repPerHour,
         repRecentPerHourBucketed = repRecentPerHourBucketed,
         repEnabled = repEnabled,
+        repFactions = repFactions,
         repTopFactions = repTopFactions,
         repPotentialTotal = repPotentialTotal,
         repPotentialTheoreticalTotal = repPotentialTheoreticalTotal,

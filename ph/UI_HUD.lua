@@ -280,85 +280,189 @@ local function BuildXPRecentAvgLine(data)
     return string.format("Recent avg: %s/hr", FormatInt(recentRate))
 end
 
-local function BuildRepEtaData(metrics)
-    local topFaction = metrics and metrics.repTopFactions and metrics.repTopFactions[1]
-    local factionName = topFaction and topFaction.name or nil
-    local rate = metrics and tonumber(metrics.repPerHour) or 0
-    local out = {
-        factionName = factionName or "N/A",
-        nextStanding = "Unknown",
-        remainingRep = 0,
-        etaText = FormatEtaInfinity(),
-        isCapped = false,
-    }
-    if not factionName or factionName == "" then
-        return out
-    end
-
-    local numFactions = GetNumFactions and GetNumFactions() or 0
-    for i = 1, numFactions do
-        local name, _, standingID, _, barMax, barValue, _, _, isHeader = GetFactionInfo(i)
-        if not isHeader and name == factionName then
-            local standing = tonumber(standingID) or 0
-            local remainingRep = math.max(0, (tonumber(barMax) or 0) - (tonumber(barValue) or 0))
-            local isCapped = standing >= 8
-            local nextStandingID = isCapped and standing or (standing + 1)
-
-            out.factionName = factionName
-            out.remainingRep = remainingRep
-            out.isCapped = isCapped
-            out.nextStanding = GetStandingLabel(nextStandingID)
-
-            if (not isCapped) and rate > 0 then
-                local etaSeconds = math.floor((remainingRep / rate) * 3600)
-                out.etaText = FormatEtaCompact(etaSeconds)
+local function BuildRepTooltipModel(metrics, sessionAvgOverride, recentAvgOverride)
+    local sessionAvg = tonumber(sessionAvgOverride) or (metrics and tonumber(metrics.repPerHour)) or 0
+    local currentAvg = tonumber(recentAvgOverride) or (metrics and tonumber(metrics.repRecentPerHourBucketed)) or 0
+    local gainedFactions = {}
+    local sourceFactions = (metrics and metrics.repFactions) or (metrics and metrics.repTopFactions) or {}
+    for i = 1, #sourceFactions do
+        local row = sourceFactions[i]
+        local name = row and row.name or nil
+        local gain = row and tonumber(row.gain) or 0
+        if name and name ~= "" and gain > 0 then
+            local remainingRep = 0
+            local nextStanding = "Unknown"
+            local etaSessionText = FormatEtaInfinity()
+            local numFactions = GetNumFactions and GetNumFactions() or 0
+            for j = 1, numFactions do
+                local factionName, _, standingID, _, barMax, barValue, _, _, isHeader = GetFactionInfo(j)
+                if not isHeader and factionName == name then
+                    local standing = tonumber(standingID) or 0
+                    local isCapped = standing >= 8
+                    remainingRep = math.max(0, (tonumber(barMax) or 0) - (tonumber(barValue) or 0))
+                    nextStanding = GetStandingLabel(isCapped and standing or (standing + 1))
+                    if (not isCapped) and sessionAvg > 0 then
+                        etaSessionText = FormatEtaCompact(math.floor((remainingRep / sessionAvg) * 3600))
+                    end
+                    break
+                end
             end
-            return out
-        end
-    end
-    return out
-end
-
-local function BuildRepEtaLines(data)
-    local factionName = (data and data.factionName) or "N/A"
-    local nextStanding = (data and data.nextStanding) or "Unknown"
-    local remainingRep = data and tonumber(data.remainingRep) or 0
-    local etaText = (data and data.etaText) or FormatEtaInfinity()
-    return {
-        string.format("Faction: %s", factionName),
-        string.format("To %s: %s (ETA: %s)", nextStanding, FormatInt(remainingRep), etaText),
-    }
-end
-
-local function BuildPotentialByFactionTop(metrics)
-    local out = {}
-    local byFaction = metrics and metrics.repPotentialByFaction or nil
-    if not byFaction then
-        return out
-    end
-
-    for factionName, amount in pairs(byFaction) do
-        local value = tonumber(amount) or 0
-        if value > 0 then
-            table.insert(out, {
-                name = factionName,
-                value = value,
+            table.insert(gainedFactions, {
+                name = name,
+                gain = gain,
+                remainingRep = remainingRep,
+                nextStanding = nextStanding,
+                etaSessionText = etaSessionText,
             })
         end
     end
 
-    table.sort(out, function(a, b)
-        if a.value == b.value then
-            return (a.name or "") < (b.name or "")
+    local potentialByFaction = {}
+    local potentialItems = (metrics and metrics.repPotentialItems) or {}
+    for i = 1, #potentialItems do
+        local item = potentialItems[i]
+        if item then
+            local itemName = item.itemName or "Rep Item"
+            local count = tonumber(item.count) or 0
+            local bundleSize = tonumber(item.bundleSize) or 1
+            local targets = item.targets or {}
+            for j = 1, #targets do
+                local target = targets[j]
+                local factionName = target and (target.factionKey or target.factionName) or nil
+                local eligibleRep = target and (tonumber(target.eligibleRep) or tonumber(target.potentialRep)) or 0
+                if factionName and factionName ~= "" and eligibleRep > 0 then
+                    local row = potentialByFaction[factionName]
+                    if not row then
+                        row = {
+                            factionName = factionName,
+                            potentialRep = 0,
+                            hintItemName = nil,
+                            hintCount = 0,
+                            hintBundleSize = 1,
+                            hintRep = 0,
+                        }
+                        potentialByFaction[factionName] = row
+                    end
+                    row.potentialRep = row.potentialRep + eligibleRep
+                    if eligibleRep > row.hintRep then
+                        row.hintRep = eligibleRep
+                        row.hintItemName = itemName
+                        row.hintCount = count
+                        row.hintBundleSize = bundleSize
+                    end
+                end
+            end
         end
-        return a.value > b.value
-    end)
-
-    while #out > 3 do
-        table.remove(out)
     end
 
-    return out
+    local potentialRows = {}
+    for _, row in pairs(potentialByFaction) do
+        table.insert(potentialRows, row)
+    end
+
+    if #potentialRows == 0 and metrics and metrics.repPotentialByFaction then
+        for factionName, amount in pairs(metrics.repPotentialByFaction) do
+            local value = tonumber(amount) or 0
+            if value > 0 then
+                table.insert(potentialRows, {
+                    factionName = factionName,
+                    potentialRep = value,
+                })
+            end
+        end
+    end
+
+    table.sort(potentialRows, function(a, b)
+        local av = tonumber(a.potentialRep) or 0
+        local bv = tonumber(b.potentialRep) or 0
+        if av == bv then
+            return (a.factionName or "") < (b.factionName or "")
+        end
+        return av > bv
+    end)
+    while #potentialRows > 3 do
+        table.remove(potentialRows)
+    end
+
+    return {
+        sessionAvg = sessionAvg,
+        currentAvg = currentAvg,
+        gainedFactions = gainedFactions,
+        potentialRows = potentialRows,
+    }
+end
+
+local function RenderRepTooltip(model)
+    local data = model or {}
+    local sessionAvg = tonumber(data.sessionAvg) or 0
+    local currentAvg = tonumber(data.currentAvg) or 0
+    local gainedFactions = data.gainedFactions or {}
+    local potentialRows = data.potentialRows or {}
+
+    GameTooltip:AddLine(string.format("Session avg: %s/hr", FormatInt(sessionAvg)), 0.86, 0.82, 0.70)
+    GameTooltip:AddLine(string.format("Current avg: %s/hr", FormatInt(currentAvg)), 0.8, 0.8, 0.8)
+    GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+
+    if #gainedFactions == 0 then
+        GameTooltip:AddLine("No faction rep gained yet.", 0.86, 0.82, 0.70)
+    else
+        for i = 1, #gainedFactions do
+            local row = gainedFactions[i]
+            GameTooltip:AddLine(
+                string.format(
+                    "%s +%s",
+                    row.name or "Unknown",
+                    FormatInt(row.gain or 0)
+                ),
+                0.86, 0.82, 0.70
+            )
+            GameTooltip:AddLine(
+                string.format(
+                    "- %s / %s to %s",
+                    FormatInt(row.remainingRep or 0),
+                    row.etaSessionText or FormatEtaInfinity()
+                    ,
+                    row.nextStanding or "Unknown"
+                ),
+                0.8, 0.8, 0.8
+            )
+        end
+    end
+    GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+
+    if #potentialRows == 0 then
+        GameTooltip:AddLine("Potential rep: none", 0.3, 1.0, 0.3)
+    else
+        GameTooltip:AddLine("Potential rep:", 0.3, 1.0, 0.3)
+        for i = 1, #potentialRows do
+            local row = potentialRows[i]
+            GameTooltip:AddLine(
+                string.format("%s +%s", row.factionName or "Unknown", FormatInt(row.potentialRep or 0)),
+                0.86, 0.82, 0.70
+            )
+            if row.hintItemName and row.hintItemName ~= "" then
+                GameTooltip:AddLine(
+                    string.format(
+                        "- %s/%s %s",
+                        FormatInt(row.hintCount or 0),
+                        FormatInt(row.hintBundleSize or 1),
+                        row.hintItemName
+                    ),
+                    0.8, 0.8, 0.8
+                )
+            else
+                GameTooltip:AddLine(
+                    "- no contributing items tracked",
+                    0.8, 0.8, 0.8
+                )
+            end
+        end
+    end
+
+    GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+    GameTooltip:AddLine("- Potential rep means rep you could gain if turning in quest items (normalized per item).", 0.62, 0.58, 0.50, true)
+    GameTooltip:AddLine("- Potential rep will be converted to gained rep if turned in during this session.", 0.62, 0.58, 0.50, true)
+    GameTooltip:AddLine("- Bar shows current rate vs. session rate.", 0.62, 0.58, 0.50, true)
 end
 
 local function FormatRepRateLine(ratePerHour)
@@ -402,53 +506,7 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
         GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
     elseif metricKey == "rep" then
-        local approxPrefix = state.projectedApprox and "~" or ""
-        local potentialTotal = tonumber(state.projectedTotal) or 0
-        local potentialByFactionTop = state.potentialByFactionTop or {}
-
-        GameTooltip:AddLine(string.format("Session avg: %s/hr", FormatInt(state.sessionAvgRate or 0)), 0.86, 0.82, 0.70)
-        GameTooltip:AddLine(string.format("Recent avg: %s/hr", FormatInt(state.recentAvgRate or 0)), 0.8, 0.8, 0.8)
-        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-
-        GameTooltip:AddLine("Current Session", 0.86, 0.82, 0.70)
-        GameTooltip:AddLine(FormatRepRateLine(state.sessionAvgRate or 0), 0.86, 0.82, 0.70)
-
-        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("ETA Target (Current Faction)", 0.8, 0.8, 0.8)
-        local repEtaLines = BuildRepEtaLines(state.tooltipData)
-        GameTooltip:AddLine(repEtaLines[1], 0.8, 0.8, 0.8)
-        GameTooltip:AddLine(repEtaLines[2], 0.8, 0.8, 0.8)
-
-        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Potential (All Factions)", 0.3, 1.0, 0.3)
-        GameTooltip:AddLine(FormatRepPotentialLine("Potential Total", potentialTotal, state.projectedApprox), 0.3, 1.0, 0.3)
-        if #potentialByFactionTop > 0 then
-            GameTooltip:AddLine("Potential by Faction:", 0.8, 0.8, 0.8)
-            for i = 1, #potentialByFactionTop do
-                local row = potentialByFactionTop[i]
-                GameTooltip:AddLine(string.format("- %s: %s+%s", row.name or "Unknown", approxPrefix, FormatInt(row.value or 0)), 0.8, 0.8, 0.8)
-            end
-        end
-        if state.projectedItems then
-            for i = 1, #state.projectedItems do
-                local item = state.projectedItems[i]
-                if item then
-                    local itemName = item.itemName or "Rep Item"
-                    local count = tonumber(item.count) or 0
-                    local bundleSize = tonumber(item.bundleSize) or 1
-                    local eligibleRep = tonumber(item.eligibleRep) or tonumber(item.potentialRep) or 0
-                    local theoreticalRep = tonumber(item.theoreticalRep) or eligibleRep
-                    local itemApproxSuffix = item.isApprox and " (est)" or ""
-                    if eligibleRep == theoreticalRep then
-                        GameTooltip:AddLine(string.format("- %s: %s/%s (%s rep%s)", itemName, FormatInt(count), FormatInt(bundleSize), FormatInt(eligibleRep), itemApproxSuffix), 0.8, 0.8, 0.8)
-                    else
-                        GameTooltip:AddLine(string.format("- %s: %s/%s (%s eligible / %s theoretical rep%s)", itemName, FormatInt(count), FormatInt(bundleSize), FormatInt(eligibleRep), FormatInt(theoreticalRep), itemApproxSuffix), 0.8, 0.8, 0.8)
-                    end
-                end
-            end
-        end
-        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Potential or actual rep gained. Bar shows recent rate compared to session avg. Potential rep will be converted to rep gain upon turn-in.", 0.62, 0.58, 0.50, true)
+        RenderRepTooltip(state.tooltipData)
     else
         GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
         if state.icon and state.icon:GetAlpha() < 1 then
@@ -530,8 +588,7 @@ local function UpdateMicroBars(session, metrics)
                 state.projectedApprox = projectedApprox
                 state.projectedItemCount = #projectedItems
                 state.projectedItems = projectedItems
-                state.potentialByFactionTop = BuildPotentialByFactionTop(metrics)
-                state.tooltipData = BuildRepEtaData(metrics)
+                state.tooltipData = BuildRepTooltipModel(metrics, sessionAvgRate, recentAvgRate)
             elseif metricKey == "honor" then
                 sessionAvgRate = metrics.honorPerHour or 0
                 recentAvgRate = metrics.honorRecentPerHourBucketed or 0
@@ -1830,11 +1887,9 @@ local function UpdateRepPanel(panel, metrics)
     local totalRep = metrics.repGained or 0
     local repHr = metrics.repPerHour or 0
     local potentialTotal = metrics.repPotentialTotal or 0
-    local potentialTheoreticalTotal = metrics.repPotentialTheoreticalTotal or potentialTotal
     local potentialItems = metrics.repPotentialItems or {}
     local potentialApprox = metrics.repPotentialApprox and true or false
-    local repEtaData = BuildRepEtaData(metrics)
-    local potentialByFactionTop = BuildPotentialByFactionTop(metrics)
+    local repTooltipModel = BuildRepTooltipModel(metrics, repHr, metrics.repRecentPerHourBucketed or 0)
     local hasPotentialInfo = #potentialItems > 0
     panel.totalValue:SetText(FormatRepGainedLine(totalRep))
     panel.rateText:SetText(FormatRepRateLine(repHr))
@@ -1853,7 +1908,6 @@ local function UpdateRepPanel(panel, metrics)
     local yOffset = -46
 
     -- Potential rep items (HUD only, compact list)
-    local shownPotential = 0
     if #potentialItems > 0 then
         for i = 1, math.min(2, #potentialItems) do
             local item = potentialItems[i]
@@ -1861,96 +1915,18 @@ local function UpdateRepPanel(panel, metrics)
                 local label = string.format("%s (%d)", item.itemName or "Rep Item", item.count or 0)
                 AddRepBreakdownRow(panel, yOffset, label, nil)
                 yOffset = yOffset - 16
-                shownPotential = shownPotential + 1
             end
         end
     end
 
-    -- Whole-panel rep tooltip with full potential detail list.
-    panel.repTooltipData = {
-        current = repHr or 0,
-        recent = metrics.repRecentPerHourBucketed or 0,
-        potentialTotal = potentialTotal or 0,
-        potentialTheoreticalTotal = potentialTheoreticalTotal or 0,
-        potentialApprox = potentialApprox,
-        potentialItems = potentialItems,
-        potentialByFactionTop = potentialByFactionTop,
-        eta = repEtaData,
-    }
+    -- Whole-panel rep tooltip shares the same compact content as the micro tooltip.
+    panel.repTooltipData = repTooltipModel
     panel:EnableMouse(true)
     panel:SetScript("OnEnter", function(self)
         local data = self.repTooltipData or {}
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText("Rep/Hour")
-        GameTooltip:AddLine(string.format("Session avg: %s/hr", FormatInt(data.current or 0)), 0.86, 0.82, 0.70)
-        GameTooltip:AddLine(string.format("Recent avg: %s/hr", FormatInt(data.recent or 0)), 0.8, 0.8, 0.8)
-        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Current Session", 0.86, 0.82, 0.70)
-        GameTooltip:AddLine(FormatRepGainedLine(totalRep), 0.86, 0.82, 0.70)
-
-        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("ETA Target (Current Faction)", 0.8, 0.8, 0.8)
-        local repEtaLines = BuildRepEtaLines(data.eta)
-        GameTooltip:AddLine(repEtaLines[1], 0.8, 0.8, 0.8)
-        GameTooltip:AddLine(repEtaLines[2], 0.8, 0.8, 0.8)
-
-        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Potential (All Factions)", 0.3, 1.0, 0.3)
-        GameTooltip:AddLine(FormatRepPotentialLine("Potential Total", data.potentialTotal or 0, data.potentialApprox), 0.3, 1.0, 0.3)
-        if (data.potentialTheoreticalTotal or 0) ~= (data.potentialTotal or 0) then
-            GameTooltip:AddLine(FormatRepPotentialLine("Potential Theoretical", data.potentialTheoreticalTotal or 0, data.potentialApprox), 0.8, 0.8, 0.8)
-        end
-        if data.potentialByFactionTop and #data.potentialByFactionTop > 0 then
-            local approxPrefix = data.potentialApprox and "~" or ""
-            GameTooltip:AddLine("Potential by Faction:", 0.8, 0.8, 0.8)
-            for i = 1, #data.potentialByFactionTop do
-                local row = data.potentialByFactionTop[i]
-                GameTooltip:AddLine(string.format("- %s: %s+%s", row.name or "Unknown", approxPrefix, FormatInt(row.value or 0)), 0.8, 0.8, 0.8)
-            end
-        end
-        local items = data.potentialItems or {}
-        if #items > 0 then
-            GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-            for i = 1, #items do
-                local item = items[i]
-                local itemName = item.itemName or "Rep Item"
-                local count = tonumber(item.count) or 0
-                local bundleSize = tonumber(item.bundleSize) or 1
-                local eligibleRep = tonumber(item.eligibleRep) or tonumber(item.potentialRep) or 0
-                local theoreticalRep = tonumber(item.theoreticalRep) or eligibleRep
-                local itemApproxSuffix = item.isApprox and " (est)" or ""
-                if eligibleRep == theoreticalRep then
-                    GameTooltip:AddLine(string.format("%s: %s/%s (%s rep%s)", itemName, FormatInt(count), FormatInt(bundleSize), FormatInt(eligibleRep), itemApproxSuffix), 1.0, 1.0, 1.0)
-                else
-                    GameTooltip:AddLine(string.format("%s: %s/%s (%s eligible / %s theoretical rep%s)", itemName, FormatInt(count), FormatInt(bundleSize), FormatInt(eligibleRep), FormatInt(theoreticalRep), itemApproxSuffix), 1.0, 1.0, 1.0)
-                end
-                local targets = item.targets or {}
-                if #targets > 0 then
-                    for j = 1, #targets do
-                        local target = targets[j]
-                        local targetEligible = tonumber(target.eligibleRep) or 0
-                        local targetTheoretical = tonumber(target.theoreticalRep) or 0
-                        local targetApproxSuffix = target.isApprox and " (est)" or ""
-                        local targetLine
-                        if targetEligible == targetTheoretical then
-                            targetLine = string.format("-> %s: +%s%s", target.factionKey or "Unknown", FormatInt(targetEligible), targetApproxSuffix)
-                        else
-                            targetLine = string.format("-> %s: +%s eligible / +%s theoretical%s", target.factionKey or "Unknown", FormatInt(targetEligible), FormatInt(targetTheoretical), targetApproxSuffix)
-                        end
-                        GameTooltip:AddLine(targetLine, 0.85, 0.85, 0.85)
-                        GameTooltip:AddLine(string.format("Turn in: %s, %s",
-                            target.turninNpc or "Unknown NPC",
-                            target.turninZone or "Unknown Zone"), 0.8, 0.8, 0.8)
-                    end
-                else
-                    GameTooltip:AddLine(string.format("Turn in: %s, %s",
-                        item.turninNpc or "Unknown NPC",
-                        item.turninZone or "Unknown Zone"), 0.8, 0.8, 0.8)
-                end
-            end
-        end
-        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Potential or actual rep gained. Bar shows recent rate compared to session avg. Potential rep will be converted to rep gain upon turn-in.", 0.62, 0.58, 0.50, true)
+        RenderRepTooltip(data)
         GameTooltip:Show()
     end)
     panel:SetScript("OnLeave", function()

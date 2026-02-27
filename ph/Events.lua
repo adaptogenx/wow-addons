@@ -4,7 +4,7 @@
     Handles WoW events and routes them to accounting actions.
 ]]
 
--- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax GetNumFactions GetFactionInfo pH_DB_Account pH_AutoSession pH_Settings pH_RepTurninCatalog
+-- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax GetNumFactions GetFactionInfo GetItemCount pH_DB_Account pH_AutoSession pH_Settings pH_RepTurninCatalog
 -- luacheck: ignore delta
 
 local pH_Events = {}
@@ -180,9 +180,10 @@ function pH_Events:OnEvent(event, ...)
         pH_AutoSession:HandleEvent(event, ...)
     end
     
-    -- Do not record any events while session is paused (keeps gold/hr accurate)
+    -- Keep most events frozen while paused (keeps gold/hr accurate).
+    -- Allow UPDATE_FACTION through so rep gains can resume and potential can sync.
     local session = pH_SessionManager:GetActiveSession()
-    if session and session.pausedAt then
+    if session and session.pausedAt and event ~= "UPDATE_FACTION" then
         return
     end
 
@@ -344,6 +345,37 @@ local function GetRepNotifyCfg()
         logMode = (cfg and cfg.logMode) or "rate_limited",
         rateLimitSec = (cfg and cfg.rateLimitSec) or 2,
     }
+end
+
+-- Reconcile tracked rep-turnin item counts with current bag counts.
+-- This ensures potential rep is reduced immediately when items are turned in.
+local function SyncRepTurninItemCountsFromBags(session)
+    if not session or type(session.items) ~= "table" then
+        return false
+    end
+    if type(GetItemCount) ~= "function" then
+        return false
+    end
+    if not pH_RepTurninCatalog or type(pH_RepTurninCatalog.GetRepRules) ~= "function" then
+        return false
+    end
+
+    local changed = false
+    for itemID, itemData in pairs(session.items) do
+        local trackedCount = itemData and tonumber(itemData.count) or 0
+        if trackedCount > 0 then
+            local rules = pH_RepTurninCatalog:GetRepRules(itemID, itemData and itemData.name or nil)
+            if rules and #rules > 0 then
+                local bagCount = tonumber(GetItemCount(itemID, false)) or tonumber(GetItemCount(itemID)) or 0
+                bagCount = math.max(0, math.floor(bagCount))
+                if bagCount ~= trackedCount then
+                    itemData.count = bagCount
+                    changed = true
+                end
+            end
+        end
+    end
+    return changed
 end
 
 local function ShouldPrintRepProgress(itemID, oldCount, newCount, bundleSize, cfg)
@@ -1826,6 +1858,7 @@ function pH_Events:OnUpdateFaction()
         end
     end
 
+    local repItemCountsChanged = SyncRepTurninItemCountsFromBags(session)
     if pH_SessionManager and pH_SessionManager.RecomputeRepPotentialForSession then
         pH_SessionManager:RecomputeRepPotentialForSession(session)
     end
@@ -1835,6 +1868,10 @@ function pH_Events:OnUpdateFaction()
     end
 
     if totalDelta > 0 then
+        -- Rep gains should always resume paused sessions for correct accounting.
+        if session.pausedAt and pH_SessionManager and pH_SessionManager.ResumeSession then
+            pH_SessionManager:ResumeSession("auto", "rep.gain")
+        end
         session.metrics.rep.gained = session.metrics.rep.gained + totalDelta
         session.metrics.rep.enabled = true
         if type(pH_SessionManager) == "table" and pH_SessionManager.RecordMetricDelta then
@@ -1842,7 +1879,7 @@ function pH_Events:OnUpdateFaction()
         end
     end
 
-    if totalDelta > 0 or newPotentialEligible ~= prevPotentialEligible then
+    if totalDelta > 0 or newPotentialEligible ~= prevPotentialEligible or repItemCountsChanged then
         pH_HUD:Update()
     end
 end
