@@ -336,19 +336,20 @@ local function BuildRepTooltipModel(metrics, sessionAvgOverride, recentAvgOverri
                         row = {
                             factionName = factionName,
                             potentialRep = 0,
-                            hintItemName = nil,
-                            hintCount = 0,
-                            hintBundleSize = 1,
-                            hintRep = 0,
+                            hints = {},
                         }
                         potentialByFaction[factionName] = row
                     end
                     row.potentialRep = row.potentialRep + eligibleRep
-                    if eligibleRep > row.hintRep then
-                        row.hintRep = eligibleRep
-                        row.hintItemName = itemName
-                        row.hintCount = count
-                        row.hintBundleSize = bundleSize
+                    local hintKey = tostring(itemName)
+                    local prevHint = row.hints[hintKey]
+                    if (not prevHint) or eligibleRep > (prevHint.rep or 0) then
+                        row.hints[hintKey] = {
+                            itemName = itemName,
+                            count = count,
+                            bundleSize = bundleSize,
+                            rep = eligibleRep,
+                        }
                     end
                 end
             end
@@ -382,6 +383,28 @@ local function BuildRepTooltipModel(metrics, sessionAvgOverride, recentAvgOverri
     end)
     while #potentialRows > 3 do
         table.remove(potentialRows)
+    end
+
+    for i = 1, #potentialRows do
+        local row = potentialRows[i]
+        local hintList = {}
+        local hints = row.hints or {}
+        for _, hint in pairs(hints) do
+            table.insert(hintList, hint)
+        end
+        table.sort(hintList, function(a, b)
+            local ar = tonumber(a.rep) or 0
+            local br = tonumber(b.rep) or 0
+            if ar == br then
+                return (a.itemName or "") < (b.itemName or "")
+            end
+            return ar > br
+        end)
+        while #hintList > 2 do
+            table.remove(hintList)
+        end
+        row.hintList = hintList
+        row.hints = nil
     end
 
     return {
@@ -440,14 +463,15 @@ local function RenderRepTooltip(model)
                 string.format("%s +%s", row.factionName or "Unknown", FormatInt(row.potentialRep or 0)),
                 0.86, 0.82, 0.70
             )
-            if row.hintItemName and row.hintItemName ~= "" then
+            local hintList = row.hintList or {}
+            if #hintList > 0 then
+                local parts = {}
+                for j = 1, #hintList do
+                    local hint = hintList[j]
+                    table.insert(parts, string.format("%s/%s %s", FormatInt(hint.count or 0), FormatInt(hint.bundleSize or 1), hint.itemName or "Rep Item"))
+                end
                 GameTooltip:AddLine(
-                    string.format(
-                        "- %s/%s %s",
-                        FormatInt(row.hintCount or 0),
-                        FormatInt(row.hintBundleSize or 1),
-                        row.hintItemName
-                    ),
+                    "- " .. table.concat(parts, ", "),
                     0.8, 0.8, 0.8
                 )
             else
@@ -482,6 +506,14 @@ local function FormatRepPotentialLine(label, value, isEstimated)
     return string.format("%s: +%s%s", label, FormatInt(amount), suffix)
 end
 
+local function FormatMetricRateTooltip(metricKey, ratePerHour)
+    local value = tonumber(ratePerHour) or 0
+    if metricKey == "gold" then
+        return string.format("%s/hr", pH_Ledger:FormatMoneyShort(value))
+    end
+    return string.format("%s/hr", FormatInt(value))
+end
+
 local function ShowMicroMetricTooltip(anchor, metricKey, state)
     if not anchor or not metricKey or not state then
         return
@@ -495,8 +527,7 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
     GameTooltip:SetText(headerText)
     if metricKey ~= "rep" and metricKey ~= "xp" then
         GameTooltip:AddLine(string.format("Current: %s", currentText), 0.86, 0.82, 0.70)
-        GameTooltip:AddLine(string.format("Session avg: %s/hr", FormatInt(state.sessionAvgRate or 0)), 0.8, 0.8, 0.8)
-        GameTooltip:AddLine(string.format("Recent avg: %s/hr", FormatInt(state.recentAvgRate or 0)), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Recent avg: " .. FormatMetricRateTooltip(metricKey, state.recentAvgRate or 0), 0.8, 0.8, 0.8)
     end
     if metricKey == "xp" then
         local xpData = state.tooltipData or {}
@@ -1897,7 +1928,7 @@ local function UpdateRepPanel(panel, metrics)
     panel.rawTotal:SetPoint("RIGHT", panel, "RIGHT", -PANEL_PADDING, 0)
     panel.rawTotal:SetPoint("CENTER", panel.rateText, "CENTER", 0, 0)
     panel.rawTotal:SetJustifyH("RIGHT")
-    panel.rawTotal:SetText(string.format("%s%s", FormatRepPotentialLine("Potential", potentialTotal, potentialApprox), hasPotentialInfo and "*" or ""))
+    panel.rawTotal:SetText(string.format("Potential: +%s%s", FormatInt(potentialTotal), hasPotentialInfo and "*" or ""))
 
     -- Clear old rows
     for _, row in ipairs(panel.breakdownRows) do

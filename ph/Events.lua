@@ -78,6 +78,7 @@ local state = {
     xpLast = nil,
     xpMaxLast = nil,
     repCache = {},  -- [factionID] = barValue (for delta computation)
+    seenBagUpdate = false, -- Guards login-time bag count sync before inventory is ready
 
     -- Pricing v2: DE attribution window
     deUntil = 0,
@@ -173,6 +174,8 @@ function pH_Events:OnEvent(event, ...)
             local _, xpReward, moneyReward = ...
             pH_AutoSession:MarkQuestTurnIn((xpReward or 0) > 0, (moneyReward or 0) > 0)
         end
+    elseif event == "BAG_UPDATE" then
+        state.seenBagUpdate = true
     end
 
     -- Auto-session: may auto-start or auto-resume
@@ -364,10 +367,15 @@ local function SyncRepTurninItemCountsFromBags(session)
     for itemID, itemData in pairs(session.items) do
         local trackedCount = itemData and tonumber(itemData.count) or 0
         if trackedCount > 0 then
-            local rules = pH_RepTurninCatalog:GetRepRules(itemID, itemData and itemData.name or nil)
+            local numericItemID = tonumber(itemID) or itemID
+            local rules = pH_RepTurninCatalog:GetRepRules(numericItemID, itemData and itemData.name or nil)
             if rules and #rules > 0 then
-                local bagCount = tonumber(GetItemCount(itemID, false)) or tonumber(GetItemCount(itemID)) or 0
+                local bagCount = tonumber(GetItemCount(numericItemID, false)) or tonumber(GetItemCount(numericItemID)) or 0
                 bagCount = math.max(0, math.floor(bagCount))
+                if bagCount == 0 and trackedCount > 0 and not state.seenBagUpdate then
+                    -- During login, inventory may not be ready yet; avoid false zeroing.
+                    bagCount = trackedCount
+                end
                 if bagCount ~= trackedCount then
                     itemData.count = bagCount
                     changed = true
