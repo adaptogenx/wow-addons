@@ -280,7 +280,7 @@ local function MigrateSettings()
         cfg._sourceRulesMigrationV1400 = true
     end
 
-    -- One-time migration (15.0.1):
+    -- One-time migration (0.15.1):
     -- vendor trash loot should be a first-class auto-start source.
     if cfg._sourceRulesMigrationV1501VendorTrash ~= true then
         cfg.start.rules["gold.vendor_trash_loot"] = cfg.start.rules["gold.vendor_trash_loot"] or { action = ACTION_OFF }

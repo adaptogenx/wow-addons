@@ -5,7 +5,7 @@
     Account-wide: pH_DB_Account (sessions). Per-character: pH_Settings (UI state).
 ]]
 
--- luacheck: globals pH_DB pH_DB_Account pH_Settings pH_AutoSession
+-- luacheck: globals pH_DB pH_DB_Account pH_Settings pH_AutoSession GetAddOnMetadata
 
 -- Create main addon frame
 local pH_MainFrame = CreateFrame("Frame", "pH_MainFrame")
@@ -212,7 +212,8 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
             pH_AutoSession:Initialize()
         end
 
-        print("[pH] Version 15.0 loaded. Type /ph help for commands (legacy /goldph still works).")
+        local version = GetAddOnMetadata and GetAddOnMetadata(addonName, "Version") or "unknown"
+        print(string.format("[pH] Version %s loaded. Type /ph help for commands (legacy /goldph still works).", version))
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Ensure settings exist
         if not pH_Settings then
