@@ -332,6 +332,28 @@ local function FormatMetricTotal(metricKey, total)
     return tostring(total)
 end
 
+local function FormatInt(value)
+    local n = math.floor(tonumber(value) or 0)
+    if BreakUpLargeNumbers then
+        local ok, formatted = pcall(BreakUpLargeNumbers, n)
+        if ok and type(formatted) == "string" and formatted ~= "" then
+            return formatted
+        end
+    end
+    local sign = ""
+    if n < 0 then
+        sign = "-"
+        n = math.abs(n)
+    end
+    local s = tostring(n)
+    while true do
+        local replaced, count = s:gsub("^(%d+)(%d%d%d)", "%1,%2")
+        s = replaced
+        if count == 0 then break end
+    end
+    return sign .. s
+end
+
 --------------------------------------------------
 -- Render Summary Tab
 --------------------------------------------------
@@ -1052,8 +1074,45 @@ function pH_History_Detail:RenderSummaryTab()
     if metrics.xpEnabled and metrics.xpGained > 0 then
         yOffset = yOffset - 10
         AddHeader("Experience")
-        AddRow("XP Gained", string.format("%d", metrics.xpGained))
-        AddRow("XP Per Hour", string.format("%d/hr", metrics.xpPerHour), {0.5, 0.8, 1})  -- Blue
+        local xpSources = metrics.xpBySource or {}
+        local mobXP = tonumber(xpSources.mob) or 0
+        local questXP = tonumber(xpSources.quest) or 0
+        local otherXP = tonumber(xpSources.other) or 0
+        AddRow("XP Gained", FormatInt(metrics.xpGained))
+        AddRow("XP Per Hour", string.format("%s/hr", FormatInt(metrics.xpPerHour)), {0.5, 0.8, 1})  -- Blue
+        AddRow("Mob XP", FormatInt(mobXP))
+        AddRow("Quest XP", FormatInt(questXP))
+        if otherXP > 0 then
+            AddRow("Other XP", FormatInt(otherXP))
+        end
+        AddRow("Quests Completed", FormatInt(metrics.xpQuestsCompleted or 0))
+
+        local mobKillsByType = metrics.xpMobKillsByType or {}
+        local topMobKills = {}
+        for mobName, killCount in pairs(mobKillsByType) do
+            local count = tonumber(killCount) or 0
+            if count > 0 then
+                table.insert(topMobKills, { name = tostring(mobName), count = count })
+            end
+        end
+        table.sort(topMobKills, function(a, b)
+            if a.count == b.count then
+                return a.name < b.name
+            end
+            return a.count > b.count
+        end)
+        if #topMobKills > 0 then
+            yOffset = yOffset - 5
+            local topMobsLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            topMobsLabel:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 15, yOffset)
+            topMobsLabel:SetText("Top Mob Kills:")
+            topMobsLabel:SetTextColor(pH_Colors.TEXT_MUTED[1], pH_Colors.TEXT_MUTED[2], pH_Colors.TEXT_MUTED[3])
+            yOffset = yOffset - 16
+            for i = 1, math.min(5, #topMobKills) do
+                local row = topMobKills[i]
+                AddRow("  " .. row.name, "x" .. FormatInt(row.count), {0.7, 0.7, 0.7})
+            end
+        end
     end
 
     -- Phase 9: Reputation Summary (if present)

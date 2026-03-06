@@ -91,6 +91,86 @@ local state = {
     lastRepProgressCountPrinted = {},  -- [itemID] = count
 }
 
+local function SetXPBaseline(newXP, newXPMax)
+    state.xpLast = tonumber(newXP) or 0
+    state.xpMaxLast = tonumber(newXPMax) or 0
+end
+
+local function ClearXPBaseline()
+    state.xpLast = nil
+    state.xpMaxLast = nil
+end
+
+local function ComputeGuardedXPDelta(oldXP, oldXPMax, newXP, newXPMax)
+    local prevXP = tonumber(oldXP) or 0
+    local prevMax = tonumber(oldXPMax) or 0
+    local currXP = tonumber(newXP) or 0
+    local currMax = tonumber(newXPMax) or 0
+
+    if prevMax <= 0 or currMax <= 0 then
+        return 0, "invalid_xp_max", 0
+    end
+
+    local delta
+    if currXP >= prevXP then
+        delta = currXP - prevXP
+    else
+        delta = (prevMax - prevXP) + currXP
+    end
+
+    if delta < 0 then
+        return 0, "negative_delta", delta
+    end
+
+    local anomalyThreshold = prevMax + currMax
+    if delta > anomalyThreshold then
+        return 0, "delta_exceeds_threshold", delta
+    end
+
+    return delta, nil, delta
+end
+
+local function EnsureSessionXPAuditMetrics(session)
+    if not session then
+        return nil
+    end
+    if type(pH_SessionManager) == "table" and pH_SessionManager.EnsureXPMetricAuditDefaults then
+        pH_SessionManager:EnsureXPMetricAuditDefaults(session)
+    else
+        if not session.metrics then
+            session.metrics = {}
+        end
+        if type(session.metrics.xp) ~= "table" then
+            session.metrics.xp = { gained = 0, enabled = false }
+        end
+        local xp = session.metrics.xp
+        if type(xp.bySource) ~= "table" then
+            xp.bySource = { mob = 0, quest = 0, other = 0 }
+        end
+        xp.bySource.mob = math.max(0, tonumber(xp.bySource.mob) or 0)
+        xp.bySource.quest = math.max(0, tonumber(xp.bySource.quest) or 0)
+        xp.bySource.other = math.max(0, tonumber(xp.bySource.other) or 0)
+        xp.questsCompleted = math.max(0, tonumber(xp.questsCompleted) or 0)
+        if type(xp.mobKillsByType) ~= "table" then
+            xp.mobKillsByType = {}
+        end
+        xp.pendingQuestXP = math.max(0, tonumber(xp.pendingQuestXP) or 0)
+    end
+    return session.metrics and session.metrics.xp or nil
+end
+
+local function ReconcileXPSourceTotals(session)
+    local xp = EnsureSessionXPAuditMetrics(session)
+    if not xp then
+        return
+    end
+    local gained = math.max(0, tonumber(xp.gained) or 0)
+    local mob = math.max(0, tonumber((xp.bySource and xp.bySource.mob) or 0))
+    local quest = math.max(0, tonumber((xp.bySource and xp.bySource.quest) or 0))
+    local other = gained - mob - quest
+    xp.bySource.other = math.max(0, other)
+end
+
 -- Initialize event system
 function pH_Events:Initialize(frame)
     -- Register events
@@ -120,13 +200,8 @@ function pH_Events:Initialize(frame)
     -- Initialize money tracking
     state.moneyLast = GetMoney()
 
-    -- Phase 9: Initialize XP tracking (if not max level)
-    -- GetMaxPlayerLevel() or fallback to 60 for Classic
-    local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
-    if UnitLevel("player") < maxLevel then
-        state.xpLast = UnitXP("player")
-        state.xpMaxLast = UnitXPMax("player")
-    end
+    -- Phase 9: Initialize XP tracking baseline.
+    self:ResetXPBaselineToCurrent()
 
     -- Phase 9: Initialize reputation cache
     self:InitializeRepCache()
@@ -214,6 +289,8 @@ function pH_Events:OnEvent(event, ...)
         self:OnUnitSpellcastSent(...)
     elseif event == "PLAYER_XP_UPDATE" then
         self:OnPlayerXPUpdate()
+    elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
+        self:OnCombatXPGain(...)
     elseif event == "UPDATE_FACTION" then
         self:OnUpdateFaction()
     elseif event == "CHAT_MSG_COMBAT_HONOR_GAIN" then
@@ -787,8 +864,19 @@ function pH_Events:OnQuestTurnedIn(questID, xpReward, moneyReward)
         return -- No active session
     end
 
+    local xpMetrics = EnsureSessionXPAuditMetrics(session)
+    if xpMetrics then
+        xpMetrics.questsCompleted = (xpMetrics.questsCompleted or 0) + 1
+        xpMetrics.lastQuestTurnInAt = time()
+        local questXP = tonumber(xpReward) or 0
+        if questXP > 0 then
+            xpMetrics.pendingQuestXP = (tonumber(xpMetrics.pendingQuestXP) or 0) + questXP
+        end
+    end
+
     -- Only process if quest gave money reward
     if not moneyReward or moneyReward <= 0 then
+        pH_HUD:Update()
         return
     end
 
@@ -1728,16 +1816,65 @@ function pH_Events:InitializeRepCache()
     end
 end
 
--- Handle PLAYER_XP_UPDATE event (XP gains with rollover detection for level-ups)
-function pH_Events:OnPlayerXPUpdate()
+function pH_Events:ResetXPBaselineToCurrent()
+    local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
+    if UnitLevel("player") >= maxLevel then
+        ClearXPBaseline()
+        return false
+    end
+    SetXPBaseline(UnitXP("player"), UnitXPMax("player"))
+    return true
+end
+
+-- Handle CHAT_MSG_COMBAT_XP_GAIN (XP source attribution for auditability)
+function pH_Events:OnCombatXPGain(message)
     local session = pH_SessionManager:GetActiveSession()
-    if not session then
+    if not session or type(message) ~= "string" then
         return
     end
 
-    -- Skip if max level
+    local xpMetrics = EnsureSessionXPAuditMetrics(session)
+    if not xpMetrics then
+        return
+    end
+
+    -- Typical pattern (enUS): "<Mob> dies, you gain <N> experience."
+    local mobName, xpAmount = message:match("^(.+) dies, you gain ([%d%.,]+) experience")
+    if not mobName or not xpAmount then
+        return
+    end
+
+    local amount = tonumber((xpAmount or ""):gsub("[^%d]", "")) or 0
+    if amount <= 0 then
+        return
+    end
+
+    mobName = tostring(mobName):gsub("^%s+", ""):gsub("%s+$", "")
+    if mobName == "" then
+        mobName = "Unknown"
+    end
+
+    xpMetrics.bySource.mob = (xpMetrics.bySource.mob or 0) + amount
+    xpMetrics.mobKillsByType[mobName] = (xpMetrics.mobKillsByType[mobName] or 0) + 1
+    ReconcileXPSourceTotals(session)
+end
+
+-- Handle PLAYER_XP_UPDATE event (XP gains with rollover detection for level-ups)
+function pH_Events:OnPlayerXPUpdate()
+    local newXP = UnitXP("player")
+    local newXPMax = UnitXPMax("player")
+
+    -- Skip XP accumulation at max level, but keep baseline neutralized.
     local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
     if UnitLevel("player") >= maxLevel then
+        ClearXPBaseline()
+        return
+    end
+
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        -- Keep baseline fresh even when no session is running.
+        SetXPBaseline(newXP, newXPMax)
         return
     end
 
@@ -1754,44 +1891,64 @@ function pH_Events:OnPlayerXPUpdate()
             honor = { gained = 0, enabled = false, kills = 0 },
         }
     end
-    if not session.metrics.xp then
-        session.metrics.xp = { gained = 0, enabled = false }
-    end
-
-    local newXP = UnitXP("player")
-    local newXPMax = UnitXPMax("player")
-
-    -- First update: just store values
-    if not state.xpLast then
-        state.xpLast = newXP
-        state.xpMaxLast = newXPMax
-        session.metrics.xp.enabled = true
+    local xpMetrics = EnsureSessionXPAuditMetrics(session)
+    if not xpMetrics then
         return
     end
 
-    -- Compute delta with rollover detection
-    local delta = 0  -- luacheck: ignore 311 (false positive, variable is used below)
-    if newXP >= state.xpLast then
-        -- Normal gain (no level-up)
-        delta = newXP - state.xpLast
-    else
-        -- Level-up detected (XP wrapped from high to low)
-        delta = (state.xpMaxLast - state.xpLast) + newXP
+    -- First update while session active: seed baseline only.
+    if state.xpLast == nil or state.xpMaxLast == nil then
+        SetXPBaseline(newXP, newXPMax)
+        xpMetrics.enabled = true
+        return
+    end
+
+    local oldXP = state.xpLast
+    local oldXPMax = state.xpMaxLast
+    local delta, suppressedReason, rawDelta = ComputeGuardedXPDelta(oldXP, oldXPMax, newXP, newXPMax)
+
+    -- Always advance baseline after reading this event.
+    SetXPBaseline(newXP, newXPMax)
+
+    if suppressedReason then
+        if pH_DB_Account.debug.verbose then
+            print(string.format(
+                "[pH] XP anomaly suppressed (%s): old=%d/%d new=%d/%d rawDelta=%d",
+                suppressedReason,
+                oldXP or -1,
+                oldXPMax or -1,
+                newXP or -1,
+                newXPMax or -1,
+                rawDelta or -1
+            ))
+        end
+        return
+    end
+
+    if delta <= 0 then
+        return
     end
 
     -- Update session metrics
-    session.metrics.xp.gained = session.metrics.xp.gained + delta
-    session.metrics.xp.enabled = true
+    xpMetrics.gained = (xpMetrics.gained or 0) + delta
+    xpMetrics.enabled = true
+
+    local pendingQuestXP = math.max(0, tonumber(xpMetrics.pendingQuestXP) or 0)
+    if pendingQuestXP > 0 then
+        local attributedQuestXP = math.min(delta, pendingQuestXP)
+        if attributedQuestXP > 0 then
+            xpMetrics.bySource.quest = (xpMetrics.bySource.quest or 0) + attributedQuestXP
+            xpMetrics.pendingQuestXP = pendingQuestXP - attributedQuestXP
+        end
+    end
+    ReconcileXPSourceTotals(session)
+
     if type(pH_SessionManager) == "table" and pH_SessionManager.RecordMetricDelta then
         pH_SessionManager:RecordMetricDelta(session, "xp", delta, time())
     end
 
-    -- Update runtime state
-    state.xpLast = newXP
-    state.xpMaxLast = newXPMax
-
     if pH_DB_Account.debug.verbose then
-        print(string.format("[pH] XP gained: %d (total: %d)", delta, session.metrics.xp.gained))
+        print(string.format("[pH] XP gained: %d (total: %d)", delta, xpMetrics.gained))
     end
 
     -- Update HUD

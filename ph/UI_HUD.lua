@@ -222,17 +222,31 @@ local function BuildXPEtaData(metrics)
     local currentXP = UnitXP("player") or 0
     local maxXP = UnitXPMax("player") or 0
     local remainingXP = math.max(0, maxXP - currentXP)
-    local recentPerHour = metrics and (tonumber(metrics.xpRecentPerHourBucketed) or 0) or 0
+    local recentPerHour = metrics and (tonumber(metrics.xpEtaRecentPerHour) or tonumber(metrics.xpRecentPerHourBucketed) or 0) or 0
     local sessionPerHour = metrics and (tonumber(metrics.xpPerHour) or 0) or 0
+    local sessionEtaEligible = metrics and (metrics.xpSessionEtaEligible and true or false) or false
+    local etaAdjusted = metrics and (metrics.xpEtaAdjusted and true or false) or false
     local capped = level >= maxLevel
     local etaRecentSec = nil
     local etaSessionSec = nil
     if (not capped) and recentPerHour > 0 then
         etaRecentSec = math.floor((remainingXP / recentPerHour) * 3600)
     end
-    if (not capped) and sessionPerHour > 0 then
+    if (not capped) and sessionPerHour > 0 and sessionEtaEligible then
         etaSessionSec = math.floor((remainingXP / sessionPerHour) * 3600)
     end
+
+    if etaRecentSec and etaSessionSec and etaRecentSec < math.floor(etaSessionSec * 0.5) then
+        etaRecentSec = math.floor(etaSessionSec * 0.5)
+        etaAdjusted = true
+    end
+
+    if (not sessionEtaEligible) and etaSessionSec and etaRecentSec and etaSessionSec > etaRecentSec then
+        -- Allow conservative upper bound before warm-up.
+    elseif not sessionEtaEligible then
+        etaSessionSec = nil
+    end
+
     return {
         isCapped = capped,
         recentPerHour = recentPerHour,
@@ -240,6 +254,7 @@ local function BuildXPEtaData(metrics)
         remainingXP = capped and 0 or remainingXP,
         etaRecentSec = etaRecentSec,
         etaSessionSec = etaSessionSec,
+        etaAdjusted = etaAdjusted,
     }
 end
 
@@ -278,6 +293,32 @@ end
 local function BuildXPRecentAvgLine(data)
     local recentRate = data and tonumber(data.recentPerHour) or 0
     return string.format("Recent avg: %s/hr", FormatInt(recentRate))
+end
+
+local function BuildXPSourcesHeaderLine(metrics)
+    local totalXP = (metrics and tonumber(metrics.xpGained)) or 0
+    return string.format("Total XP: %s", FormatInt(totalXP))
+end
+
+local function BuildXPMobSourceLine(metrics)
+    local sources = (metrics and metrics.xpBySource) or {}
+    local mobXP = tonumber(sources.mob) or 0
+    return string.format("  - Mob +%s", FormatInt(mobXP))
+end
+
+local function BuildXPQuestSourceLine(metrics)
+    local sources = (metrics and metrics.xpBySource) or {}
+    local questXP = tonumber(sources.quest) or 0
+    return string.format("  - Quest +%s", FormatInt(questXP))
+end
+
+local function BuildXPOtherSourceLine(metrics)
+    local sources = (metrics and metrics.xpBySource) or {}
+    local otherXP = tonumber(sources.other) or 0
+    if otherXP <= 0 then
+        return nil
+    end
+    return string.format("  - Other +%s", FormatInt(otherXP))
 end
 
 local function BuildRepTooltipModel(metrics, sessionAvgOverride, recentAvgOverride)
@@ -534,6 +575,16 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
         GameTooltip:AddLine(BuildXPSessionAvgLine(xpData), 0.86, 0.82, 0.70)
         GameTooltip:AddLine(BuildXPRecentAvgLine(xpData), 0.8, 0.8, 0.8)
         GameTooltip:AddLine(BuildXPEtaLine(state.tooltipData), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(BuildXPSourcesHeaderLine(state.metrics), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(BuildXPMobSourceLine(state.metrics), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(BuildXPQuestSourceLine(state.metrics), 0.8, 0.8, 0.8)
+        local otherLine = BuildXPOtherSourceLine(state.metrics)
+        if otherLine then
+            GameTooltip:AddLine(otherLine, 0.8, 0.8, 0.8)
+        end
+        if xpData.etaAdjusted then
+            GameTooltip:AddLine("Recent pace adjusted for burst XP", 0.8, 0.8, 0.8)
+        end
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
         GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
     elseif metricKey == "rep" then
@@ -630,6 +681,7 @@ local function UpdateMicroBars(session, metrics)
             state.icon:Show()  -- Ensure icon is always visible
             state.sessionAvgRate = sessionAvgRate
             state.recentAvgRate = recentAvgRate
+            state.metrics = metrics
 
             local isActive = (sessionAvgRate > 0) or (recentAvgRate > 0)
 
@@ -1884,13 +1936,28 @@ local function UpdateXPPanel(panel, metrics)
 
     local xpGained = metrics.xpGained or 0
     local xpPerHour = metrics.xpPerHour or 0
+    local xpSources = metrics.xpBySource or {}
+    local mobXP = tonumber(xpSources.mob) or 0
+    local questXP = tonumber(xpSources.quest) or 0
     local xpEtaData = BuildXPEtaData(metrics)
 
     panel.totalValue:SetText(FormatNumber(xpGained))
     panel.rateText:SetText(FormatNumber(xpPerHour) .. "/hr")
+    panel.rawTotal:ClearAllPoints()
+    panel.rawTotal:SetPoint("RIGHT", panel, "RIGHT", -PANEL_PADDING, 0)
+    panel.rawTotal:SetPoint("CENTER", panel.rateText, "CENTER", 0, 0)
+    panel.rawTotal:SetJustifyH("RIGHT")
     panel.rawTotal:SetText(string.format("%s XP", FormatNumber(xpGained)))
+    if not panel.xpSourceBreakdown then
+        panel.xpSourceBreakdown = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        panel.xpSourceBreakdown:SetPoint("TOPLEFT", panel.rateText, "BOTTOMLEFT", 0, -2)
+        panel.xpSourceBreakdown:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+        panel.xpSourceBreakdown:SetJustifyH("LEFT")
+    end
+    panel.xpSourceBreakdown:SetText(string.format("Mob +%s  Quest +%s", FormatInt(mobXP), FormatInt(questXP)))
     panel.xpTooltipData = {
         eta = xpEtaData,
+        metrics = metrics,
     }
     panel:EnableMouse(true)
     panel:SetScript("OnEnter", function(self)
@@ -1900,6 +1967,16 @@ local function UpdateXPPanel(panel, metrics)
         GameTooltip:AddLine(BuildXPSessionAvgLine(data.eta), 0.86, 0.82, 0.70)
         GameTooltip:AddLine(BuildXPRecentAvgLine(data.eta), 0.8, 0.8, 0.8)
         GameTooltip:AddLine(BuildXPEtaLine(data.eta), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(BuildXPSourcesHeaderLine(data.metrics), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(BuildXPMobSourceLine(data.metrics), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(BuildXPQuestSourceLine(data.metrics), 0.8, 0.8, 0.8)
+        local otherLine = BuildXPOtherSourceLine(data.metrics)
+        if otherLine then
+            GameTooltip:AddLine(otherLine, 0.8, 0.8, 0.8)
+        end
+        if data.eta and data.eta.etaAdjusted then
+            GameTooltip:AddLine("Recent pace adjusted for burst XP", 0.8, 0.8, 0.8)
+        end
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
         GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
         GameTooltip:Show()
@@ -1908,9 +1985,6 @@ local function UpdateXPPanel(panel, metrics)
         GameTooltip:Hide()
     end)
 
-    -- XP sources (TODO: need to add quest vs mob tracking to SessionManager)
-    -- For now, show placeholder or single total
-    -- Future: show Quest XP and Mob XP with percentages
 end
 
 -- Update Rep Panel

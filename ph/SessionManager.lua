@@ -4,7 +4,7 @@
     Handles session creation, persistence, and metrics computation.
 ]]
 
--- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax UnitClass pH_DB_Account pH_Settings UnitName GetRealmName UnitFactionGroup pH_AutoSession pH_RepTurninCatalog GetNumFactions GetFactionInfo
+-- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax UnitClass pH_DB_Account pH_Settings UnitName GetRealmName UnitFactionGroup pH_AutoSession pH_RepTurninCatalog GetNumFactions GetFactionInfo pH_Events
 
 local pH_SessionManager = {}
 local DEFAULT_SHORT_SESSION_SEC = 300
@@ -12,6 +12,9 @@ local HISTORY_UNDO_WINDOW_SEC = 30
 local HISTORY_UNDO_MAX = 20
 local RATE_BUCKET_SIZE_SEC = 30
 local RATE_BUCKET_MAX = 6
+local XP_RECENT_WINDOW_SEC = 300
+local XP_SESSION_WARMUP_SEC = 1200
+local XP_SESSION_WARMUP_GAIN = 150000
 
 --------------------------------------------------
 -- Owner identity (session belongs to current character)
@@ -93,6 +96,26 @@ local function DeepCopy(value, seen)
         result[DeepCopy(k, seen)] = DeepCopy(v, seen)
     end
     return result
+end
+
+local function EnsureXPAuditDefaults(xpMetrics)
+    if type(xpMetrics) ~= "table" then
+        return
+    end
+    if type(xpMetrics.bySource) ~= "table" then
+        xpMetrics.bySource = { mob = 0, quest = 0, other = 0 }
+    end
+    xpMetrics.bySource.mob = math.max(0, tonumber(xpMetrics.bySource.mob) or 0)
+    xpMetrics.bySource.quest = math.max(0, tonumber(xpMetrics.bySource.quest) or 0)
+    xpMetrics.bySource.other = math.max(0, tonumber(xpMetrics.bySource.other) or 0)
+    xpMetrics.questsCompleted = math.max(0, tonumber(xpMetrics.questsCompleted) or 0)
+    if type(xpMetrics.mobKillsByType) ~= "table" then
+        xpMetrics.mobKillsByType = {}
+    end
+    if xpMetrics.lastQuestTurnInAt ~= nil then
+        xpMetrics.lastQuestTurnInAt = tonumber(xpMetrics.lastQuestTurnInAt) or nil
+    end
+    xpMetrics.pendingQuestXP = math.max(0, tonumber(xpMetrics.pendingQuestXP) or 0)
 end
 
 local function EnsureHistoryUndo()
@@ -207,7 +230,15 @@ function pH_SessionManager:StartSession(startReason, startSource)
 
         -- Phase 9: XP/Rep/Honor metrics
         metrics = {
-            xp = { gained = 0, enabled = false },
+            xp = {
+                gained = 0,
+                enabled = false,
+                bySource = { mob = 0, quest = 0, other = 0 },
+                questsCompleted = 0,
+                mobKillsByType = {},
+                lastQuestTurnInAt = nil,
+                pendingQuestXP = 0,
+            },
             rep = { gained = 0, enabled = false, byFaction = {} },
             repPotential = {
                 total = 0, byFaction = {}, byItem = {},
@@ -266,6 +297,9 @@ function pH_SessionManager:StartSession(startReason, startSource)
 
     if type(pH_AutoSession) == "table" and pH_AutoSession.OnSessionStarted then
         pH_AutoSession:OnSessionStarted(session, startReason or "manual", startSource)
+    end
+    if type(pH_Events) == "table" and pH_Events.ResetXPBaselineToCurrent then
+        pH_Events:ResetXPBaselineToCurrent()
     end
 
     return true, "Session #" .. sessionId .. " started"
@@ -514,7 +548,15 @@ function pH_SessionManager:MergeSessions(sessionIds)
             nodesByType = {},
         },
         metrics = {
-            xp = { gained = 0, enabled = false },
+            xp = {
+                gained = 0,
+                enabled = false,
+                bySource = { mob = 0, quest = 0, other = 0 },
+                questsCompleted = 0,
+                mobKillsByType = {},
+                lastQuestTurnInAt = nil,
+                pendingQuestXP = 0,
+            },
             rep = { gained = 0, enabled = false, byFaction = {} },
             repPotential = {
                 total = 0, byFaction = {}, byItem = {},
@@ -592,8 +634,16 @@ function pH_SessionManager:MergeSessions(sessionIds)
 
         if s.metrics then
             local mxp = s.metrics.xp or {}
+            EnsureXPAuditDefaults(mxp)
             merged.metrics.xp.gained = merged.metrics.xp.gained + (mxp.gained or 0)
             merged.metrics.xp.enabled = merged.metrics.xp.enabled or (mxp.enabled and true or false)
+            merged.metrics.xp.bySource.mob = (merged.metrics.xp.bySource.mob or 0) + (mxp.bySource.mob or 0)
+            merged.metrics.xp.bySource.quest = (merged.metrics.xp.bySource.quest or 0) + (mxp.bySource.quest or 0)
+            merged.metrics.xp.bySource.other = (merged.metrics.xp.bySource.other or 0) + (mxp.bySource.other or 0)
+            merged.metrics.xp.questsCompleted = (merged.metrics.xp.questsCompleted or 0) + (mxp.questsCompleted or 0)
+            for mobName, killCount in pairs(mxp.mobKillsByType or {}) do
+                merged.metrics.xp.mobKillsByType[mobName] = (merged.metrics.xp.mobKillsByType[mobName] or 0) + (killCount or 0)
+            end
 
             local mr = s.metrics.rep or {}
             merged.metrics.rep.gained = merged.metrics.rep.gained + (mr.gained or 0)
@@ -740,6 +790,9 @@ function pH_SessionManager:ResumeSession(resumeReason, resumeSource)
     session.pausedAt = nil
     session.autoSessionPauseReason = nil
     session.currentLoginAt = time()
+    if type(pH_Events) == "table" and pH_Events.ResetXPBaselineToCurrent then
+        pH_Events:ResetXPBaselineToCurrent()
+    end
     if type(pH_AutoSession) == "table" and pH_AutoSession.OnSessionResumed then
         pH_AutoSession:OnSessionResumed(session, resumeReason or "manual", resumeSource)
     end
@@ -937,6 +990,19 @@ function pH_SessionManager:EnsureRecentBucketsDefaults(session)
     end
 end
 
+function pH_SessionManager:EnsureXPMetricAuditDefaults(session)
+    if not session then
+        return
+    end
+    if not session.metrics then
+        session.metrics = {}
+    end
+    if type(session.metrics.xp) ~= "table" then
+        session.metrics.xp = { gained = 0, enabled = false }
+    end
+    EnsureXPAuditDefaults(session.metrics.xp)
+end
+
 function pH_SessionManager:RecordMetricDelta(session, metricKey, delta, atTime)
     if not session or not metricKey then return end
     self:EnsureRecentBucketsDefaults(session)
@@ -1013,6 +1079,52 @@ function pH_SessionManager:ComputeBucketedRecentRate(session, metricKey, nowTs)
         return 0
     end
     return math.floor(weightedSum / totalWeight)
+end
+
+function pH_SessionManager:ComputeRecentRateWallTime(session, metricKey, windowSec, nowTs)
+    if not session or not metricKey then
+        return 0
+    end
+    self:EnsureRecentBucketsDefaults(session)
+    local bucketState = session.metrics.recentBuckets[metricKey]
+    if not bucketState then
+        return 0
+    end
+    local buckets = bucketState.buckets or {}
+    if #buckets == 0 then
+        return 0
+    end
+
+    local nowLocal = math.floor(tonumber(nowTs) or time())
+    local span = math.max(60, math.floor(tonumber(windowSec) or XP_RECENT_WINDOW_SEC))
+    local windowStart = nowLocal - span
+    local size = bucketState.bucketSizeSec or RATE_BUCKET_SIZE_SEC
+    if size <= 0 then
+        return 0
+    end
+
+    local xpInWindow = 0
+    for i = 1, #buckets do
+        local bucket = buckets[i]
+        local startAt = tonumber(bucket and bucket.startAt) or 0
+        local endAt = tonumber(bucket and bucket.endAt) or (startAt + size)
+        if endAt > windowStart and startAt < nowLocal then
+            local overlapStart = math.max(startAt, windowStart)
+            local overlapEnd = math.min(endAt, nowLocal)
+            local overlap = overlapEnd - overlapStart
+            if overlap > 0 then
+                local delta = tonumber(bucket and bucket.delta) or 0
+                if delta > 0 then
+                    xpInWindow = xpInWindow + (delta * (overlap / size))
+                end
+            end
+        end
+    end
+
+    if xpInWindow <= 0 then
+        return 0
+    end
+    return math.floor((xpInWindow / span) * 3600)
 end
 
 -- Compute derived metrics for display
@@ -1117,16 +1229,37 @@ function pH_SessionManager:GetMetrics(session)
     -- Phase 9: Compute XP metrics
     local xpGained = 0
     local xpPerHour = 0
+    local xpSessionEtaEligible = false
     local xpEnabled = false
+    local xpBySource = { mob = 0, quest = 0, other = 0 }
+    local xpQuestsCompleted = 0
+    local xpMobKillsByType = {}
     if session.metrics and session.metrics.xp then
         local xpMetrics = session.metrics.xp
+        EnsureXPAuditDefaults(xpMetrics)
         xpGained = xpMetrics.gained or 0
         xpEnabled = xpMetrics.enabled or false
+        xpBySource.mob = xpMetrics.bySource.mob or 0
+        xpBySource.quest = xpMetrics.bySource.quest or 0
+        xpBySource.other = xpMetrics.bySource.other or 0
+        xpQuestsCompleted = xpMetrics.questsCompleted or 0
+        for mobName, killCount in pairs(xpMetrics.mobKillsByType or {}) do
+            xpMobKillsByType[mobName] = killCount
+        end
         if durationHours > 0 and xpGained > 0 then
             xpPerHour = math.floor(xpGained / durationHours)
         end
     end
     local xpRecentPerHourBucketed = self:ComputeBucketedRecentRate(session, "xp", now)
+    local xpRecentPerHourWall = self:ComputeRecentRateWallTime(session, "xp", XP_RECENT_WINDOW_SEC, now)
+    local xpEtaRecentPerHour = 0
+    if xpRecentPerHourWall > 0 and xpRecentPerHourBucketed > 0 then
+        xpEtaRecentPerHour = math.min(xpRecentPerHourWall, xpRecentPerHourBucketed)
+    else
+        xpEtaRecentPerHour = math.max(xpRecentPerHourWall, xpRecentPerHourBucketed)
+    end
+    xpSessionEtaEligible = (durationSec >= XP_SESSION_WARMUP_SEC) or (xpGained >= XP_SESSION_WARMUP_GAIN)
+    local xpEtaAdjusted = xpEtaRecentPerHour > 0 and xpEtaRecentPerHour < xpRecentPerHourBucketed
 
     -- Phase 9: Compute Rep metrics
     local repGained = 0
@@ -1245,7 +1378,14 @@ function pH_SessionManager:GetMetrics(session)
         xpGained = xpGained,
         xpPerHour = xpPerHour,
         xpRecentPerHourBucketed = xpRecentPerHourBucketed,
+        xpRecentPerHourWall = xpRecentPerHourWall,
+        xpEtaRecentPerHour = xpEtaRecentPerHour,
+        xpSessionEtaEligible = xpSessionEtaEligible,
+        xpEtaAdjusted = xpEtaAdjusted,
         xpEnabled = xpEnabled,
+        xpBySource = xpBySource,
+        xpQuestsCompleted = xpQuestsCompleted,
+        xpMobKillsByType = xpMobKillsByType,
         repGained = repGained,
         repPerHour = repPerHour,
         repRecentPerHourBucketed = repRecentPerHourBucketed,
