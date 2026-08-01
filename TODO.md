@@ -1,4 +1,4 @@
-# GoldPH - Todo List & Improvements
+# pH - Todo List & Improvements
 
 ## Critical Bugs
 

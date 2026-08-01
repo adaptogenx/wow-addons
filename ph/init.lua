@@ -213,7 +213,7 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
         end
 
         local version = GetAddOnMetadata and GetAddOnMetadata(addonName, "Version") or "unknown"
-        print(string.format("[pH] Version %s loaded. Type /ph help for commands (legacy /goldph still works).", version))
+        print(string.format("[pH] Version %s loaded. Type /ph help for commands.", version))
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Ensure settings exist
         if not pH_Settings then
@@ -821,7 +821,6 @@ local function HandleCommand(msg)
     end
 end
 
-SLASH_GOLDPH1 = "/goldph"
-SLASH_GOLDPH2 = "/gph"
-SLASH_GOLDPH3 = "/ph"
-SlashCmdList["GOLDPH"] = HandleCommand
+SLASH_PH1 = "/gph"
+SLASH_PH2 = "/ph"
+SlashCmdList["PH"] = HandleCommand

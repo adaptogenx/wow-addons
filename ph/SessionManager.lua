@@ -169,7 +169,7 @@ end
 -- Start a new session
 function pH_SessionManager:StartSession(startReason, startSource)
     if self:GetActiveSession() then
-        return false, "A session is already active. Stop it first with /goldph stop"
+        return false, "A session is already active. Stop it first with /ph stop"
     end
 
     -- Increment session ID

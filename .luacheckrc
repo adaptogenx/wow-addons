@@ -58,10 +58,6 @@ globals = {
     "TaxiNodeCost",  -- Taxi API (may not exist in all versions)
     "SLASH_PH1",  -- Slash command registration
     "SLASH_PH2",  -- Slash command registration
-    "SLASH_PH3",  -- Slash command registration
-    "SLASH_GOLDPH1",  -- Legacy /goldph alias (backward compatibility)
-    "SLASH_GOLDPH2",  -- Legacy /goldph alias (backward compatibility)
-    "SLASH_GOLDPH3",  -- Legacy /goldph alias (backward compatibility)
     "SlashCmdList",  -- Slash command system
     
     -- WoW Events (used as strings, but luacheck may check them)

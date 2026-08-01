@@ -114,7 +114,7 @@ if [ -f "$TARGET_DIR/ph.toc" ]; then
     echo ""
     echo "Next steps:"
     echo "  1. Launch or /reload World of Warcraft"
-    echo "  2. Type: /ph help (or legacy /goldph)"
+    echo "  2. Type: /ph help"
     echo "  3. Start tracking: /ph start"
     echo ""
     echo "Testing without in-game actions:"

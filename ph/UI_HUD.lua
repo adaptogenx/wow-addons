@@ -607,7 +607,7 @@ local function RepositionTiles(isCollapsed)
     -- Build ordered list of tiles (all tiles, in fixed order)
     for _, metricKey in ipairs(METRIC_ORDER) do
         local state = metricStates[metricKey]
-        if state and state.tile then
+        if state and state.tile and state.tile:IsShown() then
             table.insert(orderedTiles, state)
         end
     end
@@ -676,9 +676,13 @@ local function UpdateMicroBars(session, metrics)
                 recentAvgRate = metrics.honorRecentPerHourBucketed or 0
             end
 
-            -- Always show tiles, but gray out inactive ones
-            state.tile:Show()
-            state.icon:Show()  -- Ensure icon is always visible
+            -- Hide XP tile at max level; always show other tiles (gray out if inactive)
+            if metricKey == "xp" and UnitLevel("player") >= MAX_PLAYER_LEVEL then
+                state.tile:Hide()
+            else
+                state.tile:Show()
+                state.icon:Show()  -- Ensure icon is always visible
+            end
             state.sessionAvgRate = sessionAvgRate
             state.recentAvgRate = recentAvgRate
             state.metrics = metrics
@@ -1405,8 +1409,8 @@ function pH_HUD:Initialize()
     hudFrame.overflowStopBtn = stopMenuBtn
 
     local helpMenuBtn = CreateMenuIconButton(overflowMenu, nil, -50, "Help", function()
-        if SlashCmdList["GOLDPH"] then
-            SlashCmdList["GOLDPH"]("help")
+        if SlashCmdList["PH"] then
+            SlashCmdList["PH"]("help")
         else
             print("[pH] Type /ph help for commands")
         end
@@ -1416,8 +1420,8 @@ function pH_HUD:Initialize()
     local settingsMenuBtn = CreateMenuIconButton(overflowMenu, HEADER_ICON_SETTINGS, -72, "Settings", function()
         if type(pH_AutoSession) == "table" and pH_AutoSession.OpenSettingsPanel then
             pH_AutoSession:OpenSettingsPanel()
-        elseif SlashCmdList["GOLDPH"] then
-            SlashCmdList["GOLDPH"]("auto status")
+        elseif SlashCmdList["PH"] then
+            SlashCmdList["PH"]("auto status")
         end
     end)
     overflowMenu.settingsBtn = settingsMenuBtn
@@ -2037,6 +2041,16 @@ local function UpdateRepPanel(panel, metrics)
     panel:SetScript("OnLeave", function()
         GameTooltip:Hide()
     end)
+
+    -- Dynamic width/position: full width when XP panel is hidden (level 70)
+    panel:ClearAllPoints()
+    if hudFrame.xpPanel and hudFrame.xpPanel:IsShown() then
+        panel:SetSize(PANEL_HALF_WIDTH, 80)
+        panel:SetPoint("TOPLEFT", hudFrame.goldPanel, "BOTTOMLEFT", PANEL_HALF_WIDTH + PANEL_GAP, -PANEL_GAP)
+    else
+        panel:SetSize(PANEL_FULL_WIDTH, 80)
+        panel:SetPoint("TOPLEFT", hudFrame.goldPanel, "BOTTOMLEFT", 0, -PANEL_GAP)
+    end
 
     panel:Show()
 end

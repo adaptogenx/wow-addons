@@ -143,8 +143,8 @@ local function BuildProfile(profile)
         start["rep.mob_kill"].action = ACTION_PROMPT
         resume["rep.mob_kill"].action = ACTION_AUTO
 
-        start["rep.quest_turnin"].action = ACTION_OFF
-        resume["rep.quest_turnin"].action = ACTION_OFF
+        start["rep.quest_turnin"].action = ACTION_PROMPT
+        resume["rep.quest_turnin"].action = ACTION_AUTO
 
         start["rep.item_turnin"].action = ACTION_OFF
         resume["rep.item_turnin"].action = ACTION_OFF
@@ -290,6 +290,18 @@ local function MigrateSettings()
         cfg._sourceRulesMigrationV1501VendorTrash = true
     end
 
+    -- One-time migration (0.15.3):
+    -- Reputation-only quest turn-ins (no XP/gold reward) previously triggered
+    -- nothing at all. Treat rep.quest_turnin like rep.mob_kill/xp.quest_turnin.
+    if cfg._sourceRulesMigrationV1503RepQuestTurnin ~= true then
+        local repQTStart = cfg.start.rules["rep.quest_turnin"] and cfg.start.rules["rep.quest_turnin"].action
+        local repQTResume = cfg.resume.rules["rep.quest_turnin"] and cfg.resume.rules["rep.quest_turnin"].action
+        if repQTStart == ACTION_OFF and repQTResume == ACTION_OFF then
+            cfg.start.rules["rep.quest_turnin"].action = ACTION_PROMPT
+            cfg.resume.rules["rep.quest_turnin"].action = ACTION_AUTO
+        end
+        cfg._sourceRulesMigrationV1503RepQuestTurnin = true
+    end
 end
 
 local function SourceLabel(source)
@@ -1076,7 +1088,7 @@ local function CreateToastUI()
     end
 
     local toast = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    toast:SetSize(300, 100)
+    toast:SetSize(300, 115)
     toast:SetFrameStrata("DIALOG")
     toast:SetFrameLevel(1000)
     toast:SetMovable(false)
@@ -1098,12 +1110,18 @@ local function CreateToastUI()
     messageText:SetPoint("TOP", toast, "TOP", 0, -12)
     messageText:SetPoint("LEFT", toast, "LEFT", 12, 0)
     messageText:SetPoint("RIGHT", toast, "RIGHT", -12, 0)
-    messageText:SetPoint("BOTTOM", toast, "BOTTOM", 0, 44)
+    messageText:SetPoint("BOTTOM", toast, "BOTTOM", 0, 59)
     messageText:SetJustifyH("CENTER")
     messageText:SetJustifyV("TOP")
     messageText:SetTextColor(unpack(pH_Colors.TEXT_PRIMARY))
     messageText:SetWordWrap(true)
     toast.messageText = messageText
+
+    local countdownText = toast:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    countdownText:SetPoint("BOTTOM", toast, "BOTTOM", 0, 43)
+    countdownText:SetJustifyH("CENTER")
+    countdownText:SetTextColor(unpack(pH_Colors.TEXT_MUTED))
+    toast.countdownText = countdownText
 
     local actionBtn = CreateFrame("Button", nil, toast, "UIPanelButtonTemplate")
     actionBtn:SetSize(90, 24)
@@ -1125,10 +1143,18 @@ local function CreateToastUI()
     toast.dismissBtn = dismissBtn
 
     toast.autoDismissTimer = 0
+    toast.lastCountdown = nil
     toast:SetScript("OnUpdate", function(selfFrame, elapsed)
         selfFrame.autoDismissTimer = selfFrame.autoDismissTimer + elapsed
-        if selfFrame.autoDismissTimer >= 30 then
+        local remaining = math.ceil(30 - selfFrame.autoDismissTimer)
+        if remaining <= 0 then
+            if selfFrame.actionCallback then selfFrame.actionCallback() end
             pH_AutoSession:HideToast()
+        else
+            if remaining ~= selfFrame.lastCountdown then
+                selfFrame.lastCountdown = remaining
+                selfFrame.countdownText:SetText(string.format("Pausing in %ds...", remaining))
+            end
         end
     end)
 
@@ -1157,6 +1183,8 @@ function pH_AutoSession:ShowInactivityToast()
     end
 
     toast.autoDismissTimer = 0
+    toast.lastCountdown = nil
+    toast.countdownText:SetText("Pausing in 30s...")
     toast:Show()
 end
 

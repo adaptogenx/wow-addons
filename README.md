@@ -89,7 +89,7 @@ Cr Income:LootedCoin   +500 copper
 
 This ensures that when items are later sold (Phase 4), we can properly remove their expected value from inventory to avoid counting the same value twice.
 
-See [CLAUDE.md](CLAUDE.md) for architecture details and [GoldPH_TDD.md](GoldPH_TDD.md) for technical specification.
+See [CLAUDE.md](CLAUDE.md) for architecture details and [Technical Design Document](.plans/GoldPH_TDD.md) for technical specification.
 
 ## Known Issues
 
@@ -240,4 +240,4 @@ This addon is provided as-is for personal use. See technical documentation for i
 - **Implementation**: Multi-phase incremental approach
 - **Testing**: Comprehensive debug/test infrastructure
 
-For full technical specification, see [GoldPH_TDD.md](GoldPH_TDD.md).
+For full technical specification, see [Technical Design Document](.plans/GoldPH_TDD.md).

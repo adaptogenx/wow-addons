@@ -1,12 +1,12 @@
 #!/bin/bash
-# Setup script to install git hooks for GoldPH
+# Setup script to install git hooks for pH
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="$SCRIPT_DIR/.git/hooks"
 
-echo "Setting up git hooks for GoldPH..."
+echo "Setting up git hooks for pH..."
 
 # Copy pre-commit hook
 if [ -f "$SCRIPT_DIR/.git/hooks/pre-commit" ]; then

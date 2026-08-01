@@ -259,9 +259,9 @@ function pH_Events:OnEvent(event, ...)
     end
     
     -- Keep most events frozen while paused (keeps gold/hr accurate).
-    -- Allow UPDATE_FACTION through so rep gains can resume and potential can sync.
+    -- Allow rep/xp gain events through so paused sessions can auto-resume on gain.
     local session = pH_SessionManager:GetActiveSession()
-    if session and session.pausedAt and event ~= "UPDATE_FACTION" then
+    if session and session.pausedAt and event ~= "UPDATE_FACTION" and event ~= "CHAT_MSG_COMBAT_XP_GAIN" then
         return
     end
 
@@ -1833,6 +1833,11 @@ function pH_Events:OnCombatXPGain(message)
         return
     end
 
+    if session.pausedAt and pH_SessionManager and pH_SessionManager.ResumeSession then
+        pH_SessionManager:ResumeSession("auto", "xp.gain")
+        session = pH_SessionManager:GetActiveSession() or session
+    end
+
     local xpMetrics = EnsureSessionXPAuditMetrics(session)
     if not xpMetrics then
         return
@@ -1844,7 +1849,8 @@ function pH_Events:OnCombatXPGain(message)
         return
     end
 
-    local amount = tonumber((xpAmount or ""):gsub("[^%d]", "")) or 0
+    local cleanedXP = tostring(xpAmount or ""):gsub("[^%d]", "")
+    local amount = tonumber(cleanedXP) or 0
     if amount <= 0 then
         return
     end
