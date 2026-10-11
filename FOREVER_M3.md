@@ -20,7 +20,7 @@
 `lua tests/test_api.lua` and `lua tests/test_loot_defer.lua`. Not covered: history UI, persistence round-trips, vendor/quest/DE flows.
 
 ## Forever runtime report (fill in per build)
-Forever build: ____   pH version: 0.15.3
+Forever build: ____   pH version: 1.6.0
 
 | Area | Test | Result | Limitation |
 |---|---|---|---|
