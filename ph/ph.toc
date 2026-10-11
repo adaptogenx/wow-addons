@@ -1,4 +1,4 @@
-## Interface: 11504
+## Interface: 11504, 16001
 ## Title: pH
 ## Notes: Session-based gold-per-hour tracking with double-ledger accounting. Features minimize/maximize HUD, real-time metrics, and conservative item valuation (WoW Classic Anniversary)
 ## Author: Claude Code
@@ -8,6 +8,7 @@
 ## SavedVariablesPerCharacter: pH_Settings
 
 # Core modules (load order matters)
+pH_API.lua
 Ledger.lua
 PriceSources.lua
 EnchantingCatalog.lua

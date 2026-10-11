@@ -212,7 +212,7 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
             pH_AutoSession:Initialize()
         end
 
-        local version = GetAddOnMetadata and GetAddOnMetadata(addonName, "Version") or "unknown"
+        local version = pH_API:GetAddonMetadata(addonName, "Version") or "unknown"
         print(string.format("[pH] Version %s loaded. Type /ph help for commands.", version))
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Ensure settings exist
