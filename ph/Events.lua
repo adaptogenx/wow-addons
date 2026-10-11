@@ -178,6 +178,7 @@ function pH_Events:Initialize(frame)
     frame:RegisterEvent("MERCHANT_SHOW")
     frame:RegisterEvent("MERCHANT_CLOSED")
     frame:RegisterEvent("CHAT_MSG_LOOT")  -- Phase 3
+    frame:RegisterEvent("GET_ITEM_INFO_RECEIVED") -- deferred loot valuation on item cache miss
     frame:RegisterEvent("BAG_UPDATE")     -- Phase 4 (vendor sale detection)
     frame:RegisterEvent("PLAYER_MONEY")   -- Phase 5 (monitor money changes for taxi)
     frame:RegisterEvent("TAXIMAP_OPENED") -- Phase 5
@@ -269,6 +270,8 @@ function pH_Events:OnEvent(event, ...)
         self:OnLootedCoin(...)
     elseif event == "CHAT_MSG_LOOT" then
         self:OnLootedItem(...)
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        self:OnItemInfoReceived(...)
     elseif event == "MERCHANT_SHOW" then
         self:OnMerchantShow()
     elseif event == "MERCHANT_CLOSED" then
@@ -577,7 +580,26 @@ function pH_Events:PostLootedItem(session, itemID, itemName, quality, itemClass,
 end
 
 -- Handle CHAT_MSG_LOOT event (items)
-function pH_Events:OnLootedItem(message)
+local PENDING_LOOT_TIMEOUT = 3
+state.pendingLoot = {}
+
+-- Replay deferred loot messages for itemID (each message is processed exactly once)
+function pH_Events:ResolvePendingLoot(itemID)
+    local queue = state.pendingLoot[itemID]
+    if not queue then return end
+    state.pendingLoot[itemID] = nil
+    for _, message in ipairs(queue) do
+        self:OnLootedItem(message, true)
+    end
+end
+
+function pH_Events:OnItemInfoReceived(itemID)
+    if itemID and not pH_API:IsSecret(itemID) and state.pendingLoot[itemID] then
+        self:ResolvePendingLoot(itemID)
+    end
+end
+
+function pH_Events:OnLootedItem(message, isReplay)
     local session = pH_SessionManager:GetActiveSession()
     if not session then
         return -- No active session
@@ -602,6 +624,21 @@ function pH_Events:OnLootedItem(message)
 
     -- Get item info (may be nil if not cached yet)
     local itemName, quality, itemClass, itemSubClass, vendorPrice = pH_Valuation:GetItemInfo(itemID)
+
+    -- Cache miss: ask the client to load item data and replay once it arrives
+    -- (or after a timeout) so valuation isn't permanently based on missing data.
+    if not itemName and not isReplay and pH_API:RequestItemData(itemID) then
+        local queue = state.pendingLoot[itemID]
+        if not queue then
+            queue = {}
+            state.pendingLoot[itemID] = queue
+            C_Timer.After(PENDING_LOOT_TIMEOUT, function()
+                self:ResolvePendingLoot(itemID)
+            end)
+        end
+        queue[#queue + 1] = message
+        return
+    end
 
     if not itemName then
         -- Cache miss fallback: derive display name from link and continue.
@@ -945,6 +982,10 @@ function pH_Events:OnUnitSpellcastSucceeded(unitTarget, castGUID, spellID)
         return
     end
 
+    if pH_API:IsSecret(spellID) then
+        return
+    end
+
     -- Get spell name from spell ID (used for logging and fallback labels)
     local spellName = pH_API:GetSpellName(spellID)
     if not spellName then
@@ -1019,9 +1060,11 @@ end
 -- Hook repair functions to track costs
 function pH_Events:HookRepairFunctions()
     -- Hook RepairAllItems (repair all button)
-    hooksecurefunc("RepairAllItems", function(guildBankRepair)
-        self:OnRepairAll(guildBankRepair)
-    end)
+    if RepairAllItems then
+        hooksecurefunc("RepairAllItems", function(guildBankRepair)
+            self:OnRepairAll(guildBankRepair)
+        end)
+    end
 
     -- Note: We could also hook individual item repairs via UseContainerItem
     -- but RepairAllItems is the most common use case for Phase 2
@@ -1042,11 +1085,9 @@ end
 function pH_Events:HookLockboxOpening()
     -- Try to hook UseContainerItem for lockbox detection
     -- Note: In Classic, this may not be hookable, so we also use BAG_UPDATE fallback
-    if UseContainerItem and hooksecurefunc then
-        hooksecurefunc("UseContainerItem", function(bag, slot)
-            self:OnUseContainerItemForLockbox(bag, slot)
-        end)
-    end
+    pH_API:HookUseContainerItem(function(bag, slot)
+        self:OnUseContainerItemForLockbox(bag, slot)
+    end)
 end
 
 -- Handle TakeTaxiNode hook (when player clicks a destination)
@@ -1200,7 +1241,7 @@ end
 function pH_Events:SnapshotBags()
     local snapshot = {}
 
-    for bag = 0, 4 do
+    for bag = 0, pH_API:GetLastBagIndex() do
         local numSlots = GetBagNumSlots(bag)
         for slot = 1, numSlots do
             local itemCount, itemLink = GetBagItemInfo(bag, slot)
@@ -1333,7 +1374,7 @@ end
 -- Returns: [ "bag_slot" ] = { itemID = n, count = n }
 function pH_Events:SnapshotLockboxesBySlot()
     local snapshot = {}
-    for bag = 0, 4 do
+    for bag = 0, pH_API:GetLastBagIndex() do
         local numSlots = GetBagNumSlots(bag)
         for slot = 1, numSlots do
             local itemCount, itemLink = GetBagItemInfo(bag, slot)

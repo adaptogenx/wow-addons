@@ -652,7 +652,7 @@ function pH_AutoSession:ClassifyActivity(event, ...)
         if pH_Valuation and pH_Valuation.GetItemInfo then
             itemName, quality, itemClass, itemSubClass = pH_Valuation:GetItemInfo(itemID)
         end
-        if not itemName and GetItemInfo then
+        if not itemName then
             local itemNameInfo, _, qualityInfo, _, _, _, _, _, _, _, _, itemClassInfo, itemSubClassInfo = pH_API:GetItemInfo(itemID)
             itemName = itemNameInfo
             quality = qualityInfo
