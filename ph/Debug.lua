@@ -207,6 +207,13 @@ function pH_Debug:RunTests()
     local test10 = self:Test_GatheringNodes()
     table.insert(testResults, test10)
 
+    -- Client compatibility self-tests (Debug_Port.lua)
+    if self.RunPortTests then
+        for _, r in ipairs(self:RunPortTests()) do
+            table.insert(testResults, r)
+        end
+    end
+
     -- Summary
     local passed = 0
     local failed = 0

@@ -198,6 +198,8 @@ local function InitializeSavedVariables()
     -- Rest of addon uses pH_DB_Account (see SessionManager, Index, Events, UI_*, etc.)
 end
 
+_G.pH_EnsureAccountDB = EnsureAccountDB
+
 -- Addon loaded event handler
 pH_MainFrame:RegisterEvent("ADDON_LOADED")
 pH_MainFrame:RegisterEvent("PLAYER_ENTERING_WORLD")

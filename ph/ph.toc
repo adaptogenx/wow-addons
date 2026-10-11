@@ -19,6 +19,7 @@ SessionManager.lua
 Events.lua
 AutoSession.lua
 Debug.lua
+Debug_Port.lua
 
 # Brand colors (shared)
 pH_Colors.lua
