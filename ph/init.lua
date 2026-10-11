@@ -28,6 +28,20 @@ local function EnsureAccountDB()
     if not pH_DB_Account.meta then
         pH_DB_Account.meta = { lastSessionId = 0 }
     end
+    -- Repair partial state field-by-field (never reset the whole DB)
+    local db = pH_DB_Account
+    if type(db.sessions) ~= "table" then db.sessions = {} end
+    if type(db.meta.lastSessionId) ~= "number" then
+        -- Avoid reusing IDs of retained history
+        local maxId = 0
+        for id in pairs(db.sessions) do
+            if type(id) == "number" and id > maxId then maxId = id end
+        end
+        db.meta.lastSessionId = maxId
+    end
+    if type(db.activeSessions) ~= "table" then db.activeSessions = {} end
+    if type(db.priceOverrides) ~= "table" then db.priceOverrides = {} end
+    if type(db.debug) ~= "table" then db.debug = { enabled = false, verbose = false, lastTestResults = {} } end
     if pH_DB_Account.meta.lastSessionId == nil then
         pH_DB_Account.meta.lastSessionId = 0
     end
@@ -183,6 +197,8 @@ local function InitializeSavedVariables()
 
     -- Rest of addon uses pH_DB_Account (see SessionManager, Index, Events, UI_*, etc.)
 end
+
+_G.pH_EnsureAccountDB = EnsureAccountDB
 
 -- Addon loaded event handler
 pH_MainFrame:RegisterEvent("ADDON_LOADED")
