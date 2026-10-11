@@ -917,7 +917,7 @@ local function BuildRepPotentialItems(session)
         if count > 0 then
             local progressCount = count % bundleSize
             local neededForNext = (progressCount == 0) and 0 or (bundleSize - progressCount)
-            local itemName = (session.items and session.items[itemID] and session.items[itemID].name) or GetItemInfo(itemID) or ("Item " .. tostring(itemID))
+            local itemName = (session.items and session.items[itemID] and session.items[itemID].name) or pH_API:GetItemInfo(itemID) or ("Item " .. tostring(itemID))
             local firstTarget = entry.targets and entry.targets[1] or nil
             table.insert(out, {
                 itemID = itemID,
@@ -1686,7 +1686,7 @@ function pH_SessionManager:RunPricingV2Migration()
 end
 
 local function ResolveItemMeta(itemID, itemData)
-    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
     if itemName then
         return itemName, quality, itemClass, itemSubClass
     end

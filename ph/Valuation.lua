@@ -237,7 +237,7 @@ function pH_Valuation:ComputeExpectedValue(itemID, bucket)
 end
 
 function pH_Valuation:GetVendorPrice(itemID)
-    local _, _, _, _, _, _, _, _, _, _, vendorPrice = GetItemInfo(itemID)
+    local _, _, _, _, _, _, _, _, _, _, vendorPrice = pH_API:GetItemInfo(itemID)
     return vendorPrice or 0
 end
 
@@ -249,7 +249,7 @@ end
 -- Get item info with retry logic for cache misses
 -- @return name, quality, itemClass, itemSubClass, vendorPrice (or nil if not cached yet)
 function pH_Valuation:GetItemInfo(itemID)
-    local name, _, quality, _, _, _, _, _, _, _, vendorPrice, itemClassID, itemSubClassID = GetItemInfo(itemID)
+    local name, _, quality, _, _, _, _, _, _, _, vendorPrice, itemClassID, itemSubClassID = pH_API:GetItemInfo(itemID)
 
     if not name then
         return nil, nil, nil, nil, nil

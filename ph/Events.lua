@@ -447,7 +447,7 @@ local function SyncRepTurninItemCountsFromBags(session)
             local numericItemID = tonumber(itemID) or itemID
             local rules = pH_RepTurninCatalog:GetRepRules(numericItemID, itemData and itemData.name or nil)
             if rules and #rules > 0 then
-                local bagCount = tonumber(GetItemCount(numericItemID, false)) or tonumber(GetItemCount(numericItemID)) or 0
+                local bagCount = tonumber(pH_API:GetItemCount(numericItemID, false)) or tonumber(pH_API:GetItemCount(numericItemID)) or 0
                 bagCount = math.max(0, math.floor(bagCount))
                 if bagCount == 0 and trackedCount > 0 and not state.seenBagUpdate then
                     -- During login, inventory may not be ready yet; avoid false zeroing.
@@ -946,7 +946,7 @@ function pH_Events:OnUnitSpellcastSucceeded(unitTarget, castGUID, spellID)
     end
 
     -- Get spell name from spell ID (used for logging and fallback labels)
-    local spellName = GetSpellInfo(spellID)
+    local spellName = pH_API:GetSpellName(spellID)
     if not spellName then
         return
     end
@@ -1319,7 +1319,7 @@ function pH_Events:TryProcessDisenchant(session)
     end
 
     if pH_DB_Account.debug.verbose then
-        local srcName = GetItemInfo(sourceItemID) or tostring(sourceItemID)
+        local srcName = pH_API:GetItemInfo(sourceItemID) or tostring(sourceItemID)
         print(string.format("[pH] DE rebucket: consumed %s x1 (held=%s), produced %d enchanting mats",
             srcName, pH_Ledger:FormatMoney(sourceHeldValue), enchantingOutputCount))
     end
@@ -1340,7 +1340,7 @@ function pH_Events:SnapshotLockboxesBySlot()
             if itemLink and itemCount and itemCount > 0 then
                 local itemID = self:ExtractItemID(itemLink)
                 if itemID then
-                    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = GetItemInfo(itemID)
+                    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
                     if itemName then
                         local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
                         if bucket == "container_lockbox" then
@@ -1405,7 +1405,7 @@ function pH_Events:OnBagUpdateLockboxCheck(session)
         end
 
         if pH_DB_Account.debug.verbose then
-            local name = openedItemID and (GetItemInfo(openedItemID) or "?") or "?"
+            local name = openedItemID and (pH_API:GetItemInfo(openedItemID) or "?") or "?"
             print(string.format("[pH] Lockbox opened (BAG_UPDATE): %s x%d, attribution window: %.1f seconds",
                 name, opened, 3.0))
         end
@@ -1458,7 +1458,7 @@ function pH_Events:OnBagUpdateAtMerchant()
 
         if countSold > 0 then
             -- Item was sold, process it
-            local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = GetItemInfo(itemID)
+            local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
 
             if itemName and vendorSellEach and vendorSellEach > 0 then
                 -- Calculate expected proceeds for this item
@@ -1518,7 +1518,7 @@ function pH_Events:OnUseContainerItemForLockbox(bag, slot)
     end
 
     -- Get item name and classify
-    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
     if not itemName then
         return
     end
@@ -1563,7 +1563,7 @@ function pH_Events:OnUseContainerItem(bag, slot)
         return
     end
 
-    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
     if not itemName then
         return
     end
@@ -1760,7 +1760,7 @@ function pH_Events:InjectVendorSale(itemID, count)
     end
 
     -- Get item info
-    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
 
     if not itemName then
         return false, string.format("Item not in cache: itemID=%d (try mousing over it first)", itemID)

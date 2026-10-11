@@ -623,7 +623,7 @@ function pH_AutoSession:ClassifyActivity(event, ...)
         if spellID and GATHERING_SPELLS[spellID] then
             return { source = "gathering.node", confidence = "high", amount = 1, shouldSuppress = false }
         end
-        local spellName = spellID and GetSpellInfo and GetSpellInfo(spellID) or nil
+        local spellName = pH_API:GetSpellName(spellID)
         if spellName == "Pick Pocket" or spellName == "Pickpocket" then
             self:MarkPickpocketWindow(2.0)
         end
@@ -653,7 +653,7 @@ function pH_AutoSession:ClassifyActivity(event, ...)
             itemName, quality, itemClass, itemSubClass = pH_Valuation:GetItemInfo(itemID)
         end
         if not itemName and GetItemInfo then
-            local itemNameInfo, _, qualityInfo, _, _, _, _, _, _, _, _, itemClassInfo, itemSubClassInfo = GetItemInfo(itemID)
+            local itemNameInfo, _, qualityInfo, _, _, _, _, _, _, _, _, itemClassInfo, itemSubClassInfo = pH_API:GetItemInfo(itemID)
             itemName = itemNameInfo
             quality = qualityInfo
             itemClass = itemClassInfo

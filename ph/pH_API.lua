@@ -3,7 +3,7 @@
 -- Only wraps APIs that actually differ between clients. Domain modules call
 -- pH_API and stay unaware of which client they run on.
 
--- luacheck: globals GetBuildInfo GetMoney UnitXP UnitXPMax UnitLevel GetMaxPlayerLevel GetNumFactions GetFactionInfo GetAddOnMetadata C_AddOns C_Reputation issecretvalue
+-- luacheck: globals GetBuildInfo GetMoney UnitXP UnitXPMax UnitLevel GetMaxPlayerLevel GetNumFactions GetFactionInfo GetAddOnMetadata C_AddOns C_Reputation C_Spell C_Item GetItemInfo GetItemCount GetSpellInfo issecretvalue
 
 pH_API = {}
 
@@ -108,4 +108,37 @@ function pH_API:GetReputations()
         end
     end
     return list
+end
+
+-- Spell name from spell ID (GetSpellInfo was removed on Forever).
+function pH_API:GetSpellName(spellID)
+    if not spellID then return nil end
+    if C_Spell and C_Spell.GetSpellName then
+        return C_Spell.GetSpellName(spellID)
+    end
+    if GetSpellInfo then
+        return (GetSpellInfo(spellID))
+    end
+    return nil
+end
+
+-- Same return signature as the classic GetItemInfo.
+function pH_API:GetItemInfo(item)
+    if C_Item and C_Item.GetItemInfo then
+        return C_Item.GetItemInfo(item)
+    end
+    if GetItemInfo then
+        return GetItemInfo(item)
+    end
+    return nil
+end
+
+function pH_API:GetItemCount(item, includeBank)
+    if C_Item and C_Item.GetItemCount then
+        return C_Item.GetItemCount(item, includeBank)
+    end
+    if GetItemCount then
+        return GetItemCount(item, includeBank)
+    end
+    return 0
 end
