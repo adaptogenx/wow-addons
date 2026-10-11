@@ -1088,7 +1088,7 @@ function pH_HUD:Initialize()
     -- Create main frame with BackdropTemplate for border support
     hudFrame = CreateFrame("Frame", "pH_HUD_Frame", UIParent, "BackdropTemplate")
     hudFrame:SetSize(FRAME_WIDTH, FRAME_HEIGHT)
-    hudFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -50, -200)
+    hudFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 50, -50)
 
     -- Apply WoW-themed backdrop with pH brand colors
     hudFrame:SetBackdrop({
