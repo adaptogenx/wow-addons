@@ -198,7 +198,7 @@ function pH_Events:Initialize(frame)
     -- and will route events to us via pH_Events:OnEvent()
 
     -- Initialize money tracking
-    state.moneyLast = GetMoney()
+    state.moneyLast = pH_API:GetMoney()
 
     -- Phase 9: Initialize XP tracking baseline.
     self:ResetXPBaselineToCurrent()
@@ -447,7 +447,7 @@ local function SyncRepTurninItemCountsFromBags(session)
             local numericItemID = tonumber(itemID) or itemID
             local rules = pH_RepTurninCatalog:GetRepRules(numericItemID, itemData and itemData.name or nil)
             if rules and #rules > 0 then
-                local bagCount = tonumber(GetItemCount(numericItemID, false)) or tonumber(GetItemCount(numericItemID)) or 0
+                local bagCount = tonumber(pH_API:GetItemCount(numericItemID, false)) or tonumber(pH_API:GetItemCount(numericItemID)) or 0
                 bagCount = math.max(0, math.floor(bagCount))
                 if bagCount == 0 and trackedCount > 0 and not state.seenBagUpdate then
                     -- During login, inventory may not be ready yet; avoid false zeroing.
@@ -743,7 +743,7 @@ function pH_Events:OnMerchantShow()
 
     -- Initialize vendor sale tracking (Phase 4)
     state.bagSnapshot = self:SnapshotBags()
-    state.lastMoneyCheck = GetMoney()
+    state.lastMoneyCheck = pH_API:GetMoney()
 
     if pH_DB_Account.debug.verbose then
         print("[pH] Merchant window opened")
@@ -770,7 +770,7 @@ end
 -- Handle PLAYER_MONEY event (monitor for taxi cost deduction)
 function pH_Events:OnPlayerMoney()
     -- Update money tracking
-    local currentMoney = GetMoney()
+    local currentMoney = pH_API:GetMoney()
     
     -- Debug: Always log money changes when taxi is open
     if state.taxiOpen and pH_DB_Account.debug.verbose then
@@ -797,7 +797,7 @@ end
 -- Handle TAXIMAP_OPENED event
 function pH_Events:OnTaxiMapOpened()
     state.taxiOpen = true
-    state.moneyAtTaxiOpen = GetMoney()
+    state.moneyAtTaxiOpen = pH_API:GetMoney()
     state.taxiCostProcessed = false  -- Track if we've already recorded the cost
 
     if pH_DB_Account.debug.verbose then
@@ -819,7 +819,7 @@ function pH_Events:OnTaxiMapClosed()
     if state.taxiOpen and state.moneyAtTaxiOpen and not state.taxiCostProcessed then
         local session = pH_SessionManager:GetActiveSession()
         if session then
-            local currentMoney = GetMoney()
+            local currentMoney = pH_API:GetMoney()
             local cost = state.moneyAtTaxiOpen - currentMoney
 
             -- Only post expense if cost > 0
@@ -946,7 +946,7 @@ function pH_Events:OnUnitSpellcastSucceeded(unitTarget, castGUID, spellID)
     end
 
     -- Get spell name from spell ID (used for logging and fallback labels)
-    local spellName = GetSpellInfo(spellID)
+    local spellName = pH_API:GetSpellName(spellID)
     if not spellName then
         return
     end
@@ -1062,7 +1062,7 @@ function pH_Events:OnTakeTaxiNode(nodeIndex)
     end
 
     -- Get current money (should be before deduction, but check anyway)
-    local currentMoney = GetMoney()
+    local currentMoney = pH_API:GetMoney()
     
     -- Try to get cost from API if available
     local cost = nil
@@ -1075,7 +1075,7 @@ function pH_Events:OnTakeTaxiNode(nodeIndex)
         -- Wait a tiny bit for money to be deducted, then check
         -- Use a frame update to check after the deduction happens
         C_Timer.After(0.1, function()
-            local newMoney = GetMoney()
+            local newMoney = pH_API:GetMoney()
             local deltaCost = state.moneyAtTaxiOpen - newMoney
             if deltaCost > 0 then
                 self:RecordTaxiCost(session, deltaCost, "TakeTaxiNode (delta)")
@@ -1130,7 +1130,7 @@ function pH_Events:OnRepairAll(guildBankRepair)
 
     if repairCost and repairCost > 0 then
         -- Check if player can afford it
-        local playerMoney = GetMoney()
+        local playerMoney = pH_API:GetMoney()
         if playerMoney < repairCost then
             return -- Repair will fail, don't record
         end
@@ -1319,7 +1319,7 @@ function pH_Events:TryProcessDisenchant(session)
     end
 
     if pH_DB_Account.debug.verbose then
-        local srcName = GetItemInfo(sourceItemID) or tostring(sourceItemID)
+        local srcName = pH_API:GetItemInfo(sourceItemID) or tostring(sourceItemID)
         print(string.format("[pH] DE rebucket: consumed %s x1 (held=%s), produced %d enchanting mats",
             srcName, pH_Ledger:FormatMoney(sourceHeldValue), enchantingOutputCount))
     end
@@ -1340,7 +1340,7 @@ function pH_Events:SnapshotLockboxesBySlot()
             if itemLink and itemCount and itemCount > 0 then
                 local itemID = self:ExtractItemID(itemLink)
                 if itemID then
-                    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = GetItemInfo(itemID)
+                    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
                     if itemName then
                         local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
                         if bucket == "container_lockbox" then
@@ -1405,7 +1405,7 @@ function pH_Events:OnBagUpdateLockboxCheck(session)
         end
 
         if pH_DB_Account.debug.verbose then
-            local name = openedItemID and (GetItemInfo(openedItemID) or "?") or "?"
+            local name = openedItemID and (pH_API:GetItemInfo(openedItemID) or "?") or "?"
             print(string.format("[pH] Lockbox opened (BAG_UPDATE): %s x%d, attribution window: %.1f seconds",
                 name, opened, 3.0))
         end
@@ -1436,12 +1436,12 @@ function pH_Events:OnBagUpdateAtMerchant()
     -- If we don't have an old snapshot, save this one and return
     if not state.bagSnapshot then
         state.bagSnapshot = newSnapshot
-        state.lastMoneyCheck = GetMoney()
+        state.lastMoneyCheck = pH_API:GetMoney()
         return
     end
 
     -- Check for money increase (vendor proceeds)
-    local currentMoney = GetMoney()
+    local currentMoney = pH_API:GetMoney()
     local moneyGained = currentMoney - state.lastMoneyCheck
 
     if moneyGained <= 0 then
@@ -1458,7 +1458,7 @@ function pH_Events:OnBagUpdateAtMerchant()
 
         if countSold > 0 then
             -- Item was sold, process it
-            local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = GetItemInfo(itemID)
+            local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
 
             if itemName and vendorSellEach and vendorSellEach > 0 then
                 -- Calculate expected proceeds for this item
@@ -1518,7 +1518,7 @@ function pH_Events:OnUseContainerItemForLockbox(bag, slot)
     end
 
     -- Get item name and classify
-    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
     if not itemName then
         return
     end
@@ -1563,7 +1563,7 @@ function pH_Events:OnUseContainerItem(bag, slot)
         return
     end
 
-    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
     if not itemName then
         return
     end
@@ -1760,7 +1760,7 @@ function pH_Events:InjectVendorSale(itemID, count)
     end
 
     -- Get item info
-    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
 
     if not itemName then
         return false, string.format("Item not in cache: itemID=%d (try mousing over it first)", itemID)
@@ -1799,13 +1799,10 @@ end
 function pH_Events:InitializeRepCache()
     state.repCache = {}
 
-    local numFactions = GetNumFactions()
-    for i = 1, numFactions do
-        local name, description, standingID, barMin, barMax, barValue, atWarWith, canToggleAtWar, isHeader, isCollapsed, hasRep, isWatched, isChild, factionID = GetFactionInfo(i)
-
+    for _, rep in ipairs(pH_API:GetReputations()) do
         -- Skip headers, use factionID as stable key
-        if not isHeader and factionID then
-            state.repCache[factionID] = barValue
+        if not rep.isHeader and rep.factionID and rep.current then
+            state.repCache[rep.factionID] = rep.current
         end
     end
 
@@ -1817,12 +1814,12 @@ function pH_Events:InitializeRepCache()
 end
 
 function pH_Events:ResetXPBaselineToCurrent()
-    local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
-    if UnitLevel("player") >= maxLevel then
+    local maxLevel = pH_API:GetMaxPlayerLevel(60)
+    if pH_API:GetPlayerLevel() >= maxLevel then
         ClearXPBaseline()
         return false
     end
-    SetXPBaseline(UnitXP("player"), UnitXPMax("player"))
+    SetXPBaseline(pH_API:GetXP(), pH_API:GetXPMax())
     return true
 end
 
@@ -1867,12 +1864,12 @@ end
 
 -- Handle PLAYER_XP_UPDATE event (XP gains with rollover detection for level-ups)
 function pH_Events:OnPlayerXPUpdate()
-    local newXP = UnitXP("player")
-    local newXPMax = UnitXPMax("player")
+    local newXP = pH_API:GetXP()
+    local newXPMax = pH_API:GetXPMax()
 
     -- Skip XP accumulation at max level, but keep baseline neutralized.
-    local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
-    if UnitLevel("player") >= maxLevel then
+    local maxLevel = pH_API:GetMaxPlayerLevel(60)
+    if pH_API:GetPlayerLevel() >= maxLevel then
         ClearXPBaseline()
         return
     end
@@ -1998,14 +1995,13 @@ function pH_Events:OnUpdateFaction()
     end
 
     -- Scan all factions and compute deltas
-    local numFactions = GetNumFactions()
     local totalDelta = 0
 
-    for i = 1, numFactions do
-        local name, description, standingID, barMin, barMax, barValue, atWarWith, canToggleAtWar, isHeader, isCollapsed, hasRep, isWatched, isChild, factionID = GetFactionInfo(i)
+    for _, rep in ipairs(pH_API:GetReputations()) do
+        local name, isHeader, factionID, barValue = rep.name, rep.isHeader, rep.factionID, rep.current
 
         -- Skip headers, use factionID as stable key
-        if not isHeader and factionID and name then
+        if not isHeader and factionID and name and barValue then
             local oldValue = state.repCache[factionID] or barValue
             local delta = barValue - oldValue
 

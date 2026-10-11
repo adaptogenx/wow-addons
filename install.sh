@@ -14,6 +14,8 @@ echo ""
 WOW_PATHS=(
     "/Applications/World of Warcraft/_anniversary_/Interface/AddOns"
     "$HOME/Applications/World of Warcraft/_anniversary_/Interface/AddOns"
+    "/Applications/World of Warcraft/_classic_beta_/Interface/Addons"
+    "$HOME/Applications/World of Warcraft/_classic_beta_/Interface/Addons"
 )
 
 # Find existing WoW installations
@@ -38,33 +40,18 @@ if [ ${#FOUND_PATHS[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Use the first found path or the one specified by user
+# Install to the path given by the user, otherwise to every found install
+# (Anniversary and/or Forever beta)
 if [ -n "$1" ]; then
-    ADDONS_DIR="$1"
-    if [ ! -d "$ADDONS_DIR" ]; then
-        echo "❌ Error: Specified directory does not exist: $ADDONS_DIR"
+    if [ ! -d "$1" ]; then
+        echo "❌ Error: Specified directory does not exist: $1"
         exit 1
     fi
-elif [ ${#FOUND_PATHS[@]} -eq 1 ]; then
-    ADDONS_DIR="${FOUND_PATHS[0]}"
+    INSTALL_DIRS=("$1")
 else
-    # Multiple installations found, let user choose
-    echo "Found multiple WoW installations:"
-    for i in "${!FOUND_PATHS[@]}"; do
-        echo "  $((i+1)). ${FOUND_PATHS[$i]}"
-    done
-    echo ""
-    read -p "Select installation (1-${#FOUND_PATHS[@]}): " choice
-
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#FOUND_PATHS[@]} ]; then
-        echo "❌ Invalid selection"
-        exit 1
-    fi
-
-    ADDONS_DIR="${FOUND_PATHS[$((choice-1))]}"
+    INSTALL_DIRS=("${FOUND_PATHS[@]}")
 fi
 
-TARGET_DIR="$ADDONS_DIR/pH"
 SCRIPT_DIR="$(dirname "$0")"
 TOC_FILE="$SCRIPT_DIR/ph/ph.toc"
 
@@ -74,9 +61,10 @@ if [ -f "$TOC_FILE" ]; then
     VERSION=$(grep "^## Version:" "$TOC_FILE" | sed 's/^## Version: *//' | tr -d ' ')
 fi
 
-# Get current timestamp
 INSTALL_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
 
+for ADDONS_DIR in "${INSTALL_DIRS[@]}"; do
+TARGET_DIR="$ADDONS_DIR/pH"
 echo "Installing to: $ADDONS_DIR"
 echo "Version: $VERSION"
 echo ""
@@ -125,3 +113,4 @@ else
     echo "❌ Installation may have failed. ph.toc not found."
     exit 1
 fi
+done

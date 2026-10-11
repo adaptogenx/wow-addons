@@ -386,7 +386,7 @@ function pH_Debug:Test_VendorSale_NoDoubleCount()
     -- Use Linen Cloth (itemID 2589) - common gray item
     -- Cache the item first
     local itemID = 2589
-    local itemName, _, quality, _, _, _, _, _, _, _, vendorPrice, itemClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, vendorPrice, itemClass = pH_API:GetItemInfo(itemID)
 
     if not itemName then
         return {name = testName, passed = false, message = "Test item not cached (need to mouse over Linen Cloth first)"}
@@ -824,7 +824,7 @@ function pH_Debug:ShowHoldings()
     end
 
     for itemID, holding in pairs(session.holdings) do
-        local itemName = GetItemInfo(itemID) or "Unknown"
+        local itemName = pH_API:GetItemInfo(itemID) or "Unknown"
         print(string.format("\n  Item: %s (ID: %d)", itemName, itemID))
         print(string.format("  Total Count: %d", holding.count))
         print(string.format("  Lots: %d", #holding.lots))

@@ -38,7 +38,6 @@ local PANEL_FULL_WIDTH = 316         -- 340 - 2*PADDING (12px each side)
 local PANEL_HALF_WIDTH = 155         -- (316 - 6 gap) / 2
 local PANEL_GAP = 6                  -- Gap between panels
 local PANEL_PADDING = 8              -- Internal panel padding
-local MAX_PLAYER_LEVEL = 70          -- TBC max level
 
 -- pH Brand colors (from PH_BRAND_BRIEF.md - Classic-safe)
 local PH_TEXT_PRIMARY = {0.86, 0.82, 0.70}
@@ -217,10 +216,10 @@ local function GetStandingLabel(standingID)
 end
 
 local function BuildXPEtaData(metrics)
-    local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or MAX_PLAYER_LEVEL
-    local level = UnitLevel("player") or 0
-    local currentXP = UnitXP("player") or 0
-    local maxXP = UnitXPMax("player") or 0
+    local maxLevel = pH_API:GetMaxPlayerLevel(70)
+    local level = pH_API:GetPlayerLevel() or 0
+    local currentXP = pH_API:GetXP() or 0
+    local maxXP = pH_API:GetXPMax() or 0
     local remainingXP = math.max(0, maxXP - currentXP)
     local recentPerHour = metrics and (tonumber(metrics.xpEtaRecentPerHour) or tonumber(metrics.xpRecentPerHourBucketed) or 0) or 0
     local sessionPerHour = metrics and (tonumber(metrics.xpPerHour) or 0) or 0
@@ -334,9 +333,8 @@ local function BuildRepTooltipModel(metrics, sessionAvgOverride, recentAvgOverri
             local remainingRep = 0
             local nextStanding = "Unknown"
             local etaSessionText = FormatEtaInfinity()
-            local numFactions = GetNumFactions and GetNumFactions() or 0
-            for j = 1, numFactions do
-                local factionName, _, standingID, _, barMax, barValue, _, _, isHeader = GetFactionInfo(j)
+            for _, rep in ipairs(pH_API:GetReputations()) do
+                local factionName, standingID, barMax, barValue, isHeader = rep.name, rep.standingID, rep.max, rep.current, rep.isHeader
                 if not isHeader and factionName == name then
                     local standing = tonumber(standingID) or 0
                     local isCapped = standing >= 8
@@ -677,7 +675,7 @@ local function UpdateMicroBars(session, metrics)
             end
 
             -- Hide XP tile at max level; always show other tiles (gray out if inactive)
-            if metricKey == "xp" and UnitLevel("player") >= MAX_PLAYER_LEVEL then
+            if metricKey == "xp" and pH_API:GetPlayerLevel() >= pH_API:GetMaxPlayerLevel(70) then
                 state.tile:Hide()
             else
                 state.tile:Show()
@@ -914,7 +912,7 @@ local function EnsureMetricPanels()
             xpPanel.label:SetText("XP")
             xpPanel.icon:SetTexture(METRIC_ICONS.xp)
             -- Show by default (will be hidden by UpdateXPPanel if at max level)
-            if UnitLevel("player") < MAX_PLAYER_LEVEL then
+            if pH_API:GetPlayerLevel() < pH_API:GetMaxPlayerLevel(70) then
                 xpPanel:Show()
             else
                 xpPanel:Hide()
@@ -1090,7 +1088,7 @@ function pH_HUD:Initialize()
     -- Create main frame with BackdropTemplate for border support
     hudFrame = CreateFrame("Frame", "pH_HUD_Frame", UIParent, "BackdropTemplate")
     hudFrame:SetSize(FRAME_WIDTH, FRAME_HEIGHT)
-    hudFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -50, -200)
+    hudFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 50, -50)
 
     -- Apply WoW-themed backdrop with pH brand colors
     hudFrame:SetBackdrop({
@@ -1930,7 +1928,7 @@ end
 local function UpdateXPPanel(panel, metrics)
     -- Always show in expanded mode to maintain middle row layout
     -- Only hide if player is at max level
-    if UnitLevel("player") >= MAX_PLAYER_LEVEL then
+    if pH_API:GetPlayerLevel() >= pH_API:GetMaxPlayerLevel(70) then
         panel:Hide()
         return
     end

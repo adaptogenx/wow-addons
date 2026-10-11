@@ -266,10 +266,10 @@ function pH_SessionManager:StartSession(startReason, startSource)
 
     -- Initialize XP tracking (if not max level)
     -- GetMaxPlayerLevel() or fallback to 60 for Classic
-    local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
-    if UnitLevel("player") < maxLevel then
-        session.snapshots.xp.cur = UnitXP("player")
-        session.snapshots.xp.max = UnitXPMax("player")
+    local maxLevel = pH_API:GetMaxPlayerLevel(60)
+    if pH_API:GetPlayerLevel() < maxLevel then
+        session.snapshots.xp.cur = pH_API:GetXP()
+        session.snapshots.xp.max = pH_API:GetXPMax()
     end
 
     -- Initialize reputation tracking (via Events.lua after session created)
@@ -834,9 +834,8 @@ end
 
 local function BuildFactionStandingMap()
     local map = {}
-    local count = GetNumFactions and GetNumFactions() or 0
-    for i = 1, count do
-        local name, _, standingID, _, _, _, _, _, isHeader = GetFactionInfo(i)
+    for _, rep in ipairs(pH_API:GetReputations()) do
+        local name, standingID, isHeader = rep.name, rep.standingID, rep.isHeader
         if not isHeader and name and standingID then
             map[NormalizeFactionKey(name)] = standingID
         end
@@ -918,7 +917,7 @@ local function BuildRepPotentialItems(session)
         if count > 0 then
             local progressCount = count % bundleSize
             local neededForNext = (progressCount == 0) and 0 or (bundleSize - progressCount)
-            local itemName = (session.items and session.items[itemID] and session.items[itemID].name) or GetItemInfo(itemID) or ("Item " .. tostring(itemID))
+            local itemName = (session.items and session.items[itemID] and session.items[itemID].name) or pH_API:GetItemInfo(itemID) or ("Item " .. tostring(itemID))
             local firstTarget = entry.targets and entry.targets[1] or nil
             table.insert(out, {
                 itemID = itemID,
@@ -1687,7 +1686,7 @@ function pH_SessionManager:RunPricingV2Migration()
 end
 
 local function ResolveItemMeta(itemID, itemData)
-    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = GetItemInfo(itemID)
+    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
     if itemName then
         return itemName, quality, itemClass, itemSubClass
     end

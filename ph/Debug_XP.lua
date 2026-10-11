@@ -14,7 +14,7 @@ local function DebugXPTracking()
     print("Session ID: " .. tostring(session.id))
 
     -- Check player level
-    local level = UnitLevel("player")
+    local level = pH_API:GetPlayerLevel()
     local maxLevel = MAX_PLAYER_LEVEL or 60
     print("Player Level: " .. level .. " / " .. maxLevel)
 
@@ -24,8 +24,8 @@ local function DebugXPTracking()
     end
 
     -- Check XP values
-    local currentXP = UnitXP("player")
-    local maxXP = UnitXPMax("player")
+    local currentXP = pH_API:GetXP()
+    local maxXP = pH_API:GetXPMax()
     print("Current XP: " .. currentXP .. " / " .. maxXP)
 
     -- Check session metrics structure
