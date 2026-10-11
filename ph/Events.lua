@@ -222,6 +222,10 @@ end
 
 -- Main event dispatcher
 function pH_Events:OnEvent(event, ...)
+    -- Secret Values (Forever): chat payloads can be unusable; ignore rather than error.
+    if event:sub(1, 8) == "CHAT_MSG" and pH_API:IsSecret((...)) then
+        return
+    end
     -- Early return if SessionManager isn't loaded yet (can happen during addon load)
     -- Use type() check to avoid indexing nil value errors
     if type(pH_SessionManager) ~= "table" then
