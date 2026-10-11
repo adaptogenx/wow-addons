@@ -420,11 +420,9 @@ end
 
 function pH_AutoSession:InitializeRepCache()
     state.repCache = {}
-    local numFactions = GetNumFactions and GetNumFactions() or 0
-    for i = 1, numFactions do
-        local _, _, _, _, _, barValue, _, _, isHeader, _, _, _, _, factionID = GetFactionInfo(i)
-        if not isHeader and factionID and barValue ~= nil then
-            state.repCache[factionID] = barValue
+    for _, rep in ipairs(pH_API:GetReputations()) do
+        if not rep.isHeader and rep.factionID and rep.current ~= nil then
+            state.repCache[rep.factionID] = rep.current
         end
     end
 end
@@ -443,7 +441,7 @@ end
 function pH_AutoSession:Initialize()
     MigrateSettings()
     self:InitializeRepCache()
-    state.xpLastSeen = UnitXP and UnitXP("player") or state.xpLastSeen
+    state.xpLastSeen = pH_API:GetXP()
 
     state.timerFrame = CreateFrame("Frame")
     state.timerFrame:SetScript("OnUpdate", function(selfFrame, elapsed)
@@ -716,12 +714,12 @@ function pH_AutoSession:ClassifyActivity(event, ...)
     end
 
     if event == "PLAYER_XP_UPDATE" then
-        local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
-        if UnitLevel("player") >= maxLevel then
+        local maxLevel = pH_API:GetMaxPlayerLevel(60)
+        if pH_API:GetPlayerLevel() >= maxLevel then
             return nil
         end
 
-        local currentXP = UnitXP("player")
+        local currentXP = pH_API:GetXP()
         if state.xpLastSeen == nil then
             state.xpLastSeen = currentXP
             return nil
@@ -740,9 +738,8 @@ function pH_AutoSession:ClassifyActivity(event, ...)
 
     if event == "UPDATE_FACTION" then
         local totalDelta = 0
-        local numFactions = GetNumFactions and GetNumFactions() or 0
-        for i = 1, numFactions do
-            local _, _, _, _, _, barValue, _, _, isHeader, _, _, _, _, factionID = GetFactionInfo(i)
+        for _, rep in ipairs(pH_API:GetReputations()) do
+            local barValue, isHeader, factionID = rep.current, rep.isHeader, rep.factionID
             if not isHeader and factionID and barValue ~= nil then
                 local old = state.repCache[factionID] or barValue
                 local delta = barValue - old
@@ -1052,7 +1049,7 @@ function pH_AutoSession:OnPlayerEnteringWorld()
         return
     end
 
-    state.xpLastSeen = UnitXP and UnitXP("player") or state.xpLastSeen
+    state.xpLastSeen = pH_API:GetXP()
 
     if not cfg.instanceStart or not cfg.instanceStart.enabled then
         return
