@@ -3,7 +3,7 @@
 -- Only wraps APIs that actually differ between clients. Domain modules call
 -- pH_API and stay unaware of which client they run on.
 
--- luacheck: globals GetBuildInfo GetMoney UnitXP UnitXPMax UnitLevel GetMaxPlayerLevel GetNumFactions GetFactionInfo GetAddOnMetadata C_AddOns C_Reputation C_Spell C_Item GetItemInfo GetItemCount GetSpellInfo issecretvalue
+-- luacheck: globals GetBuildInfo GetMoney UnitXP UnitXPMax UnitLevel GetMaxPlayerLevel GetNumFactions GetFactionInfo GetAddOnMetadata C_AddOns C_Reputation NUM_BAG_SLOTS NUM_REAGENTBAG_SLOTS hooksecurefunc UseContainerItem C_Spell C_Item GetItemInfo GetItemCount GetSpellInfo issecretvalue
 
 pH_API = {}
 
@@ -141,4 +141,38 @@ function pH_API:GetItemCount(item, includeBank)
         return GetItemCount(item, includeBank)
     end
     return 0
+end
+
+-- True if v is a Secret Value (unusable for arithmetic/comparison/indexing).
+function pH_API:IsSecret(v)
+    return issecretvalue ~= nil and issecretvalue(v) or false
+end
+
+-- Ask the client to load item data; GET_ITEM_INFO_RECEIVED fires when ready.
+-- Returns true if a request was made, false if unsupported on this client.
+function pH_API:RequestItemData(itemID)
+    if C_Item and C_Item.RequestLoadItemDataByID then
+        C_Item.RequestLoadItemDataByID(itemID)
+        return true
+    end
+    return false
+end
+
+-- Highest bag index to scan (backpack 0, bags 1..N, plus reagent bag on Forever).
+function pH_API:GetLastBagIndex()
+    return (NUM_BAG_SLOTS or 4) + (NUM_REAGENTBAG_SLOTS or 0)
+end
+
+-- Hook container item use (global on Classic, C_Container on Forever).
+function pH_API:HookUseContainerItem(fn)
+    if not hooksecurefunc then return false end
+    if C_Container and C_Container.UseContainerItem then
+        hooksecurefunc(C_Container, "UseContainerItem", fn)
+        return true
+    end
+    if UseContainerItem then
+        hooksecurefunc("UseContainerItem", fn)
+        return true
+    end
+    return false
 end
