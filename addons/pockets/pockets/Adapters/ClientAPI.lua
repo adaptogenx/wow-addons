@@ -65,3 +65,10 @@ function ClientAPI:GetAddonMetadata(addon, field)
     end
     return value
 end
+
+-- The shared PHUI library detects the client itself; route it through this
+-- adapter so there is a single detection path (and tests that stub
+-- GetInterfaceNumber affect both).
+Pockets.UI.PHUI.SetForeverDetector(function()
+    return ClientAPI:IsForever()
+end)

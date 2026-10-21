@@ -1,0 +1,22 @@
+# Tag `pockets-vX.Y.Z` to release Pockets only. Never triggered by pH changes.
+name: release-pockets
+
+on:
+  push:
+    tags: ["pockets-v*"]
+
+jobs:
+  validate:
+    uses: ./.github/workflows/validate.yml
+    with:
+      addons: pockets
+      upload-artifacts: false
+
+  release:
+    needs: validate
+    uses: ./.github/workflows/release.yml
+    with:
+      addon: pockets
+      toc: addons/pockets/pockets/Pockets.toc
+      tag-prefix: pockets-v
+    secrets: inherit

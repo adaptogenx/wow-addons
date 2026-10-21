@@ -1,0 +1,62 @@
+# Reusable release: build one addon zip, publish a GitHub Release, and
+# (optionally) upload to CurseForge.
+#
+# CurseForge is skipped unless these exist (per addon, so each addon keeps
+# its own project):
+#   secret  CF_API_TOKEN
+#   var     CF_PROJECT_ID_PH / CF_PROJECT_ID_POCKETS
+#   var     CF_GAME_VERSION_IDS   (JSON array of CurseForge game-version ids)
+name: release
+
+on:
+  workflow_call:
+    inputs:
+      addon: { type: string, required: true }
+      toc: { type: string, required: true }
+      tag-prefix: { type: string, required: true }
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zip
+        run: sudo apt-get update && sudo apt-get install -y zip unzip lua5.4 lua-check && sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
+
+      - name: Tag must match TOC version
+        id: version
+        run: |
+          toc_version=$(grep '^## Version:' "${{ inputs.toc }}" | sed 's/## Version: *//' | tr -d '\r')
+          tag_version="${GITHUB_REF_NAME#${{ inputs.tag-prefix }}}"
+          [ "$toc_version" = "$tag_version" ] || { echo "::error::tag $tag_version != TOC $toc_version"; exit 1; }
+          echo "version=$toc_version" >> "$GITHUB_OUTPUT"
+
+      - name: Build (syncs shared/ui first)
+        run: ./scripts/build.sh ${{ inputs.addon }}
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "dist/${{ inputs.addon }}.zip" "dist/${{ inputs.addon }}-${{ steps.version.outputs.version }}.zip"
+          gh release create "$GITHUB_REF_NAME" "dist/${{ inputs.addon }}-${{ steps.version.outputs.version }}.zip" \
+            --title "${{ inputs.addon }} ${{ steps.version.outputs.version }}" --generate-notes
+
+      - name: CurseForge upload
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_PROJECT_ID: ${{ inputs.addon == 'ph' && vars.CF_PROJECT_ID_PH || vars.CF_PROJECT_ID_POCKETS }}
+          CF_GAME_VERSION_IDS: ${{ vars.CF_GAME_VERSION_IDS }}
+        run: |
+          if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_PROJECT_ID" ] || [ -z "$CF_GAME_VERSION_IDS" ]; then
+            echo "CurseForge not configured; skipping."; exit 0
+          fi
+          meta=$(printf '{"changelog":"Release %s","changelogType":"text","releaseType":"release","gameVersions":%s}' \
+            "$GITHUB_REF_NAME" "$CF_GAME_VERSION_IDS")
+          curl --fail -sS -H "X-Api-Token: $CF_API_TOKEN" \
+            -F "metadata=$meta" -F "file=@dist/${{ inputs.addon }}.zip" \
+            "https://wow.curseforge.com/api/projects/$CF_PROJECT_ID/upload-file"

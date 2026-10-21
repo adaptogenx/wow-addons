@@ -6,6 +6,9 @@
 
 -- luacheck: globals pH_Settings pH_History pH_Ledger pH_SessionManager pH_Index SlashCmdList pH_AutoSession
 
+local _, addon = ...
+local PHUI = addon.UI.PHUI
+
 local pH_HUD = {}
 
 local hudFrame = nil
@@ -43,7 +46,7 @@ local PANEL_PADDING = 8              -- Internal panel padding
 local PH_TEXT_PRIMARY = {0.86, 0.82, 0.70}
 local PH_TEXT_MUTED = {0.62, 0.58, 0.50}
 local PH_ACCENT_GOOD = {0.25, 0.78, 0.42}
-local PH_ACCENT_NEUTRAL = {0.55, 0.70, 0.55}
+local PH_ACCENT_NEUTRAL = PHUI.Colors.ACCENT_NEUTRAL
 local PH_BG_DARK = {0.08, 0.07, 0.06, 0.85}
 local PH_BG_PARCHMENT = {0.18, 0.16, 0.13, 0.85}
 local PH_BORDER_BRONZE = {0.52, 0.42, 0.28}
@@ -51,10 +54,10 @@ local PH_BORDER_BRONZE = {0.52, 0.42, 0.28}
 -- Additional pH brand tokens
 local PH_ACCENT_BAD = {0.85, 0.38, 0.32}  -- Red for stop/warnings
 local PH_ACCENT_WARNING = {0.90, 0.65, 0.20}  -- Warm amber for expenses/warnings
-local PH_ACCENT_GOLD_INCOME = {1.00, 0.82, 0.00}  -- Classic gold for income highlights
-local PH_TEXT_DISABLED = {0.45, 0.42, 0.38}  -- Darker muted for disabled/inactive
-local PH_HOVER = {0.22, 0.20, 0.17, 0.60}  -- Subtle hover state
-local PH_SELECTED = {0.35, 0.32, 0.26, 0.75}  -- Selected row/item
+local PH_ACCENT_GOLD_INCOME = PHUI.Colors.ACCENT_GOLD  -- Classic gold for income highlights
+local PH_TEXT_DISABLED = PHUI.Colors.TEXT_DISABLED  -- Darker muted for disabled/inactive
+local PH_HOVER = PHUI.Colors.HOVER  -- Subtle hover state
+local PH_SELECTED = PHUI.Colors.SELECTED  -- Selected row/item
 local PH_DIVIDER = {0.28, 0.25, 0.22, 0.50}  -- Separator lines
 
 -- Micro-bar colors (pH brand palette)
@@ -991,12 +994,7 @@ local function CreateHeaderIcons(parent)
     local overflowBtn = CreateFrame("Button", nil, parent, "BackdropTemplate")
     overflowBtn:SetSize(ICON_SIZE, ICON_SIZE)
     overflowBtn:SetPoint("RIGHT", historyBtn, "LEFT", -ICON_GAP, 0)
-    overflowBtn:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 10,
-        insets = {left = 2, right = 2, top = 2, bottom = 2},
-    })
+    overflowBtn:SetBackdrop(PHUI.Backdrops.ICON_BUTTON)
     overflowBtn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.9)
     overflowBtn:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
     local overflowText = overflowBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1122,12 +1120,7 @@ function pH_HUD:Initialize()
     local stopBtn = CreateFrame("Button", nil, hudFrame, "BackdropTemplate")
     stopBtn:SetSize(PRIMARY_BTN_WIDTH, 20)
     stopBtn:SetPoint("RIGHT", hudFrame.overflowBtn, "LEFT", -ICON_GAP, 0)
-    stopBtn:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 10,
-        insets = {left = 2, right = 2, top = 2, bottom = 2},
-    })
+    stopBtn:SetBackdrop(PHUI.Backdrops.ICON_BUTTON)
     stopBtn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.9)
     stopBtn:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
     local stopBtnText = stopBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1308,12 +1301,7 @@ function pH_HUD:Initialize()
     overflowMenu:SetSize(32, 112)
     overflowMenu:SetFrameStrata("DIALOG")
     overflowMenu:SetFrameLevel(301)
-    overflowMenu:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 12,
-        insets = {left = 3, right = 3, top = 3, bottom = 3},
-    })
+    overflowMenu:SetBackdrop(PHUI.Backdrops.PANEL)
     overflowMenu:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], 0.95)
     overflowMenu:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 1.0)
     overflowMenu:Hide()
@@ -1324,12 +1312,7 @@ function pH_HUD:Initialize()
         btn:SetSize(ICON_SIZE, ICON_SIZE)
         btn:SetPoint("TOP", parent, "TOP", 0, yOffset)
         btn.isActionDisabled = false
-        btn:SetBackdrop({
-            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            tile = true, tileSize = 16, edgeSize = 10,
-            insets = {left = 2, right = 2, top = 2, bottom = 2},
-        })
+        btn:SetBackdrop(PHUI.Backdrops.ICON_BUTTON)
         btn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.9)
         btn:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
 

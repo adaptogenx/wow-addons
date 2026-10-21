@@ -1,0 +1,55 @@
+# Reusable validation: sync shared/ui, verify staged copies, lint, test, build.
+# Called by ci.yml and by each addon's release workflow.
+name: validate
+
+on:
+  workflow_call:
+    inputs:
+      addons:
+        description: "Space-separated addon ids to package (ph pockets)"
+        type: string
+        default: "ph pockets"
+      upload-artifacts:
+        type: boolean
+        default: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4 lua-check zip unzip
+          sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
+          lua -v && luacheck --version
+
+      # Every step below also syncs on its own; this one fails loudly if the
+      # committed staged copies differ from shared/ui (i.e. someone edited a
+      # generated file or forgot to commit a sync).
+      - name: Sync shared files, then verify committed copies match
+        run: |
+          ./scripts/sync-shared.sh
+          git diff --exit-code -- addons/ph/ph/Shared/UI addons/pockets/pockets/Shared/UI \
+            || { echo "::error::Staged shared files are stale. Run scripts/sync-shared.sh and commit."; exit 1; }
+          git status --porcelain -- addons/ph/ph/Shared/UI addons/pockets/pockets/Shared/UI | grep . && \
+            { echo "::error::Untracked/missing staged shared files. Run scripts/sync-shared.sh and commit."; exit 1; } || true
+          ./scripts/sync-shared.sh --check
+
+      - name: Lint (shared + both addons)
+        run: ./scripts/lint.sh
+
+      - name: Unit, namespace and packaging tests
+        run: ./scripts/test.sh
+
+      - name: Build
+        run: ./scripts/build.sh ${{ inputs.addons }}
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.upload-artifacts }}
+        with:
+          name: addon-zips
+          path: dist/*.zip
+          if-no-files-found: error

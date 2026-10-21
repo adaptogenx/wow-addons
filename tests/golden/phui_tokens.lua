@@ -1,0 +1,247 @@
+-- Snapshot of the token tables and public API of the original Pockets Shared/PHUI.lua
+-- (git f84948f) taken before extraction. Shared PHUI must keep every entry below
+-- (PH_HUD_WIDTH* were removed on purpose and are listed in 'removed').
+return {
+    Colors = {
+        ACCENT_BAD = {
+            [1] = 0.871,
+            [2] = 0.349,
+            [3] = 0.322,
+        },
+        ACCENT_GOLD = {
+            [1] = 1.0,
+            [2] = 0.82,
+            [3] = 0.0,
+        },
+        ACCENT_GOOD = {
+            [1] = 0.388,
+            [2] = 0.784,
+            [3] = 0.475,
+        },
+        ACCENT_NEUTRAL = {
+            [1] = 0.55,
+            [2] = 0.7,
+            [3] = 0.55,
+        },
+        ACCENT_WARNING = {
+            [1] = 0.898,
+            [2] = 0.722,
+            [3] = 0.239,
+        },
+        BADGE_BG = {
+            [1] = 0.133,
+            [2] = 0.102,
+            [3] = 0.078,
+            [4] = 0.95,
+        },
+        BG_DARK = {
+            [1] = 0.082,
+            [2] = 0.094,
+            [3] = 0.09,
+            [4] = 0.92,
+        },
+        BG_PARCHMENT = {
+            [1] = 0.082,
+            [2] = 0.094,
+            [3] = 0.09,
+            [4] = 0.92,
+        },
+        BORDER_BRONZE = {
+            [1] = 0.596,
+            [2] = 0.451,
+            [3] = 0.263,
+        },
+        DIVIDER = {
+            [1] = 0.38,
+            [2] = 0.333,
+            [3] = 0.255,
+            [4] = 0.6,
+        },
+        HOVER = {
+            [1] = 0.22,
+            [2] = 0.2,
+            [3] = 0.17,
+            [4] = 0.6,
+        },
+        SELECTED = {
+            [1] = 0.35,
+            [2] = 0.32,
+            [3] = 0.26,
+            [4] = 0.75,
+        },
+        TEXT_DISABLED = {
+            [1] = 0.45,
+            [2] = 0.42,
+            [3] = 0.38,
+        },
+        TEXT_MUTED = {
+            [1] = 0.663,
+            [2] = 0.627,
+            [3] = 0.557,
+        },
+        TEXT_PRIMARY = {
+            [1] = 0.902,
+            [2] = 0.867,
+            [3] = 0.784,
+        },
+    },
+    Fonts = {
+        CAPACITY = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 13,
+            [3] = "",
+        },
+        ETA_SUFFIX = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 10,
+            [3] = "",
+        },
+        ETA_VALUE = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 13,
+            [3] = "",
+        },
+        GLYPH_OUTLINE = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 12,
+            [3] = "OUTLINE",
+        },
+        HEADER = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 12,
+            [3] = "",
+        },
+        LARGE = "GameFontNormalLarge",
+        MINI_COUNT = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 14,
+            [3] = "",
+        },
+        MONEY = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 11,
+            [3] = "",
+        },
+        NODE_STACK = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 10,
+            [3] = "OUTLINE",
+        },
+        NORMAL = "GameFontNormal",
+        SIDECAR_VALUE = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 12,
+            [3] = "",
+        },
+        SMALL = "GameFontNormalSmall",
+        TAB_LABEL = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 8,
+            [3] = "",
+        },
+        TAB_VALUE = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 10,
+            [3] = "",
+        },
+        TITLE = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 16,
+            [3] = "",
+        },
+        TITLE_COMPACT = {
+            [1] = "Fonts\\FRIZQT__.TTF",
+            [2] = 14,
+            [3] = "",
+        },
+    },
+    Spacing = {
+        HEADER_BUTTON_H = 22,
+        HEADER_BUTTON_ICON = 14,
+        HEADER_BUTTON_W = 32,
+        ICON_BUTTON_SIZE = 20,
+        ICON_GAP = 2,
+        ICON_MAIN = 20,
+        ICON_SIZE = 12,
+        ICON_SPACING = 6,
+        ICON_TAB = 16,
+        PADDING = 12,
+        PADDING_Y = 4,
+        PANEL_PADDING = 8,
+        SECTION_SPACING = 12,
+    },
+    Backdrops = {
+        BADGE = {
+            bgFile = "Interface\\Buttons\\WHITE8X8",
+            edgeFile = "Interface\\Buttons\\WHITE8X8",
+            edgeSize = 1,
+            insets = {
+                bottom = 1,
+                left = 1,
+                right = 1,
+                top = 1,
+            },
+        },
+        ICON_BUTTON = {
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 10,
+            insets = {
+                bottom = 2,
+                left = 2,
+                right = 2,
+                top = 2,
+            },
+            tile = true,
+            tileSize = 16,
+        },
+        PANEL = {
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 12,
+            insets = {
+                bottom = 3,
+                left = 3,
+                right = 3,
+                top = 3,
+            },
+            tile = true,
+            tileSize = 16,
+        },
+        ROUNDED_SMALL = {
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 8,
+            insets = {
+                bottom = 2,
+                left = 2,
+                right = 2,
+                top = 2,
+            },
+            tile = true,
+            tileSize = 16,
+        },
+    },
+    Icons = {
+        MINUS = "Interface\\Buttons\\UI-MinusButton-Up",
+        NEXT = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up",
+        NEXT_PUSHED = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down",
+        PLUS = "Interface\\Buttons\\UI-PlusButton-Up",
+        PREV = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up",
+        SCROLL = "Interface\\Icons\\INV_Scroll_03",
+    },
+    constants = {
+        FOREVER_CLOSE_BUTTON_SIZE = 24,
+        NATIVE_CLOSE_BUTTON_SIZE = 32,
+    },
+    removed = { "PH_HUD_WIDTH", "PH_HUD_WIDTH_EXPANDED" },
+    functions = {
+        [1] = "ApplyBackdrop",
+        [2] = "ApplyTextStyle",
+        [3] = "CreateCloseButton",
+        [4] = "CreateIconButton",
+        [5] = "CreateLabel",
+        [6] = "CreateNativeIcon",
+        [7] = "CreateNativeIconButton",
+    },
+}

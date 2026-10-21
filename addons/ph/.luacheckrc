@@ -31,6 +31,7 @@ ignore = {
 
 -- WoW API globals (from Questie's extensive list + pH-specific additions)
 globals = {
+    "GetBuildInfo", -- shared PHUI client detection
     -- pH-specific globals (must be included)
     "_G",
     "pH_DB",

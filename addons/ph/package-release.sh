@@ -15,6 +15,10 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
+# Stage the shared UI library (generated copies under Shared/UI) - never
+# package or install stale shared files.
+"$SCRIPT_DIR/../../scripts/sync-shared.sh" || { echo "sync-shared failed" >&2; exit 1; }
+
 # Extract version from ph.toc
 TOC_FILE="ph/ph.toc"
 if [ ! -f "$TOC_FILE" ]; then
@@ -56,6 +60,9 @@ cp ph/*.lua "$TARGET_DIR/"
 
 # Copy .toc file
 cp ph/ph.toc "$TARGET_DIR/"
+
+mkdir -p "$TARGET_DIR/Shared/UI"
+cp ph/Shared/UI/*.lua "$TARGET_DIR/Shared/UI/"
 
 # Copy logo image
 cp ph/logo-256.jpg "$TARGET_DIR/"

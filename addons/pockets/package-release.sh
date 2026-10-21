@@ -15,6 +15,10 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
+# Stage the shared UI library (generated copies under Shared/UI) - never
+# package or install stale shared files.
+"$SCRIPT_DIR/../../scripts/sync-shared.sh" || { echo "sync-shared failed" >&2; exit 1; }
+
 TOC_FILE="pockets/Pockets.toc"
 if [ ! -f "$TOC_FILE" ]; then
     echo -e "${RED}Error: Pockets.toc not found at $TOC_FILE${NC}"

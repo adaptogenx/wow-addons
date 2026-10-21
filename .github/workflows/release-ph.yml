@@ -1,0 +1,22 @@
+# Tag `ph-vX.Y.Z` to release pH only. Never triggered by Pockets changes.
+name: release-ph
+
+on:
+  push:
+    tags: ["ph-v*"]
+
+jobs:
+  validate:
+    uses: ./.github/workflows/validate.yml
+    with:
+      addons: ph
+      upload-artifacts: false
+
+  release:
+    needs: validate
+    uses: ./.github/workflows/release.yml
+    with:
+      addon: ph
+      toc: addons/ph/ph/ph.toc
+      tag-prefix: ph-v
+    secrets: inherit

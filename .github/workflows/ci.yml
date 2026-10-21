@@ -1,0 +1,12 @@
+# Any change validates BOTH addons (a shared/ui change must never ship
+# unverified to either). Releasing is separate: see release-*.yml.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    uses: ./.github/workflows/validate.yml

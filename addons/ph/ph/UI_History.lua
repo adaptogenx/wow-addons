@@ -5,6 +5,9 @@
 ]]
 
 -- luacheck: globals pH_Settings pH_Index UnitName GetRealmName UnitFactionGroup StaticPopupDialogs StaticPopup_Show
+local _, addon = ...
+local PHUI = addon.UI.PHUI
+
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -171,14 +174,7 @@ function pH_History:Initialize()
     listPane:SetPoint("TOPLEFT", filtersPane, "BOTTOMLEFT", 0, -5)
     listPane:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 10)
     listPane:SetWidth(240)
-    listPane:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 12,
-        insets = {left = 3, right = 3, top = 3, bottom = 3}
-    })
+    listPane:SetBackdrop(PHUI.Backdrops.PANEL)
     local PH_BG_DARK = pH_Colors.BG_DARK
     local PH_DIVIDER = pH_Colors.DIVIDER
     listPane:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.90)
@@ -189,14 +185,7 @@ function pH_History:Initialize()
     local detailPane = CreateFrame("Frame", nil, frame, "BackdropTemplate")
     detailPane:SetPoint("TOPLEFT", listPane, "TOPRIGHT", 5, 0)
     detailPane:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -10, 10)
-    detailPane:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 12,
-        insets = {left = 3, right = 3, top = 3, bottom = 3}
-    })
+    detailPane:SetBackdrop(PHUI.Backdrops.PANEL)
     detailPane:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.90)
     detailPane:SetBackdropBorderColor(PH_DIVIDER[1], PH_DIVIDER[2], PH_DIVIDER[3], 0.80)
     self.detailPane = detailPane

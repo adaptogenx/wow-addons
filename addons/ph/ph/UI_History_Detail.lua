@@ -5,6 +5,9 @@
 ]]
 
 -- luacheck: globals pH_Settings pH_Index pH_History pH_SessionManager pH_Ledger date time
+local _, addon = ...
+local PHUI = addon.UI.PHUI
+
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -77,14 +80,7 @@ function pH_History_Detail:Initialize(parent, historyController)
         local tab = CreateFrame("Button", nil, parent, "BackdropTemplate")
         tab:SetSize(tabWidth, tabHeight)
         tab:SetPoint("TOPLEFT", parent, "TOPLEFT", 5 + (i - 1) * (tabWidth + tabSpacing), -5)
-        tab:SetBackdrop({
-            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            tile = true,
-            tileSize = 16,
-            edgeSize = 8,
-            insets = {left = 2, right = 2, top = 2, bottom = 2}
-        })
+        tab:SetBackdrop(PHUI.Backdrops.ROUNDED_SMALL)
         local PH_BG_DARK = pH_Colors.BG_DARK
         local PH_DIVIDER = pH_Colors.DIVIDER
         tab:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.80)
@@ -597,14 +593,7 @@ function pH_History_Detail:RenderSummaryTab()
             return card
         end
         card = CreateFrame("Button", nil, metricContainer, "BackdropTemplate")
-        card:SetBackdrop({
-            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            tile = true,
-            tileSize = 16,
-            edgeSize = 12,
-            insets = {left = 3, right = 3, top = 3, bottom = 3},
-        })
+        card:SetBackdrop(PHUI.Backdrops.PANEL)
         card:SetBackdropColor(pH_Colors.BG_DARK[1], pH_Colors.BG_DARK[2], pH_Colors.BG_DARK[3], 0.85)
         card:SetBackdropBorderColor(pH_Colors.BORDER_BRONZE[1], pH_Colors.BORDER_BRONZE[2], pH_Colors.BORDER_BRONZE[3], 0.9)
 
@@ -751,14 +740,7 @@ function pH_History_Detail:RenderSummaryTab()
         panel.backBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
         panel.backBtn:SetSize(50, 18)
         panel.backBtn:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 10, 8)
-        panel.backBtn:SetBackdrop({
-            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            tile = true,
-            tileSize = 16,
-            edgeSize = 8,
-            insets = {left = 2, right = 2, top = 2, bottom = 2},
-        })
+        panel.backBtn:SetBackdrop(PHUI.Backdrops.ROUNDED_SMALL)
         panel.backBtn:SetBackdropColor(pH_Colors.BG_DARK[1], pH_Colors.BG_DARK[2], pH_Colors.BG_DARK[3], 0.8)
         panel.backBtn:SetBackdropBorderColor(pH_Colors.DIVIDER[1], pH_Colors.DIVIDER[2], pH_Colors.DIVIDER[3], 0.6)
         panel.backBtnText = panel.backBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")

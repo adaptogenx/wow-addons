@@ -49,6 +49,7 @@ else
 fi
 
 SCRIPT_DIR="$(dirname "$0")"
+"$SCRIPT_DIR/../../scripts/sync-shared.sh" || { echo "sync-shared failed"; exit 1; }
 TOC_FILE="$SCRIPT_DIR/pockets/Pockets.toc"
 
 # Extract version from .toc file

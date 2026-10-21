@@ -5,6 +5,9 @@
 ]]
 
 -- luacheck: globals CreateFrame UIDropDownMenu_Initialize UIDropDownMenu_CreateInfo UIDROPDOWNMENU_OPEN_MENU ToggleDropDownMenu CloseDropDownMenus DropDownList1 pH_SessionManager
+local _, addon = ...
+local PHUI = addon.UI.PHUI
+
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -99,14 +102,7 @@ end
 function pH_History_Filters:CreateDropdownButton(parent, text, width)
     local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
     btn:SetSize(width, 25)
-    btn:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 12,
-        insets = {left = 3, right = 3, top = 3, bottom = 3}
-    })
+    btn:SetBackdrop(PHUI.Backdrops.PANEL)
     local PH_BG_DARK = pH_Colors.BG_DARK
     local PH_BORDER_BRONZE = pH_Colors.BORDER_BRONZE
     btn:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.90)
