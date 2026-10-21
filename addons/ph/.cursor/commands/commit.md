@@ -1,0 +1,4 @@
+- Add and commit the current working tree
+- Follow the commit message pattern for previous commits
+- If no previous commits, provide a summary of changes and reference and plans used
+- Create commit message, commit, and push

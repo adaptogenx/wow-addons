@@ -1,0 +1,38 @@
+## Interface: 11504, 16001
+## Title: pH
+## Notes: Session-based gold-per-hour tracking with double-ledger accounting. Features minimize/maximize HUD, real-time metrics, and conservative item valuation (WoW Classic Anniversary, WoW Forever)
+## Author: Claude Code
+## Version: 1.6.0
+## SavedVariables: pH_DB_Account
+## SavedVariablesPerCharacter: pH_DB
+## SavedVariablesPerCharacter: pH_Settings
+
+# Core modules (load order matters)
+pH_API.lua
+Ledger.lua
+PriceSources.lua
+EnchantingCatalog.lua
+RepTurninCatalog.lua
+Valuation.lua
+Holdings.lua
+SessionManager.lua
+Events.lua
+AutoSession.lua
+Debug.lua
+Debug_Port.lua
+
+# Brand colors (shared)
+pH_Colors.lua
+
+# Index and History UI
+Index.lua
+UI_History_Filters.lua
+UI_History_List.lua
+UI_History_Detail.lua
+UI_History.lua
+
+# Main UI
+UI_HUD.lua
+
+# Entry point (must be last)
+init.lua

@@ -1,0 +1,2158 @@
+--[[
+    Events.lua - Event handling and routing for pH
+
+    Handles WoW events and routes them to accounting actions.
+]]
+
+-- luacheck: globals GetMaxPlayerLevel UnitLevel UnitXP UnitXPMax GetNumFactions GetFactionInfo GetItemCount pH_DB_Account pH_AutoSession pH_Settings pH_RepTurninCatalog
+-- luacheck: ignore delta
+
+local pH_Events = {}
+
+-- Gathering spell mapping (Classic / TBC)
+-- These spellIDs are stable across Classic-era clients.
+local GATHERING_SPELLS = {
+    [2575] = "Mining",      -- Mining
+    [2366] = "Herbalism",   -- Herb Gathering
+    [8613] = "Skinning",    -- Skinning
+    [7620] = "Fishing",     -- Fishing
+}
+
+local DISENCHANT_SPELLS = {
+    [13262] = true, -- Disenchant
+}
+
+--------------------------------------------------
+-- API Compatibility (Classic Anniversary uses C_Container)
+--------------------------------------------------
+
+-- Container API wrapper for GetContainerNumSlots
+local function GetBagNumSlots(bag)
+    if C_Container and C_Container.GetContainerNumSlots then
+        return C_Container.GetContainerNumSlots(bag)
+    else
+        return GetContainerNumSlots(bag)
+    end
+end
+
+-- Container API wrapper for GetContainerItemInfo
+-- Returns: itemCount, itemLink (nil if slot is empty)
+local function GetBagItemInfo(bag, slot)
+    if C_Container and C_Container.GetContainerItemInfo then
+        local info = C_Container.GetContainerItemInfo(bag, slot)
+        if info then
+            return info.stackCount, info.hyperlink
+        end
+        return nil, nil
+    else
+        local _, itemCount, _, _, _, _, itemLink = GetContainerItemInfo(bag, slot)
+        return itemCount, itemLink
+    end
+end
+
+-- Runtime state (not persisted)
+local state = {
+    moneyLast = nil,
+
+    -- Phase 2: Merchant tracking
+    merchantOpen = false,
+
+    -- Phase 5: Taxi tracking
+    taxiOpen = false,
+    moneyAtTaxiOpen = nil,
+    taxiCostProcessed = false,
+
+    -- Phase 6: Pickpocket and lockbox attribution windows
+    pickpocketActiveUntil = 0,
+    openingLockboxUntil = 0,
+    openingLockboxItemID = nil,
+    -- Phase 6: BAG_UPDATE fallback for lockbox opening (when UseContainerItem isn't hookable)
+    lockboxBagSnapshot = nil,  -- [ "bag_slot" ] = { itemID, count } for slots with lockboxes
+
+    -- Phase 7: Gathering node tracking
+    gatherSpellSentAt = 0,
+    gatherTargetName = nil,
+    gatherSpellID = nil,
+
+    -- Phase 9: XP/Rep/Honor tracking
+    xpLast = nil,
+    xpMaxLast = nil,
+    repCache = {},  -- [factionID] = barValue (for delta computation)
+    seenBagUpdate = false, -- Guards login-time bag count sync before inventory is ready
+
+    -- Pricing v2: DE attribution window
+    deUntil = 0,
+    deSpellSeenAt = 0,
+    dePreBagSnapshot = nil,
+    deLastReason = nil,
+
+    -- Rep progress notification throttling
+    lastRepProgressPrintAt = {},       -- [itemID] = GetTime()
+    lastRepProgressCountPrinted = {},  -- [itemID] = count
+}
+
+local function SetXPBaseline(newXP, newXPMax)
+    state.xpLast = tonumber(newXP) or 0
+    state.xpMaxLast = tonumber(newXPMax) or 0
+end
+
+local function ClearXPBaseline()
+    state.xpLast = nil
+    state.xpMaxLast = nil
+end
+
+local function ComputeGuardedXPDelta(oldXP, oldXPMax, newXP, newXPMax)
+    local prevXP = tonumber(oldXP) or 0
+    local prevMax = tonumber(oldXPMax) or 0
+    local currXP = tonumber(newXP) or 0
+    local currMax = tonumber(newXPMax) or 0
+
+    if prevMax <= 0 or currMax <= 0 then
+        return 0, "invalid_xp_max", 0
+    end
+
+    local delta
+    if currXP >= prevXP then
+        delta = currXP - prevXP
+    else
+        delta = (prevMax - prevXP) + currXP
+    end
+
+    if delta < 0 then
+        return 0, "negative_delta", delta
+    end
+
+    local anomalyThreshold = prevMax + currMax
+    if delta > anomalyThreshold then
+        return 0, "delta_exceeds_threshold", delta
+    end
+
+    return delta, nil, delta
+end
+
+local function EnsureSessionXPAuditMetrics(session)
+    if not session then
+        return nil
+    end
+    if type(pH_SessionManager) == "table" and pH_SessionManager.EnsureXPMetricAuditDefaults then
+        pH_SessionManager:EnsureXPMetricAuditDefaults(session)
+    else
+        if not session.metrics then
+            session.metrics = {}
+        end
+        if type(session.metrics.xp) ~= "table" then
+            session.metrics.xp = { gained = 0, enabled = false }
+        end
+        local xp = session.metrics.xp
+        if type(xp.bySource) ~= "table" then
+            xp.bySource = { mob = 0, quest = 0, other = 0 }
+        end
+        xp.bySource.mob = math.max(0, tonumber(xp.bySource.mob) or 0)
+        xp.bySource.quest = math.max(0, tonumber(xp.bySource.quest) or 0)
+        xp.bySource.other = math.max(0, tonumber(xp.bySource.other) or 0)
+        xp.questsCompleted = math.max(0, tonumber(xp.questsCompleted) or 0)
+        if type(xp.mobKillsByType) ~= "table" then
+            xp.mobKillsByType = {}
+        end
+        xp.pendingQuestXP = math.max(0, tonumber(xp.pendingQuestXP) or 0)
+    end
+    return session.metrics and session.metrics.xp or nil
+end
+
+local function ReconcileXPSourceTotals(session)
+    local xp = EnsureSessionXPAuditMetrics(session)
+    if not xp then
+        return
+    end
+    local gained = math.max(0, tonumber(xp.gained) or 0)
+    local mob = math.max(0, tonumber((xp.bySource and xp.bySource.mob) or 0))
+    local quest = math.max(0, tonumber((xp.bySource and xp.bySource.quest) or 0))
+    local other = gained - mob - quest
+    xp.bySource.other = math.max(0, other)
+end
+
+-- Initialize event system
+function pH_Events:Initialize(frame)
+    -- Register events
+    frame:RegisterEvent("CHAT_MSG_MONEY")
+    frame:RegisterEvent("MERCHANT_SHOW")
+    frame:RegisterEvent("MERCHANT_CLOSED")
+    frame:RegisterEvent("CHAT_MSG_LOOT")  -- Phase 3
+    frame:RegisterEvent("GET_ITEM_INFO_RECEIVED") -- deferred loot valuation on item cache miss
+    frame:RegisterEvent("BAG_UPDATE")     -- Phase 4 (vendor sale detection)
+    frame:RegisterEvent("PLAYER_MONEY")   -- Phase 5 (monitor money changes for taxi)
+    frame:RegisterEvent("TAXIMAP_OPENED") -- Phase 5
+    frame:RegisterEvent("TAXIMAP_CLOSED") -- Phase 5
+    frame:RegisterEvent("QUEST_TURNED_IN") -- Phase 5
+    frame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED") -- Phase 6 (pickpocket detection, Phase 7 gathering)
+    frame:RegisterEvent("UNIT_SPELLCAST_SENT")      -- Phase 7 (gathering target capture)
+    frame:RegisterEvent("PLAYER_XP_UPDATE") -- Phase 9 (XP tracking)
+    frame:RegisterEvent("UPDATE_FACTION") -- Phase 9 (Reputation tracking)
+    frame:RegisterEvent("CHAT_MSG_COMBAT_HONOR_GAIN") -- Phase 9 (Honor tracking)
+    frame:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN") -- Source-aware auto-session XP source hint
+    frame:RegisterEvent("CHAT_MSG_COMBAT_FACTION_CHANGE") -- Source-aware auto-session Rep source hint
+    frame:RegisterEvent("CHAT_MSG_SYSTEM") -- Zone discovery XP hint
+    frame:RegisterEvent("MAIL_SHOW")   -- AutoSession: skip auto-start while mailbox open
+    frame:RegisterEvent("MAIL_CLOSED")
+
+    -- Note: We do NOT set OnEvent handler here - init.lua maintains control
+    -- and will route events to us via pH_Events:OnEvent()
+
+    -- Initialize money tracking
+    state.moneyLast = pH_API:GetMoney()
+
+    -- Phase 9: Initialize XP tracking baseline.
+    self:ResetXPBaselineToCurrent()
+
+    -- Phase 9: Initialize reputation cache
+    self:InitializeRepCache()
+
+    -- Hook repair function (Phase 2)
+    self:HookRepairFunctions()
+
+    -- Hook vendor sales (Phase 4)
+    self:HookVendorSales()
+    
+    -- Hook taxi node selection (Phase 5)
+    self:HookTaxiFunctions()
+
+    -- Hook lockbox opening (Phase 6)
+    self:HookLockboxOpening()
+end
+
+-- Main event dispatcher
+function pH_Events:OnEvent(event, ...)
+    -- Secret Values (Forever): chat payloads can be unusable; ignore rather than error.
+    if event:sub(1, 8) == "CHAT_MSG" and pH_API:IsSecret((...)) then
+        return
+    end
+    -- Early return if SessionManager isn't loaded yet (can happen during addon load)
+    -- Use type() check to avoid indexing nil value errors
+    if type(pH_SessionManager) ~= "table" then
+        return
+    end
+
+    -- Mailbox state for AutoSession (skip auto-start/resume when taking gold/items from mail)
+    if event == "MAIL_SHOW" then
+        if type(pH_AutoSession) == "table" then
+            pH_AutoSession:SetMailboxOpen(true)
+        end
+    elseif event == "MAIL_CLOSED" then
+        if type(pH_AutoSession) == "table" then
+            pH_AutoSession:SetMailboxOpen(false)
+        end
+    elseif event == "MERCHANT_SHOW" then
+        if type(pH_AutoSession) == "table" and pH_AutoSession.SetMerchantOpen then
+            pH_AutoSession:SetMerchantOpen(true)
+        end
+    elseif event == "MERCHANT_CLOSED" then
+        if type(pH_AutoSession) == "table" and pH_AutoSession.SetMerchantOpen then
+            pH_AutoSession:SetMerchantOpen(false)
+        end
+    elseif event == "QUEST_TURNED_IN" then
+        if type(pH_AutoSession) == "table" and pH_AutoSession.MarkQuestTurnIn then
+            local _, xpReward, moneyReward = ...
+            pH_AutoSession:MarkQuestTurnIn((xpReward or 0) > 0, (moneyReward or 0) > 0)
+        end
+    elseif event == "BAG_UPDATE" then
+        state.seenBagUpdate = true
+    end
+
+    -- Auto-session: may auto-start or auto-resume
+    if type(pH_AutoSession) == "table" then
+        pH_AutoSession:HandleEvent(event, ...)
+    end
+    
+    -- Keep most events frozen while paused (keeps gold/hr accurate).
+    -- Allow rep/xp gain events through so paused sessions can auto-resume on gain.
+    local session = pH_SessionManager:GetActiveSession()
+    if session and session.pausedAt and event ~= "UPDATE_FACTION" and event ~= "CHAT_MSG_COMBAT_XP_GAIN" then
+        return
+    end
+
+    if event == "CHAT_MSG_MONEY" then
+        self:OnLootedCoin(...)
+    elseif event == "CHAT_MSG_LOOT" then
+        self:OnLootedItem(...)
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        self:OnItemInfoReceived(...)
+    elseif event == "MERCHANT_SHOW" then
+        self:OnMerchantShow()
+    elseif event == "MERCHANT_CLOSED" then
+        self:OnMerchantClosed()
+    elseif event == "BAG_UPDATE" then
+        self:OnBagUpdateAtMerchant()
+    elseif event == "PLAYER_MONEY" then
+        self:OnPlayerMoney()
+    elseif event == "TAXIMAP_OPENED" then
+        self:OnTaxiMapOpened()
+    elseif event == "TAXIMAP_CLOSED" then
+        self:OnTaxiMapClosed()
+    elseif event == "QUEST_TURNED_IN" then
+        self:OnQuestTurnedIn(...)
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        self:OnUnitSpellcastSucceeded(...)
+    elseif event == "UNIT_SPELLCAST_SENT" then
+        self:OnUnitSpellcastSent(...)
+    elseif event == "PLAYER_XP_UPDATE" then
+        self:OnPlayerXPUpdate()
+    elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
+        self:OnCombatXPGain(...)
+    elseif event == "UPDATE_FACTION" then
+        self:OnUpdateFaction()
+    elseif event == "CHAT_MSG_COMBAT_HONOR_GAIN" then
+        self:OnHonorGain(...)
+    end
+end
+
+-- Handle CHAT_MSG_MONEY event (looted coin)
+function pH_Events:OnLootedCoin(message)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return -- No active session
+    end
+
+    -- Parse copper amount from message
+    -- Example messages:
+    -- "You loot 1 Gold, 23 Silver, 45 Copper."
+    -- "You loot 5 Silver, 12 Copper."
+    -- "You loot 42 Copper."
+    local copper = self:ParseMoneyMessage(message)
+
+    if copper and copper > 0 then
+        -- Post double-entry: Dr Assets:Cash, Cr Income:LootedCoin
+        pH_Ledger:Post(session, "Assets:Cash", "Income:LootedCoin", copper)
+
+        -- Phase 6: Pickpocket and lockbox attribution (reporting only, no double-post)
+        -- INVARIANT: Only ONE Post to Assets:Cash per looted coin (above).
+        -- Pickpocket/FromLockbox updates are reporting-only (balances and session.pickpocket counters).
+        -- This prevents double-counting cash while still tracking attribution.
+        local currentTime = GetTime()
+        
+        -- Ensure pickpocket structure exists
+        if not session.pickpocket then
+            session.pickpocket = {
+                gold = 0,
+                value = 0,
+                lockboxesLooted = 0,
+                lockboxesOpened = 0,
+                fromLockbox = { gold = 0, value = 0 },
+            }
+        end
+
+        -- Check if within pickpocket attribution window
+        if currentTime <= state.pickpocketActiveUntil then
+            session.pickpocket.gold = session.pickpocket.gold + copper
+            -- Reporting only: update ledger balance directly (no second Post to Assets:Cash)
+            if not session.ledger.balances["Income:Pickpocket:Coin"] then
+                session.ledger.balances["Income:Pickpocket:Coin"] = 0
+            end
+            session.ledger.balances["Income:Pickpocket:Coin"] = session.ledger.balances["Income:Pickpocket:Coin"] + copper
+
+            if pH_DB_Account.debug.verbose then
+                print(string.format("[pH] Pickpocket coin: %s", pH_Ledger:FormatMoney(copper)))
+            end
+        end
+
+        -- Check if within lockbox opening attribution window
+        if currentTime <= state.openingLockboxUntil then
+            session.pickpocket.fromLockbox.gold = session.pickpocket.fromLockbox.gold + copper
+            -- Reporting only: update ledger balance directly (no second Post to Assets:Cash)
+            if not session.ledger.balances["Income:Pickpocket:FromLockbox:Coin"] then
+                session.ledger.balances["Income:Pickpocket:FromLockbox:Coin"] = 0
+            end
+            session.ledger.balances["Income:Pickpocket:FromLockbox:Coin"] = session.ledger.balances["Income:Pickpocket:FromLockbox:Coin"] + copper
+
+            if pH_DB_Account.debug.verbose then
+                print(string.format("[pH] Lockbox coin: %s", pH_Ledger:FormatMoney(copper)))
+            end
+        end
+
+        -- Debug logging
+        if pH_DB_Account.debug.verbose then
+            print(string.format("[pH] Looted: %s", pH_Ledger:FormatMoney(copper)))
+        end
+
+        -- Run invariants if debug mode enabled
+        if pH_DB_Account.debug.enabled then
+            pH_Debug:ValidateInvariants(session)
+        end
+
+        -- Update HUD
+        pH_HUD:Update()
+    end
+end
+
+-- Parse copper amount from CHAT_MSG_MONEY message
+function pH_Events:ParseMoneyMessage(message)
+    local totalCopper = 0
+
+    -- Match gold
+    local gold = message:match("(%d+) Gold")
+    if gold then
+        totalCopper = totalCopper + tonumber(gold) * 10000
+    end
+
+    -- Match silver
+    local silver = message:match("(%d+) Silver")
+    if silver then
+        totalCopper = totalCopper + tonumber(silver) * 100
+    end
+
+    -- Match copper
+    local copper = message:match("(%d+) Copper")
+    if copper then
+        totalCopper = totalCopper + tonumber(copper)
+    end
+
+    return totalCopper
+end
+
+--------------------------------------------------
+-- Phase 3: Item Looting
+--------------------------------------------------
+
+local function EnsurePickpocketStruct(session)
+    if session.pickpocket then
+        return
+    end
+    session.pickpocket = {
+        gold = 0,
+        value = 0,
+        lockboxesLooted = 0,
+        lockboxesOpened = 0,
+        fromLockbox = { gold = 0, value = 0 },
+    }
+end
+
+local function GetRepNotifyCfg()
+    local cfg = (pH_Settings and pH_Settings.repPotential) or nil
+    return {
+        showLootProgress = (cfg == nil or cfg.showLootProgress == nil) and true or (cfg.showLootProgress and true or false),
+        logMode = (cfg and cfg.logMode) or "rate_limited",
+        rateLimitSec = (cfg and cfg.rateLimitSec) or 2,
+    }
+end
+
+-- Reconcile tracked rep-turnin item counts with current bag counts.
+-- This ensures potential rep is reduced immediately when items are turned in.
+local function SyncRepTurninItemCountsFromBags(session)
+    if not session or type(session.items) ~= "table" then
+        return false
+    end
+    if type(GetItemCount) ~= "function" then
+        return false
+    end
+    if not pH_RepTurninCatalog or type(pH_RepTurninCatalog.GetRepRules) ~= "function" then
+        return false
+    end
+
+    local changed = false
+    for itemID, itemData in pairs(session.items) do
+        local trackedCount = itemData and tonumber(itemData.count) or 0
+        if trackedCount > 0 then
+            local numericItemID = tonumber(itemID) or itemID
+            local rules = pH_RepTurninCatalog:GetRepRules(numericItemID, itemData and itemData.name or nil)
+            if rules and #rules > 0 then
+                local bagCount = tonumber(pH_API:GetItemCount(numericItemID, false)) or tonumber(pH_API:GetItemCount(numericItemID)) or 0
+                bagCount = math.max(0, math.floor(bagCount))
+                if bagCount == 0 and trackedCount > 0 and not state.seenBagUpdate then
+                    -- During login, inventory may not be ready yet; avoid false zeroing.
+                    bagCount = trackedCount
+                end
+                if bagCount ~= trackedCount then
+                    itemData.count = bagCount
+                    changed = true
+                end
+            end
+        end
+    end
+    return changed
+end
+
+local function ShouldPrintRepProgress(itemID, oldCount, newCount, bundleSize, cfg)
+    local oldBundles = math.floor((oldCount or 0) / bundleSize)
+    local newBundles = math.floor((newCount or 0) / bundleSize)
+    local crossedBundle = newBundles > oldBundles
+    if cfg.logMode == "every_loot" then
+        return true
+    end
+    if cfg.logMode == "milestones" then
+        return crossedBundle
+    end
+    -- rate_limited default: always print milestones, otherwise throttle
+    if crossedBundle then
+        return true
+    end
+    local now = GetTime()
+    local lastAt = state.lastRepProgressPrintAt[itemID] or 0
+    return (now - lastAt) >= math.max(0, cfg.rateLimitSec or 2)
+end
+
+local function PrintRepProgressMessage(session, itemID, itemName, oldCount)
+    if not session or not itemID then
+        return
+    end
+    local cfg = GetRepNotifyCfg()
+    if not cfg.showLootProgress then
+        return
+    end
+    if not pH_RepTurninCatalog or not (pH_RepTurninCatalog.GetPreferredRepRule or pH_RepTurninCatalog.GetRepRule) then
+        return
+    end
+    local rule
+    if pH_RepTurninCatalog.GetPreferredRepRule then
+        rule = pH_RepTurninCatalog:GetPreferredRepRule(itemID, itemName)
+    else
+        rule = pH_RepTurninCatalog:GetRepRule(itemID, itemName)
+    end
+    if not rule then
+        return
+    end
+    local entry = session.metrics and session.metrics.repPotential and session.metrics.repPotential.byItem and session.metrics.repPotential.byItem[itemID] or nil
+    if not entry then
+        return
+    end
+    local newCount = tonumber(entry.count) or 0
+    local bundleSize = tonumber(rule.bundleSize) or 1
+    if newCount <= 0 or bundleSize <= 0 then
+        return
+    end
+    if state.lastRepProgressCountPrinted[itemID] and newCount == state.lastRepProgressCountPrinted[itemID] then
+        return
+    end
+
+    if not ShouldPrintRepProgress(itemID, oldCount or 0, newCount, bundleSize, cfg) then
+        return
+    end
+
+    local potentialRep = tonumber(entry.potentialRep) or 0
+    local progress = newCount % bundleSize
+    local neededForNext = (progress == 0) and 0 or (bundleSize - progress)
+    if neededForNext == 0 then
+        print(string.format("[pH] %d %s(s) collected, ready for rep turn-in (+%d projected).", newCount, itemName, potentialRep))
+    else
+        local nextThreshold = newCount + neededForNext
+        local nextProjected = math.floor((nextThreshold / bundleSize) * (rule.repPerBundle or 0))
+        print(string.format("[pH] %d %s(s) collected, %d more till rep turn-in (+%d projected at %d).",
+            newCount, itemName, neededForNext, nextProjected, nextThreshold))
+    end
+
+    state.lastRepProgressPrintAt[itemID] = GetTime()
+    state.lastRepProgressCountPrinted[itemID] = newCount
+end
+
+function pH_Events:PostLootedItem(session, itemID, itemName, quality, itemClass, itemSubClass, count, options)
+    options = options or {}
+    if not session or not itemID or not itemName or not count or count <= 0 then
+        return false, "INVALID_INPUT"
+    end
+
+    local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+    if bucket == "other" then
+        return false, "UNTRACKED_BUCKET"
+    end
+
+    local expectedEach = pH_Valuation:ComputeExpectedValue(itemID, bucket)
+    local expectedTotal = count * expectedEach
+
+    if bucket == "container_lockbox" then
+        pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
+        return true, bucket, expectedEach, expectedTotal
+    end
+
+    local assetAccount = "Assets:Inventory:" .. self:BucketToAccountName(bucket)
+    local incomeAccount = "Income:ItemsLooted:" .. self:BucketToAccountName(bucket)
+    pH_Ledger:Post(session, assetAccount, incomeAccount, expectedTotal)
+    pH_Holdings:AddLot(session, itemID, count, expectedEach, bucket)
+    pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
+
+    if options.includePickpocket then
+        EnsurePickpocketStruct(session)
+        if options.isPickpocket then
+            session.pickpocket.value = session.pickpocket.value + expectedTotal
+            session.ledger.balances["Income:Pickpocket:Items"] = (session.ledger.balances["Income:Pickpocket:Items"] or 0) + expectedTotal
+        end
+        if options.isFromLockbox then
+            session.pickpocket.fromLockbox.value = session.pickpocket.fromLockbox.value + expectedTotal
+            session.ledger.balances["Income:Pickpocket:FromLockbox:Items"] =
+                (session.ledger.balances["Income:Pickpocket:FromLockbox:Items"] or 0) + expectedTotal
+        end
+    end
+
+    return true, bucket, expectedEach, expectedTotal
+end
+
+-- Handle CHAT_MSG_LOOT event (items)
+local PENDING_LOOT_TIMEOUT = 3
+state.pendingLoot = {}
+
+-- Replay deferred loot messages for itemID (each message is processed exactly once)
+function pH_Events:ResolvePendingLoot(itemID)
+    local queue = state.pendingLoot[itemID]
+    if not queue then return end
+    state.pendingLoot[itemID] = nil
+    for _, message in ipairs(queue) do
+        self:OnLootedItem(message, true)
+    end
+end
+
+function pH_Events:OnItemInfoReceived(itemID)
+    if itemID and not pH_API:IsSecret(itemID) and state.pendingLoot[itemID] then
+        self:ResolvePendingLoot(itemID)
+    end
+end
+
+function pH_Events:OnLootedItem(message, isReplay)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return -- No active session
+    end
+
+    -- Parse item from loot message
+    -- Example: "You receive loot: [Item Link]x3."
+    -- Example: "You receive loot: [Item Link]."
+    local itemLink, count = self:ParseLootMessage(message)
+
+    if not itemLink then
+        return -- Not a valid item loot message
+    end
+
+    count = count or 1
+
+    -- Extract itemID from itemLink
+    local itemID = self:ExtractItemID(itemLink)
+    if not itemID then
+        return
+    end
+
+    -- Get item info (may be nil if not cached yet)
+    local itemName, quality, itemClass, itemSubClass, vendorPrice = pH_Valuation:GetItemInfo(itemID)
+
+    -- Cache miss: ask the client to load item data and replay once it arrives
+    -- (or after a timeout) so valuation isn't permanently based on missing data.
+    if not itemName and not isReplay and pH_API:RequestItemData(itemID) then
+        local queue = state.pendingLoot[itemID]
+        if not queue then
+            queue = {}
+            state.pendingLoot[itemID] = queue
+            C_Timer.After(PENDING_LOOT_TIMEOUT, function()
+                self:ResolvePendingLoot(itemID)
+            end)
+        end
+        queue[#queue + 1] = message
+        return
+    end
+
+    if not itemName then
+        -- Cache miss fallback: derive display name from link and continue.
+        -- This preserves accounting for known rep-turnin items even when
+        -- item metadata hasn't been cached yet.
+        itemName = itemLink:match("%[(.+)%]") or ("Item " .. tostring(itemID))
+        if pH_DB_Account.debug.verbose then
+            print(string.format("[pH] Item cache miss fallback: itemID=%d, name=%s", itemID, itemName))
+        end
+    end
+
+    -- Phase 6: Determine attribution context (pickpocket or lockbox)
+    local currentTime = GetTime()
+    local isPickpocket = (currentTime <= state.pickpocketActiveUntil)
+    local isFromLockbox = (currentTime <= state.openingLockboxUntil)
+    local preRepCount = 0
+    if session.metrics and session.metrics.repPotential and session.metrics.repPotential.byItem and session.metrics.repPotential.byItem[itemID] then
+        preRepCount = session.metrics.repPotential.byItem[itemID].count or 0
+    end
+
+    local ok, bucket, expectedEach, expectedTotal = self:PostLootedItem(
+        session, itemID, itemName, quality, itemClass, itemSubClass, count,
+        { includePickpocket = true, isPickpocket = isPickpocket, isFromLockbox = isFromLockbox }
+    )
+    if not ok then
+        return
+    end
+
+    if bucket == "container_lockbox" and isPickpocket then
+        EnsurePickpocketStruct(session)
+        session.pickpocket.lockboxesLooted = session.pickpocket.lockboxesLooted + count
+    end
+
+    if pH_RepTurninCatalog and pH_RepTurninCatalog.IsRepTurninItem and pH_RepTurninCatalog:IsRepTurninItem(itemID, itemName) then
+        PrintRepProgressMessage(session, itemID, itemName, preRepCount)
+    end
+
+    -- Debug logging
+    if pH_DB_Account.debug.verbose then
+        print(string.format("[pH] Looted: %s x%d (%s, %s each)",
+            itemName, count, bucket, pH_Ledger:FormatMoney(expectedEach)))
+        if expectedEach == 0 then
+            local reason = pH_Valuation:GetLastZeroReason(itemID) or "UNKNOWN"
+            print(string.format("[pH Price] Zero-value reason: itemID=%d, reason=%s", itemID, reason))
+        end
+    end
+
+    -- Run invariants if debug mode enabled
+    if pH_DB_Account.debug.enabled then
+        pH_Debug:ValidateInvariants(session)
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+end
+
+-- Parse item link and count from CHAT_MSG_LOOT message
+function pH_Events:ParseLootMessage(message)
+    -- Pattern: "You receive loot: [Item Link]x3."
+    -- Pattern: "You receive loot: [Item Link]."
+    local itemLink, countStr = message:match("You receive loot: (|c%x+|H.+|h.+|h|r)x(%d+)")
+
+    if itemLink and countStr then
+        return itemLink, tonumber(countStr)
+    end
+
+    -- Try without count (single item)
+    itemLink = message:match("You receive loot: (|c%x+|H.+|h.+|h|r)")
+
+    if itemLink then
+        return itemLink, 1
+    end
+
+    return nil, nil
+end
+
+-- Extract itemID from itemLink
+function pH_Events:ExtractItemID(itemLink)
+    -- ItemLink format: |cXXXXXXXX|Hitem:itemID:...|h[Name]|h|r
+    local itemID = itemLink:match("|Hitem:(%d+):")
+    if itemID then
+        return tonumber(itemID)
+    end
+    return nil
+end
+
+-- Convert bucket name to account name component
+function pH_Events:BucketToAccountName(bucket)
+    if bucket == "vendor_trash" then
+        return "VendorTrash"
+    elseif bucket == "market_items" then
+        return "MarketItems"
+    elseif bucket == "gathering" then
+        return "Gathering"
+    elseif bucket == "enchanting" then
+        return "Enchanting"
+    elseif bucket == "container_lockbox" then
+        return "Containers:Lockbox"
+    else
+        return "Other"
+    end
+end
+
+-- Inject a looted coin event (for testing)
+function pH_Events:InjectLootedCoin(copper)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return false, "No active session"
+    end
+
+    if not copper or copper <= 0 then
+        return false, "Invalid copper amount"
+    end
+
+    -- Post directly (bypass CHAT_MSG_MONEY parsing)
+    pH_Ledger:Post(session, "Assets:Cash", "Income:LootedCoin", copper)
+
+    -- Debug logging
+    print(string.format("[pH Test] Injected loot: %s", pH_Ledger:FormatMoney(copper)))
+
+    -- Run invariants if debug mode enabled
+    if pH_DB_Account.debug.enabled then
+        pH_Debug:ValidateInvariants(session)
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+
+    return true
+end
+
+--------------------------------------------------
+-- Phase 2: Merchant & Repair Tracking
+--------------------------------------------------
+
+-- Handle MERCHANT_SHOW event
+function pH_Events:OnMerchantShow()
+    state.merchantOpen = true
+
+    -- Initialize vendor sale tracking (Phase 4)
+    state.bagSnapshot = self:SnapshotBags()
+    state.lastMoneyCheck = pH_API:GetMoney()
+
+    if pH_DB_Account.debug.verbose then
+        print("[pH] Merchant window opened")
+    end
+end
+
+-- Handle MERCHANT_CLOSED event
+function pH_Events:OnMerchantClosed()
+    state.merchantOpen = false
+
+    -- Clear vendor sale tracking (Phase 4)
+    state.bagSnapshot = nil
+    state.lastMoneyCheck = 0
+
+    if pH_DB_Account.debug.verbose then
+        print("[pH] Merchant window closed")
+    end
+end
+
+--------------------------------------------------
+-- Phase 5: Travel (Flight Path) Expense Tracking
+--------------------------------------------------
+
+-- Handle PLAYER_MONEY event (monitor for taxi cost deduction)
+function pH_Events:OnPlayerMoney()
+    -- Update money tracking
+    local currentMoney = pH_API:GetMoney()
+    
+    -- Debug: Always log money changes when taxi is open
+    if state.taxiOpen and pH_DB_Account.debug.verbose then
+        print(string.format("[pH] PLAYER_MONEY: taxiOpen=%s, moneyAtTaxiOpen=%s, currentMoney=%s", 
+            tostring(state.taxiOpen), 
+            state.moneyAtTaxiOpen and pH_Ledger:FormatMoney(state.moneyAtTaxiOpen) or "nil",
+            pH_Ledger:FormatMoney(currentMoney)))
+    end
+    
+    -- Check if taxi map is open and money decreased (flight cost deducted)
+    -- Only process if we haven't already recorded it via TakeTaxiNode hook
+    if state.taxiOpen and state.moneyAtTaxiOpen and not state.taxiCostProcessed and state.moneyAtTaxiOpen > currentMoney then
+        local session = pH_SessionManager:GetActiveSession()
+        if session then
+            local cost = state.moneyAtTaxiOpen - currentMoney
+            self:RecordTaxiCost(session, cost, "PLAYER_MONEY")
+        end
+    end
+    
+    -- Update money tracking for future events
+    state.moneyLast = currentMoney
+end
+
+-- Handle TAXIMAP_OPENED event
+function pH_Events:OnTaxiMapOpened()
+    state.taxiOpen = true
+    state.moneyAtTaxiOpen = pH_API:GetMoney()
+    state.taxiCostProcessed = false  -- Track if we've already recorded the cost
+
+    if pH_DB_Account.debug.verbose then
+        print("[pH] TAXIMAP_OPENED: money=" .. pH_Ledger:FormatMoney(state.moneyAtTaxiOpen))
+    end
+end
+
+-- Handle TAXIMAP_CLOSED event
+function pH_Events:OnTaxiMapClosed()
+    if pH_DB_Account.debug.verbose then
+        print(string.format("[pH] TAXIMAP_CLOSED: taxiOpen=%s, moneyAtTaxiOpen=%s, costProcessed=%s",
+            tostring(state.taxiOpen),
+            state.moneyAtTaxiOpen and pH_Ledger:FormatMoney(state.moneyAtTaxiOpen) or "nil",
+            tostring(state.taxiCostProcessed)))
+    end
+    
+    -- Flight cost should already be captured via PLAYER_MONEY or TakeTaxiNode hook
+    -- But check one more time in case those didn't fire (edge case)
+    if state.taxiOpen and state.moneyAtTaxiOpen and not state.taxiCostProcessed then
+        local session = pH_SessionManager:GetActiveSession()
+        if session then
+            local currentMoney = pH_API:GetMoney()
+            local cost = state.moneyAtTaxiOpen - currentMoney
+
+            -- Only post expense if cost > 0
+            if cost > 0 then
+                -- Post double-entry: Dr Expense:Travel, Cr Assets:Cash
+                pH_Ledger:Post(session, "Expense:Travel", "Assets:Cash", cost)
+
+                if pH_DB_Account.debug.verbose then
+                    print(string.format("[pH] Flight cost (fallback on TAXIMAP_CLOSED): %s", pH_Ledger:FormatMoney(cost)))
+                end
+
+                -- Run invariants if debug mode enabled
+                if pH_DB_Account.debug.enabled then
+                    pH_Debug:ValidateInvariants(session)
+                end
+
+                -- Update HUD
+                pH_HUD:Update()
+                
+                state.taxiCostProcessed = true
+            end
+        end
+    end
+
+    -- Clear taxi state
+    state.taxiOpen = false
+    state.moneyAtTaxiOpen = nil
+    state.taxiCostProcessed = nil
+end
+
+--------------------------------------------------
+-- Phase 5: Quest Gold Income Tracking
+--------------------------------------------------
+
+-- Handle QUEST_TURNED_IN event
+-- @param questID: Quest ID
+-- @param xpReward: Experience reward (unused)
+-- @param moneyReward: Money reward in copper
+function pH_Events:OnQuestTurnedIn(questID, xpReward, moneyReward)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return -- No active session
+    end
+
+    local xpMetrics = EnsureSessionXPAuditMetrics(session)
+    if xpMetrics then
+        xpMetrics.questsCompleted = (xpMetrics.questsCompleted or 0) + 1
+        xpMetrics.lastQuestTurnInAt = time()
+        local questXP = tonumber(xpReward) or 0
+        if questXP > 0 then
+            xpMetrics.pendingQuestXP = (tonumber(xpMetrics.pendingQuestXP) or 0) + questXP
+        end
+    end
+
+    -- Only process if quest gave money reward
+    if not moneyReward or moneyReward <= 0 then
+        pH_HUD:Update()
+        return
+    end
+
+    -- Post double-entry: Dr Assets:Cash, Cr Income:Quest
+    pH_Ledger:Post(session, "Assets:Cash", "Income:Quest", moneyReward)
+
+    if pH_DB_Account.debug.verbose then
+        print(string.format("[pH] Quest reward: %s (Quest ID: %d)", 
+            pH_Ledger:FormatMoney(moneyReward), questID))
+    end
+
+    -- Run invariants if debug mode enabled
+    if pH_DB_Account.debug.enabled then
+        pH_Debug:ValidateInvariants(session)
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+end
+
+--------------------------------------------------
+-- Phase 6: Pickpocket Context Detection
+--------------------------------------------------
+
+-- Phase 7: Gathering Node Tracking
+--------------------------------------------------
+
+-- Handle UNIT_SPELLCAST_SENT event (capture target for gathering spells)
+-- @param unitTarget: Unit that cast the spell (e.g., "player", "target")
+-- @param spellName: Localized spell name
+-- @param rank: Spell rank (unused)
+-- @param targetName: Name of the target (e.g., "Copper Vein", "Peacebloom", "Skinning")
+-- @param lineID: Cast line ID (unused)
+-- @param spellID: Spell ID
+function pH_Events:OnUnitSpellcastSent(unitTarget, spellName, rank, targetName, lineID, spellID)
+    -- Only track player casts
+    if unitTarget ~= "player" then
+        return
+    end
+
+    if not spellID or not GATHERING_SPELLS[spellID] then
+        return
+    end
+
+    -- Record most recent gathering cast context
+    state.gatherSpellSentAt = GetTime()
+    state.gatherSpellID = spellID
+    state.gatherTargetName = targetName
+
+    if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
+        print(string.format(
+            "[pH] Gathering cast sent: %s on %s",
+            GATHERING_SPELLS[spellID] or (spellName or "?"),
+            targetName or "unknown"
+        ))
+    end
+end
+
+-- Handle UNIT_SPELLCAST_SUCCEEDED event (for pickpocket detection)
+-- @param unitTarget: Unit that cast the spell (e.g., "player", "target")
+-- @param castGUID: Cast GUID
+-- @param spellID: Spell ID
+function pH_Events:OnUnitSpellcastSucceeded(unitTarget, castGUID, spellID)
+    -- Only process player spells
+    if unitTarget ~= "player" then
+        return
+    end
+
+    if pH_API:IsSecret(spellID) then
+        return
+    end
+
+    -- Get spell name from spell ID (used for logging and fallback labels)
+    local spellName = pH_API:GetSpellName(spellID)
+    if not spellName then
+        return
+    end
+
+    if DISENCHANT_SPELLS[spellID] or spellName == "Disenchant" then
+        state.deSpellSeenAt = GetTime()
+        state.deUntil = state.deSpellSeenAt + 3.0
+        state.dePreBagSnapshot = self:SnapshotBags()
+        state.deLastReason = "PENDING"
+        if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
+            print("[pH] Disenchant detected, awaiting bag delta attribution")
+        end
+    end
+
+    --------------------------------------------------
+    -- Pickpocket attribution window
+    --------------------------------------------------
+    -- Check if this is Pick Pocket spell
+    -- In Classic, the spell name is "Pick Pocket" (with space)
+    if spellName == "Pick Pocket" or spellName == "Pickpocket" then
+        -- Set attribution window: 2 seconds after cast
+        state.pickpocketActiveUntil = GetTime() + 2.0
+        if type(pH_AutoSession) == "table" and pH_AutoSession.MarkPickpocketWindow then
+            pH_AutoSession:MarkPickpocketWindow(2.0)
+        end
+
+        if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
+            print(string.format("[pH] Pick Pocket detected, attribution window: %.1f seconds", 2.0))
+        end
+    end
+
+    --------------------------------------------------
+    -- Gathering node tracking (Mining / Herbalism / Skinning / Fishing)
+    --------------------------------------------------
+    local gatherLabel = GATHERING_SPELLS[spellID]
+    if gatherLabel then
+        local session = pH_SessionManager:GetActiveSession()
+        if not session then
+            return
+        end
+
+        -- Only attribute if this SUCCEEDED corresponds to a recent SENT for the same spell.
+        local shouldAttribute = false
+        if state.gatherSpellID == spellID and state.gatherSpellSentAt and state.gatherSpellSentAt > 0 then
+            local elapsed = GetTime() - state.gatherSpellSentAt
+            if elapsed >= 0 and elapsed <= 5.0 then
+                shouldAttribute = true
+            end
+        else
+            -- Fallback: if SENT wasn't captured (edge case), still count by spell label
+            shouldAttribute = true
+        end
+
+        if shouldAttribute and pH_SessionManager.AddGatherNode then
+            local nodeName = state.gatherTargetName or gatherLabel or spellName
+            pH_SessionManager:AddGatherNode(session, nodeName)
+
+            if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
+                print(string.format("[pH] Gathering node recorded: %s via %s", nodeName, gatherLabel or spellName))
+            end
+        end
+
+        -- Clear gathering state after processing
+        state.gatherSpellSentAt = 0
+        state.gatherTargetName = nil
+        state.gatherSpellID = nil
+    end
+end
+
+-- Hook repair functions to track costs
+function pH_Events:HookRepairFunctions()
+    -- Hook RepairAllItems (repair all button)
+    if RepairAllItems then
+        hooksecurefunc("RepairAllItems", function(guildBankRepair)
+            self:OnRepairAll(guildBankRepair)
+        end)
+    end
+
+    -- Note: We could also hook individual item repairs via UseContainerItem
+    -- but RepairAllItems is the most common use case for Phase 2
+end
+
+-- Hook taxi functions to track flight costs (Phase 5)
+function pH_Events:HookTaxiFunctions()
+    -- Hook TakeTaxiNode - called when player selects a destination
+    -- This fires BEFORE the money is deducted, so we capture money state here
+    if TakeTaxiNode then
+        hooksecurefunc("TakeTaxiNode", function(nodeIndex)
+            self:OnTakeTaxiNode(nodeIndex)
+        end)
+    end
+end
+
+-- Hook lockbox opening (Phase 6)
+function pH_Events:HookLockboxOpening()
+    -- Try to hook UseContainerItem for lockbox detection
+    -- Note: In Classic, this may not be hookable, so we also use BAG_UPDATE fallback
+    pH_API:HookUseContainerItem(function(bag, slot)
+        self:OnUseContainerItemForLockbox(bag, slot)
+    end)
+end
+
+-- Handle TakeTaxiNode hook (when player clicks a destination)
+function pH_Events:OnTakeTaxiNode(nodeIndex)
+    -- Only process if taxi map was open (we tracked the initial money)
+    if not state.taxiOpen or not state.moneyAtTaxiOpen or state.taxiCostProcessed then
+        return
+    end
+
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return
+    end
+
+    -- Get current money (should be before deduction, but check anyway)
+    local currentMoney = pH_API:GetMoney()
+    
+    -- Try to get cost from API if available
+    local cost = nil
+    if TaxiNodeCost then
+        cost = TaxiNodeCost(nodeIndex)
+    end
+    
+    -- If we can't get cost from API, use money delta
+    if not cost or cost == 0 then
+        -- Wait a tiny bit for money to be deducted, then check
+        -- Use a frame update to check after the deduction happens
+        C_Timer.After(0.1, function()
+            local newMoney = pH_API:GetMoney()
+            local deltaCost = state.moneyAtTaxiOpen - newMoney
+            if deltaCost > 0 then
+                self:RecordTaxiCost(session, deltaCost, "TakeTaxiNode (delta)")
+            end
+        end)
+    else
+        -- Use the API cost directly
+        self:RecordTaxiCost(session, cost, "TakeTaxiNode (API)")
+    end
+end
+
+-- Helper function to record taxi cost (prevents double-counting)
+function pH_Events:RecordTaxiCost(session, cost, source)
+    if not session or not cost or cost <= 0 or state.taxiCostProcessed then
+        return
+    end
+
+    -- Post double-entry: Dr Expense:Travel, Cr Assets:Cash
+    pH_Ledger:Post(session, "Expense:Travel", "Assets:Cash", cost)
+
+    if pH_DB_Account.debug.verbose then
+        print(string.format("[pH] Flight cost recorded (%s): %s", source, pH_Ledger:FormatMoney(cost)))
+    end
+
+    -- Run invariants if debug mode enabled
+    if pH_DB_Account.debug.enabled then
+        pH_Debug:ValidateInvariants(session)
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+    
+    -- Mark as processed to prevent double-counting
+    state.taxiCostProcessed = true
+    state.moneyAtTaxiOpen = nil  -- Clear so PLAYER_MONEY doesn't double-count
+end
+
+-- Handle repair all action
+function pH_Events:OnRepairAll(guildBankRepair)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return
+    end
+
+    -- Don't track guild bank repairs (player doesn't pay)
+    if guildBankRepair then
+        return
+    end
+
+    -- Get repair cost
+    local repairCost = GetRepairAllCost()
+
+    if repairCost and repairCost > 0 then
+        -- Check if player can afford it
+        local playerMoney = pH_API:GetMoney()
+        if playerMoney < repairCost then
+            return -- Repair will fail, don't record
+        end
+
+        -- Post expense: Cr Assets:Cash (decrease), Dr Expense:Repairs
+        pH_Ledger:Post(session, "Expense:Repairs", "Assets:Cash", repairCost)
+
+        -- Debug logging
+        if pH_DB_Account.debug.verbose then
+            print(string.format("[pH] Repair cost: %s", pH_Ledger:FormatMoney(repairCost)))
+        end
+
+        -- Run invariants if debug mode enabled
+        if pH_DB_Account.debug.enabled then
+            pH_Debug:ValidateInvariants(session)
+        end
+
+        -- Update HUD
+        pH_HUD:Update()
+    end
+end
+
+-- Inject a repair event (for testing)
+function pH_Events:InjectRepair(copper)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return false, "No active session"
+    end
+
+    if not copper or copper <= 0 then
+        return false, "Invalid copper amount"
+    end
+
+    -- Post directly: Dr Expense:Repairs, Cr Assets:Cash
+    pH_Ledger:Post(session, "Expense:Repairs", "Assets:Cash", copper)
+
+    -- Debug logging
+    print(string.format("[pH Test] Injected repair: %s", pH_Ledger:FormatMoney(copper)))
+
+    -- Run invariants if debug mode enabled
+    if pH_DB_Account.debug.enabled then
+        pH_Debug:ValidateInvariants(session)
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+
+    return true
+end
+
+--------------------------------------------------
+-- Phase 4: Vendor Sales & FIFO Reversals
+--------------------------------------------------
+
+-- Track bag contents for vendor sale detection
+state.bagSnapshot = nil
+state.lastMoneyCheck = 0
+
+-- Hook vendor sales to track items sold
+function pH_Events:HookVendorSales()
+    -- In Classic, UseContainerItem isn't hookable, so we use BAG_UPDATE events instead
+    -- The merchant events (MERCHANT_SHOW/CLOSED) are already registered
+    -- We'll detect sales via BAG_UPDATE + money changes
+end
+
+-- Take snapshot of bag contents
+function pH_Events:SnapshotBags()
+    local snapshot = {}
+
+    for bag = 0, pH_API:GetLastBagIndex() do
+        local numSlots = GetBagNumSlots(bag)
+        for slot = 1, numSlots do
+            local itemCount, itemLink = GetBagItemInfo(bag, slot)
+            if itemLink and itemCount then
+                local itemID = self:ExtractItemID(itemLink)
+                if itemID then
+                    snapshot[itemID] = (snapshot[itemID] or 0) + itemCount
+                end
+            end
+        end
+    end
+
+    return snapshot
+end
+
+local function ResetDEState()
+    state.deUntil = 0
+    state.deSpellSeenAt = 0
+    state.dePreBagSnapshot = nil
+end
+
+function pH_Events:TryProcessDisenchant(session)
+    if not session then
+        return false
+    end
+    if not state.dePreBagSnapshot then
+        state.dePreBagSnapshot = self:SnapshotBags()
+        state.deLastReason = "NO_PRE_SNAPSHOT"
+        return false
+    end
+    if GetTime() > (state.deUntil or 0) then
+        state.deLastReason = "DE_WINDOW_EXPIRED"
+        ResetDEState()
+        return false
+    end
+
+    local current = self:SnapshotBags()
+    local consumed = {}
+    local produced = {}
+
+    for itemID, prevCount in pairs(state.dePreBagSnapshot) do
+        local curr = current[itemID] or 0
+        if curr < prevCount then
+            consumed[itemID] = prevCount - curr
+        end
+    end
+    for itemID, currCount in pairs(current) do
+        local prev = state.dePreBagSnapshot[itemID] or 0
+        if currCount > prev then
+            produced[itemID] = currCount - prev
+        end
+    end
+
+    local sourceItemID = nil
+    local sourceCount = 0
+    local candidateCount = 0
+    for itemID, delta in pairs(consumed) do
+        local held = pH_Holdings:GetCount(session, itemID)
+        local itemData = session.items and session.items[itemID] or nil
+        if held >= delta and itemData and itemData.bucket == "market_items" then
+            candidateCount = candidateCount + 1
+            sourceItemID = itemID
+            sourceCount = delta
+        end
+    end
+
+    local enchantingOutputs = {}
+    local enchantingOutputCount = 0
+    for itemID, delta in pairs(produced) do
+        local itemName, quality, itemClass, itemSubClass = pH_Valuation:GetItemInfo(itemID)
+        if itemName and pH_Valuation:IsEnchantingMat(itemID, itemClass, itemSubClass, itemName) then
+            enchantingOutputs[itemID] = { count = delta, name = itemName, quality = quality, class = itemClass, subClass = itemSubClass }
+            enchantingOutputCount = enchantingOutputCount + delta
+        end
+    end
+
+    -- Keep waiting while bag changes are still in flight
+    if candidateCount == 0 or enchantingOutputCount == 0 then
+        state.dePreBagSnapshot = current
+        state.deLastReason = "DELTAS_INCOMPLETE"
+        return false
+    end
+
+    if candidateCount ~= 1 then
+        state.deLastReason = "AMBIGUOUS_DE_SOURCE"
+        ResetDEState()
+        return false
+    end
+
+    if sourceCount ~= 1 then
+        state.deLastReason = "AMBIGUOUS_DE_COUNT"
+        ResetDEState()
+        return false
+    end
+
+    local bucketValues = pH_Holdings:ConsumeFIFO(session, sourceItemID, 1)
+    local sourceHeldValue = 0
+    for bucketName, heldValue in pairs(bucketValues) do
+        sourceHeldValue = sourceHeldValue + heldValue
+        if heldValue > 0 then
+            local assetAccount = "Assets:Inventory:" .. self:BucketToAccountName(bucketName)
+            pH_Ledger:Post(session, "Equity:InventoryRealization", assetAccount, heldValue)
+        end
+    end
+
+    if session.items and session.items[sourceItemID] then
+        session.items[sourceItemID].count = math.max(0, (session.items[sourceItemID].count or 0) - 1)
+    end
+    if pH_SessionManager and pH_SessionManager.AdjustRepPotentialForItem then
+        local sourceItemName = session.items and session.items[sourceItemID] and session.items[sourceItemID].name or nil
+        pH_SessionManager:AdjustRepPotentialForItem(session, sourceItemID, -1, sourceItemName)
+    end
+
+    for itemID, out in pairs(enchantingOutputs) do
+        self:PostLootedItem(session, itemID, out.name, out.quality, out.class, out.subClass, out.count)
+    end
+
+    if pH_DB_Account.debug.verbose then
+        local srcName = pH_API:GetItemInfo(sourceItemID) or tostring(sourceItemID)
+        print(string.format("[pH] DE rebucket: consumed %s x1 (held=%s), produced %d enchanting mats",
+            srcName, pH_Ledger:FormatMoney(sourceHeldValue), enchantingOutputCount))
+    end
+
+    state.deLastReason = "OK"
+    ResetDEState()
+    return true
+end
+
+-- Build per-slot snapshot of lockbox items only (for BAG_UPDATE lockbox-open detection)
+-- Returns: [ "bag_slot" ] = { itemID = n, count = n }
+function pH_Events:SnapshotLockboxesBySlot()
+    local snapshot = {}
+    for bag = 0, pH_API:GetLastBagIndex() do
+        local numSlots = GetBagNumSlots(bag)
+        for slot = 1, numSlots do
+            local itemCount, itemLink = GetBagItemInfo(bag, slot)
+            if itemLink and itemCount and itemCount > 0 then
+                local itemID = self:ExtractItemID(itemLink)
+                if itemID then
+                    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
+                    if itemName then
+                        local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+                        if bucket == "container_lockbox" then
+                            local key = string.format("%d_%d", bag, slot)
+                            snapshot[key] = { itemID = itemID, count = itemCount }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return snapshot
+end
+
+-- Detect lockbox opening via BAG_UPDATE: compare previous vs current lockbox slots (Classic fallback)
+function pH_Events:OnBagUpdateLockboxCheck(session)
+    if not session then
+        return
+    end
+    if not session.pickpocket then
+        session.pickpocket = {
+            gold = 0,
+            value = 0,
+            lockboxesLooted = 0,
+            lockboxesOpened = 0,
+            fromLockbox = { gold = 0, value = 0 },
+        }
+    end
+
+    local current = self:SnapshotLockboxesBySlot()
+    local previous = state.lockboxBagSnapshot
+
+    -- First run: just store snapshot, no opened count
+    if not previous then
+        state.lockboxBagSnapshot = current
+        return
+    end
+
+    local opened = 0
+    local openedItemID = nil
+    for key, prevSlot in pairs(previous) do
+        local curSlot = current[key]
+        local prevCount = prevSlot.count or 0
+        local curCount = (curSlot and curSlot.count) or 0
+        if prevCount > curCount then
+            opened = opened + (prevCount - curCount)
+            if not openedItemID then
+                openedItemID = prevSlot.itemID
+            end
+        end
+    end
+
+    -- Also check: slot had lockbox, now empty or different item (current[key] nil)
+    -- Already covered: curCount = 0 when curSlot is nil, so prevCount - 0 = prevCount
+
+    if opened > 0 then
+        session.pickpocket.lockboxesOpened = session.pickpocket.lockboxesOpened + opened
+        state.openingLockboxUntil = GetTime() + 3.0
+        state.openingLockboxItemID = openedItemID
+        if type(pH_AutoSession) == "table" and pH_AutoSession.MarkLockboxWindow then
+            pH_AutoSession:MarkLockboxWindow(3.0)
+        end
+
+        if pH_DB_Account.debug.verbose then
+            local name = openedItemID and (pH_API:GetItemInfo(openedItemID) or "?") or "?"
+            print(string.format("[pH] Lockbox opened (BAG_UPDATE): %s x%d, attribution window: %.1f seconds",
+                name, opened, 3.0))
+        end
+    end
+
+    state.lockboxBagSnapshot = current
+end
+
+-- Handle BAG_UPDATE when merchant is open (detects vendor sales) or when not (lockbox opening fallback)
+function pH_Events:OnBagUpdateAtMerchant()
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return
+    end
+
+    -- Phase 6: When NOT at merchant, detect lockbox opening via bag diff (UseContainerItem often not hookable in Classic)
+    if not state.merchantOpen then
+        self:OnBagUpdateLockboxCheck(session)
+        if GetTime() <= (state.deUntil or 0) then
+            self:TryProcessDisenchant(session)
+        end
+        return
+    end
+
+    -- Take new snapshot
+    local newSnapshot = self:SnapshotBags()
+
+    -- If we don't have an old snapshot, save this one and return
+    if not state.bagSnapshot then
+        state.bagSnapshot = newSnapshot
+        state.lastMoneyCheck = pH_API:GetMoney()
+        return
+    end
+
+    -- Check for money increase (vendor proceeds)
+    local currentMoney = pH_API:GetMoney()
+    local moneyGained = currentMoney - state.lastMoneyCheck
+
+    if moneyGained <= 0 then
+        -- No money gained, not a sale (or it's a purchase)
+        state.bagSnapshot = newSnapshot
+        state.lastMoneyCheck = currentMoney
+        return
+    end
+
+    -- Find items that decreased in quantity
+    for itemID, oldCount in pairs(state.bagSnapshot) do
+        local newCount = newSnapshot[itemID] or 0
+        local countSold = oldCount - newCount
+
+        if countSold > 0 then
+            -- Item was sold, process it
+            local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
+
+            if itemName and vendorSellEach and vendorSellEach > 0 then
+                -- Calculate expected proceeds for this item
+                local expectedProceeds = countSold * vendorSellEach
+
+                -- Only process if this accounts for the money gained
+                -- (handles case where multiple items sold at once)
+                if expectedProceeds <= moneyGained then
+                    local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+                    self:ProcessVendorSale(session, itemID, itemName, countSold, expectedProceeds, bucket)
+
+                    -- Update money tracking
+                    moneyGained = moneyGained - expectedProceeds
+                end
+            end
+        end
+    end
+
+    -- Update snapshot for next check
+    state.bagSnapshot = newSnapshot
+    state.lastMoneyCheck = currentMoney
+end
+
+-- Handle UseContainerItem for lockbox opening detection (Phase 6)
+-- Called when player uses an item from their bags (including lockboxes)
+function pH_Events:OnUseContainerItemForLockbox(bag, slot)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return -- No active session
+    end
+
+    -- Only process if NOT at merchant (lockboxes are opened, not sold)
+    if state.merchantOpen then
+        return
+    end
+
+    -- Ensure pickpocket structure exists
+    if not session.pickpocket then
+        session.pickpocket = {
+            gold = 0,
+            value = 0,
+            lockboxesLooted = 0,
+            lockboxesOpened = 0,
+            fromLockbox = { gold = 0, value = 0 },
+        }
+    end
+
+    -- Get item info
+    local itemCount, itemLink = GetBagItemInfo(bag, slot)
+    if not itemLink or not itemCount then
+        return
+    end
+
+    local itemID = self:ExtractItemID(itemLink)
+    if not itemID then
+        return
+    end
+
+    -- Get item name and classify
+    local itemName, _, quality, _, _, _, _, _, _, _, _, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
+    if not itemName then
+        return
+    end
+
+    -- Check if this is a lockbox
+    local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+    if bucket == "container_lockbox" then
+        -- Set attribution window: 3 seconds after opening
+        state.openingLockboxUntil = GetTime() + 3.0
+        state.openingLockboxItemID = itemID
+        if type(pH_AutoSession) == "table" and pH_AutoSession.MarkLockboxWindow then
+            pH_AutoSession:MarkLockboxWindow(3.0)
+        end
+        session.pickpocket.lockboxesOpened = session.pickpocket.lockboxesOpened + 1
+
+        if pH_DB_Account.debug.verbose then
+            print(string.format("[pH] Lockbox opened: %s (ID: %d), attribution window: %.1f seconds",
+                itemName, itemID, 3.0))
+        end
+    end
+end
+
+-- Legacy function for compatibility (now unused but kept for test injection)
+function pH_Events:OnUseContainerItem(bag, slot)
+    -- This function is no longer called by hooks, but kept for test injection
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return
+    end
+
+    if not state.merchantOpen then
+        return
+    end
+
+    local itemCount, itemLink = GetBagItemInfo(bag, slot)
+    if not itemLink or not itemCount then
+        return
+    end
+
+    local itemID = self:ExtractItemID(itemLink)
+    if not itemID then
+        return
+    end
+
+    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
+    if not itemName then
+        return
+    end
+
+    if not vendorSellEach or vendorSellEach == 0 then
+        return
+    end
+
+    -- Calculate total vendor proceeds
+    local vendorProceeds = itemCount * vendorSellEach
+
+    -- Classify item to get bucket
+    local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+
+    -- Process vendor sale
+    self:ProcessVendorSale(session, itemID, itemName, itemCount, vendorProceeds, bucket)
+end
+
+-- Process a vendor sale (called by hook or test injection)
+function pH_Events:ProcessVendorSale(session, itemID, itemName, count, vendorProceeds, bucket)
+    -- Post cash proceeds: Dr Assets:Cash, Cr Income:VendorSales
+    pH_Ledger:Post(session, "Assets:Cash", "Income:VendorSales", vendorProceeds)
+
+    -- Consume FIFO lots to get held expected value by bucket
+    local bucketValues = pH_Holdings:ConsumeFIFO(session, itemID, count)
+
+    -- Reverse inventory expected value for each bucket
+    for bucketName, heldValue in pairs(bucketValues) do
+        if heldValue > 0 then
+            local assetAccount = "Assets:Inventory:" .. self:BucketToAccountName(bucketName)
+            local equityAccount = "Equity:InventoryRealization"
+
+            -- Cr Assets:Inventory (decrease), Dr Equity:InventoryRealization
+            pH_Ledger:Post(session, equityAccount, assetAccount, heldValue)
+        end
+    end
+
+    -- Update item aggregate (decrement count, but keep entry for history)
+    if session.items[itemID] then
+        session.items[itemID].count = session.items[itemID].count - count
+        if session.items[itemID].count < 0 then
+            session.items[itemID].count = 0
+        end
+    end
+    if pH_SessionManager and pH_SessionManager.AdjustRepPotentialForItem then
+        pH_SessionManager:AdjustRepPotentialForItem(session, itemID, -count, itemName)
+    end
+
+    -- Debug logging
+    if pH_DB_Account.debug.verbose then
+        local totalHeldValue = 0
+        for _, val in pairs(bucketValues) do
+            totalHeldValue = totalHeldValue + val
+        end
+
+        print(string.format("[pH] Vendor sale: %s x%d, proceeds=%s, held expected=%s",
+            itemName, count,
+            pH_Ledger:FormatMoney(vendorProceeds),
+            pH_Ledger:FormatMoney(totalHeldValue)))
+
+        if totalHeldValue == 0 then
+            print("[pH]   (Pre-session item - no inventory reversal)")
+        end
+    end
+
+    -- Run invariants if debug mode enabled
+    if pH_DB_Account.debug.enabled then
+        pH_Debug:ValidateInvariants(session)
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+end
+
+--------------------------------------------------
+-- Phase 7: Test Injection - Gathering Nodes
+--------------------------------------------------
+
+-- Inject a gathering node event (for testing)
+-- In real gameplay, value comes from the looted items (ore, herbs, etc.).
+-- For testing, copperValueEach lets you simulate the average loot value per node.
+-- @param nodeName: Human-readable node name (e.g., "Copper Vein", "Peacebloom")
+-- @param count: Number of nodes to inject (default 1)
+-- @param copperValueEach: Optional copper value per node to post as gathering inventory
+function pH_Events:InjectGatherNode(nodeName, count, copperValueEach)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return false, "No active session"
+    end
+
+    if not nodeName or nodeName == "" then
+        return false, "Invalid node name"
+    end
+
+    count = count or 1
+    if count <= 0 then
+        return false, "Count must be > 0"
+    end
+
+    for i = 1, count do
+        pH_SessionManager:AddGatherNode(session, nodeName)
+    end
+
+    -- Post gathering inventory value if provided
+    if copperValueEach and copperValueEach > 0 then
+        local totalValue = count * copperValueEach
+        pH_Ledger:Post(session, "Assets:Inventory:Gathering", "Income:ItemsLooted:Gathering", totalValue)
+    end
+
+    -- Debug logging
+    local valueStr = ""
+    if copperValueEach and copperValueEach > 0 then
+        valueStr = string.format(", value=%s each, total=%s",
+            pH_Ledger:FormatMoney(copperValueEach),
+            pH_Ledger:FormatMoney(count * copperValueEach))
+    end
+    print(string.format("[pH Test] Injected gathering node: %s x%d (totalNodes=%d%s)",
+        nodeName, count, session.gathering and session.gathering.totalNodes or 0, valueStr))
+
+    -- Run invariants if debug mode enabled
+    if pH_DB_Account.debug.enabled then
+        pH_Debug:ValidateInvariants(session)
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+
+    return true
+end
+
+--------------------------------------------------
+-- Phase 3: Test Injection - Items
+--------------------------------------------------
+
+-- Inject a looted item event (for testing)
+-- @param itemID: Item ID (must be valid)
+-- @param count: Number of items
+function pH_Events:InjectLootItem(itemID, count)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return false, "No active session"
+    end
+
+    if not itemID or not count or count <= 0 then
+        return false, "Invalid itemID or count"
+    end
+
+    -- Get item info (may fail if not cached)
+    local itemName, quality, itemClass, itemSubClass, vendorPrice = pH_Valuation:GetItemInfo(itemID)
+
+    if not itemName then
+        return false, string.format("Item not in cache: itemID=%d (try mousing over it first)", itemID)
+    end
+
+    local ok, bucket, expectedEach = self:PostLootedItem(session, itemID, itemName, quality, itemClass, itemSubClass, count)
+    if not ok then
+        return false, string.format("Item not tracked: %s (bucket=other)", itemName)
+    end
+
+    -- Debug logging
+    print(string.format("[pH Test] Injected loot: %s x%d (bucket=%s, %s each)",
+        itemName, count, bucket, pH_Ledger:FormatMoney(expectedEach)))
+    if expectedEach == 0 then
+        local reason = pH_Valuation:GetLastZeroReason(itemID) or "UNKNOWN"
+        print(string.format("[pH Price] Zero-value reason: itemID=%d, reason=%s", itemID, reason))
+    end
+
+    -- Run invariants if debug mode enabled
+    if pH_DB_Account.debug.enabled then
+        pH_Debug:ValidateInvariants(session)
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+
+    return true
+end
+
+--------------------------------------------------
+-- Phase 4: Test Injection - Vendor Sales
+--------------------------------------------------
+
+-- Inject a vendor sale event (for testing)
+-- @param itemID: Item ID (must be valid and in holdings)
+-- @param count: Number of items to sell
+function pH_Events:InjectVendorSale(itemID, count)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return false, "No active session"
+    end
+
+    if not itemID or not count or count <= 0 then
+        return false, "Invalid itemID or count"
+    end
+
+    -- Get item info
+    local itemName, _, quality, _, _, _, _, _, _, _, vendorSellEach, itemClass, itemSubClass = pH_API:GetItemInfo(itemID)
+
+    if not itemName then
+        return false, string.format("Item not in cache: itemID=%d (try mousing over it first)", itemID)
+    end
+
+    if not vendorSellEach or vendorSellEach == 0 then
+        return false, string.format("Item has no vendor value: %s", itemName)
+    end
+
+    -- Check if item is in holdings
+    local holdingsCount = pH_Holdings:GetCount(session, itemID)
+    if holdingsCount < count then
+        return false, string.format("Not enough in holdings: have %d, trying to sell %d", holdingsCount, count)
+    end
+
+    -- Calculate vendor proceeds
+    local vendorProceeds = count * vendorSellEach
+
+    -- Classify item
+    local bucket = pH_Valuation:ClassifyItem(itemID, itemName, quality, itemClass, itemSubClass)
+
+    -- Process vendor sale
+    self:ProcessVendorSale(session, itemID, itemName, count, vendorProceeds, bucket)
+
+    print(string.format("[pH Test] Injected vendor sale: %s x%d for %s",
+        itemName, count, pH_Ledger:FormatMoney(vendorProceeds)))
+
+    return true
+end
+
+--------------------------------------------------
+-- Phase 9: XP/Rep/Honor Tracking
+--------------------------------------------------
+
+-- Initialize reputation cache (scan all factions, use factionID as stable key)
+function pH_Events:InitializeRepCache()
+    state.repCache = {}
+
+    for _, rep in ipairs(pH_API:GetReputations()) do
+        -- Skip headers, use factionID as stable key
+        if not rep.isHeader and rep.factionID and rep.current then
+            state.repCache[rep.factionID] = rep.current
+        end
+    end
+
+    if pH_DB_Account and pH_DB_Account.debug and pH_DB_Account.debug.verbose then
+        local count = 0
+        for _ in pairs(state.repCache) do count = count + 1 end
+        print(string.format("[pH] Initialized reputation cache with %d factions", count))
+    end
+end
+
+function pH_Events:ResetXPBaselineToCurrent()
+    local maxLevel = pH_API:GetMaxPlayerLevel(60)
+    if pH_API:GetPlayerLevel() >= maxLevel then
+        ClearXPBaseline()
+        return false
+    end
+    SetXPBaseline(pH_API:GetXP(), pH_API:GetXPMax())
+    return true
+end
+
+-- Handle CHAT_MSG_COMBAT_XP_GAIN (XP source attribution for auditability)
+function pH_Events:OnCombatXPGain(message)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session or type(message) ~= "string" then
+        return
+    end
+
+    if session.pausedAt and pH_SessionManager and pH_SessionManager.ResumeSession then
+        pH_SessionManager:ResumeSession("auto", "xp.gain")
+        session = pH_SessionManager:GetActiveSession() or session
+    end
+
+    local xpMetrics = EnsureSessionXPAuditMetrics(session)
+    if not xpMetrics then
+        return
+    end
+
+    -- Typical pattern (enUS): "<Mob> dies, you gain <N> experience."
+    local mobName, xpAmount = message:match("^(.+) dies, you gain ([%d%.,]+) experience")
+    if not mobName or not xpAmount then
+        return
+    end
+
+    local cleanedXP = tostring(xpAmount or ""):gsub("[^%d]", "")
+    local amount = tonumber(cleanedXP) or 0
+    if amount <= 0 then
+        return
+    end
+
+    mobName = tostring(mobName):gsub("^%s+", ""):gsub("%s+$", "")
+    if mobName == "" then
+        mobName = "Unknown"
+    end
+
+    xpMetrics.bySource.mob = (xpMetrics.bySource.mob or 0) + amount
+    xpMetrics.mobKillsByType[mobName] = (xpMetrics.mobKillsByType[mobName] or 0) + 1
+    ReconcileXPSourceTotals(session)
+end
+
+-- Handle PLAYER_XP_UPDATE event (XP gains with rollover detection for level-ups)
+function pH_Events:OnPlayerXPUpdate()
+    local newXP = pH_API:GetXP()
+    local newXPMax = pH_API:GetXPMax()
+
+    -- Skip XP accumulation at max level, but keep baseline neutralized.
+    local maxLevel = pH_API:GetMaxPlayerLevel(60)
+    if pH_API:GetPlayerLevel() >= maxLevel then
+        ClearXPBaseline()
+        return
+    end
+
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        -- Keep baseline fresh even when no session is running.
+        SetXPBaseline(newXP, newXPMax)
+        return
+    end
+
+    -- Ensure metrics structure exists
+    if not session.metrics then
+        session.metrics = {
+            xp = { gained = 0, enabled = false },
+            rep = { gained = 0, enabled = false, byFaction = {} },
+            repPotential = {
+                total = 0, byFaction = {}, byItem = {},
+                eligibleTotal = 0, theoreticalTotal = 0,
+                eligibleByFaction = {}, theoreticalByFaction = {},
+            },
+            honor = { gained = 0, enabled = false, kills = 0 },
+        }
+    end
+    local xpMetrics = EnsureSessionXPAuditMetrics(session)
+    if not xpMetrics then
+        return
+    end
+
+    -- First update while session active: seed baseline only.
+    if state.xpLast == nil or state.xpMaxLast == nil then
+        SetXPBaseline(newXP, newXPMax)
+        xpMetrics.enabled = true
+        return
+    end
+
+    local oldXP = state.xpLast
+    local oldXPMax = state.xpMaxLast
+    local delta, suppressedReason, rawDelta = ComputeGuardedXPDelta(oldXP, oldXPMax, newXP, newXPMax)
+
+    -- Always advance baseline after reading this event.
+    SetXPBaseline(newXP, newXPMax)
+
+    if suppressedReason then
+        if pH_DB_Account.debug.verbose then
+            print(string.format(
+                "[pH] XP anomaly suppressed (%s): old=%d/%d new=%d/%d rawDelta=%d",
+                suppressedReason,
+                oldXP or -1,
+                oldXPMax or -1,
+                newXP or -1,
+                newXPMax or -1,
+                rawDelta or -1
+            ))
+        end
+        return
+    end
+
+    if delta <= 0 then
+        return
+    end
+
+    -- Update session metrics
+    xpMetrics.gained = (xpMetrics.gained or 0) + delta
+    xpMetrics.enabled = true
+
+    local pendingQuestXP = math.max(0, tonumber(xpMetrics.pendingQuestXP) or 0)
+    if pendingQuestXP > 0 then
+        local attributedQuestXP = math.min(delta, pendingQuestXP)
+        if attributedQuestXP > 0 then
+            xpMetrics.bySource.quest = (xpMetrics.bySource.quest or 0) + attributedQuestXP
+            xpMetrics.pendingQuestXP = pendingQuestXP - attributedQuestXP
+        end
+    end
+    ReconcileXPSourceTotals(session)
+
+    if type(pH_SessionManager) == "table" and pH_SessionManager.RecordMetricDelta then
+        pH_SessionManager:RecordMetricDelta(session, "xp", delta, time())
+    end
+
+    if pH_DB_Account.debug.verbose then
+        print(string.format("[pH] XP gained: %d (total: %d)", delta, xpMetrics.gained))
+    end
+
+    -- Update HUD
+    pH_HUD:Update()
+end
+
+-- Handle UPDATE_FACTION event (Reputation gains)
+function pH_Events:OnUpdateFaction()
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return
+    end
+
+    -- Ensure metrics structure exists
+    if not session.metrics then
+        session.metrics = {
+            xp = { gained = 0, enabled = false },
+            rep = { gained = 0, enabled = false, byFaction = {} },
+            repPotential = {
+                total = 0, byFaction = {}, byItem = {},
+                eligibleTotal = 0, theoreticalTotal = 0,
+                eligibleByFaction = {}, theoreticalByFaction = {},
+            },
+            honor = { gained = 0, enabled = false, kills = 0 },
+        }
+    end
+    if not session.metrics.rep then
+        session.metrics.rep = { gained = 0, enabled = false, byFaction = {} }
+    end
+    if not session.metrics.repPotential then
+        session.metrics.repPotential = {
+            total = 0, byFaction = {}, byItem = {},
+            eligibleTotal = 0, theoreticalTotal = 0,
+            eligibleByFaction = {}, theoreticalByFaction = {},
+        }
+    end
+
+    local prevPotentialEligible = 0
+    if session.metrics and session.metrics.repPotential then
+        prevPotentialEligible = session.metrics.repPotential.eligibleTotal or session.metrics.repPotential.total or 0
+    end
+
+    -- Scan all factions and compute deltas
+    local totalDelta = 0
+
+    for _, rep in ipairs(pH_API:GetReputations()) do
+        local name, isHeader, factionID, barValue = rep.name, rep.isHeader, rep.factionID, rep.current
+
+        -- Skip headers, use factionID as stable key
+        if not isHeader and factionID and name and barValue then
+            local oldValue = state.repCache[factionID] or barValue
+            local delta = barValue - oldValue
+
+            if delta > 0 then
+                -- Reputation gained
+                totalDelta = totalDelta + delta
+
+                -- Update per-faction totals
+                if not session.metrics.rep.byFaction[name] then
+                    session.metrics.rep.byFaction[name] = 0
+                end
+                session.metrics.rep.byFaction[name] = session.metrics.rep.byFaction[name] + delta
+
+                if pH_DB_Account.debug.verbose then
+                    print(string.format("[pH] Rep gained: %s +%d", name, delta))
+                end
+            end
+
+            -- Update cache
+            state.repCache[factionID] = barValue
+        end
+    end
+
+    local repItemCountsChanged = SyncRepTurninItemCountsFromBags(session)
+    if pH_SessionManager and pH_SessionManager.RecomputeRepPotentialForSession then
+        pH_SessionManager:RecomputeRepPotentialForSession(session)
+    end
+    local newPotentialEligible = 0
+    if session.metrics and session.metrics.repPotential then
+        newPotentialEligible = session.metrics.repPotential.eligibleTotal or session.metrics.repPotential.total or 0
+    end
+
+    if totalDelta > 0 then
+        -- Rep gains should always resume paused sessions for correct accounting.
+        if session.pausedAt and pH_SessionManager and pH_SessionManager.ResumeSession then
+            pH_SessionManager:ResumeSession("auto", "rep.gain")
+        end
+        session.metrics.rep.gained = session.metrics.rep.gained + totalDelta
+        session.metrics.rep.enabled = true
+        if type(pH_SessionManager) == "table" and pH_SessionManager.RecordMetricDelta then
+            pH_SessionManager:RecordMetricDelta(session, "rep", totalDelta, time())
+        end
+    end
+
+    if totalDelta > 0 or newPotentialEligible ~= prevPotentialEligible or repItemCountsChanged then
+        pH_HUD:Update()
+    end
+end
+
+-- Handle CHAT_MSG_COMBAT_HONOR_GAIN event (Honor gains)
+function pH_Events:OnHonorGain(message)
+    local session = pH_SessionManager:GetActiveSession()
+    if not session then
+        return
+    end
+
+    -- Ensure metrics structure exists
+    if not session.metrics then
+        session.metrics = {
+            xp = { gained = 0, enabled = false },
+            rep = { gained = 0, enabled = false, byFaction = {} },
+            repPotential = {
+                total = 0, byFaction = {}, byItem = {},
+                eligibleTotal = 0, theoreticalTotal = 0,
+                eligibleByFaction = {}, theoreticalByFaction = {},
+            },
+            honor = { gained = 0, enabled = false, kills = 0 },
+        }
+    end
+    if not session.metrics.honor then
+        session.metrics.honor = { gained = 0, enabled = false, kills = 0 }
+    end
+
+    -- Parse honor amount from message
+    -- Patterns: "You have been awarded 42 honor points." or "You have gained 10 honor."
+    local amount = message:match("(%d+) honor")
+    if not amount then
+        amount = message:match("awarded (%d+) honor")
+    end
+
+    if amount then
+        amount = tonumber(amount)
+        session.metrics.honor.gained = session.metrics.honor.gained + amount
+        session.metrics.honor.enabled = true
+        if type(pH_SessionManager) == "table" and pH_SessionManager.RecordMetricDelta then
+            pH_SessionManager:RecordMetricDelta(session, "honor", amount, time())
+        end
+
+        -- Optional: detect HK with "killing blow"
+        if message:find("killing blow") then
+            session.metrics.honor.kills = session.metrics.honor.kills + 1
+        end
+
+        if pH_DB_Account.debug.verbose then
+            print(string.format("[pH] Honor gained: %d (total: %d, HKs: %d)",
+                amount, session.metrics.honor.gained, session.metrics.honor.kills))
+        end
+
+        -- Update HUD
+        pH_HUD:Update()
+    end
+end
+
+function pH_Events:GetLastDEResolutionReason()
+    return state.deLastReason
+end
+
+-- Export module
+_G.pH_Events = pH_Events

@@ -1,0 +1,117 @@
+# GoldPH v0.9.0 - Rectangular Panel Layout
+
+## Frame Dimensions
+
+Collapsed:  266px × 54px
+Expanded:   340px × dynamic height
+
+## Expanded Panel Layout (340px wide)
+
+┌─────────────────────────────────────────────────────────────┐
+│  pH    2h 34m                                    [−] [||]    │  Header (always visible)
+│  124g | 2h 34m                                              │  Timer + Gold summary
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ╔═══════════════════════════════════════════════════════╗ │  GOLD PANEL
+│  ║ 💰 GOLD                          Total: 1,245g        ║ │  (full width: 316px)
+│  ║                                                       ║ │  (height: 140px)
+│  ║ 485g/hr          1,245g (raw)                        ║ │
+│  ║                                                       ║ │
+│  ║ Raw Gold           178g/hr    512g         41%       ║ │
+│  ║ Vendor Trash       124g/hr    356g         29%       ║ │
+│  ║ AH / Rare Items     95g/hr    267g         21%       ║ │
+│  ║ Gathering           78g/hr    98g           8%       ║ │
+│  ║ Pickpocketing       10g/hr    12g           1%       ║ │
+│  ╚═══════════════════════════════════════════════════════╝ │
+│                                                             │
+│  ╔═══════════════════════╗  ╔═══════════════════════════╗  │  MIDDLE ROW
+│  ║ 📖 XP  Total: 45,230  ║  ║ 🎖 REPUTATION  Total: +680║  │  (XP left, Rep right)
+│  ║                       ║  ║                           ║  │  (each 155px × 80px)
+│  ║ 17,554/hr   45,230 XP ║  ║ +264/hr                   ║  │
+│  ║                       ║  ║                           ║  │
+│  ║                       ║  ║ Stormwind      +142/hr    ║  │
+│  ║                       ║  ║ Ironforge       +98/hr    ║  │
+│  ║                       ║  ║ +2 more…                  ║  │
+│  ╚═══════════════════════╝  ╚═══════════════════════════╝  │
+│                                                             │
+│  ╔═══════════════════════════════════════════════════════╗ │  HONOR PANEL
+│  ║ ⚔ HONOR                        Total: 1,240         ║ │  (full width: 316px)
+│  ║                                                       ║ │  (height: 90px)
+│  ║ 482/hr           1,240 honor                         ║ │  (conditional)
+│  ║                                                       ║ │
+│  ║ [Breakdown rows - future enhancement]                ║ │
+│  ╚═══════════════════════════════════════════════════════╝ │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+## Panel Visibility Rules
+
+1. Gold Panel: ALWAYS shown
+2. XP Panel: Hidden if max level OR xpGained == 0
+3. Rep Panel: ALWAYS shown when expanded
+4. Honor Panel: Hidden if honorGained == 0
+
+## Dynamic Positioning
+
+Honor Panel position depends on XP visibility:
+- If XP shown: Honor below XP (left side alignment)
+- If XP hidden: Honor below Gold panel (full width)
+
+## Collapsed Layout (266px × 54px)
+
+┌────────────────────────────────────────────────────────┐
+│  pH    2h 34m                           [+] [||]       │
+│                                                        │
+│  💰 124g  🎖 +14  📖 5.4k  ⚔ 482                       │
+│  ▓▓▓▓░    ▓▓░░░   ▓▓▓░░    ▓▓▓░░                     │
+└────────────────────────────────────────────────────────┘
+
+Micro-bars remain unchanged from v0.8.1.
+
+## Breakdown Row Format
+
+Each breakdown row (14px height) shows:
+
+┌──────────────────┬──────────┬──────────┬─────────┐
+│ Label            │ Per-hour │ Total    │ Percent │
+│ (left-aligned)   │ (120px)  │ (190px)  │ (right) │
+└──────────────────┴──────────┴──────────┴─────────┘
+
+Example:
+Raw Gold           178g/hr    512g         41%
+Vendor Trash       124g/hr    356g         29%
+
+## Color Scheme (pH Brand)
+
+- Background: PH_BG_DARK (dark parchment, 0.85 alpha)
+- Border: PH_BORDER_BRONZE (bronze, 0.9 alpha)
+- Primary text: PH_TEXT_PRIMARY (cream)
+- Secondary text: PH_TEXT_MUTED (muted beige)
+- Icons: Full color, full opacity
+
+## Container Height Calculation
+
+```lua
+local containerHeight = 140  -- Gold panel base
+if xpPanel:IsShown() or repPanel:IsShown() then
+    containerHeight = containerHeight + 6 + 80  -- Middle row
+end
+if honorPanel:IsShown() then
+    containerHeight = containerHeight + 6 + 90  -- Honor panel
+end
+```
+
+Possible heights:
+- Gold only: 140px
+- Gold + Middle: 226px (140 + 6 + 80)
+- Gold + Middle + Honor: 322px (140 + 6 + 80 + 6 + 90)
+- Gold + Honor (XP hidden): 236px (140 + 6 + 90)
+
+## Implementation Notes
+
+- All panels use `CreateMetricPanel()` helper
+- Breakdown rows use `AddBreakdownRow()` helper
+- Zero-value categories are automatically hidden
+- Per-hour rates calculated using `durationSec / 3600`
+- Percentages calculated relative to category total (e.g., gold total)
+- No trend indicators (▲ ▬ ▼) per PRD specification

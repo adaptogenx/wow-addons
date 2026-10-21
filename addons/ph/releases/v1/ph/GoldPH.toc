@@ -1,0 +1,33 @@
+## Interface: 11504
+## Title: GoldPH
+## Notes: Session-based gold-per-hour tracking with double-ledger accounting. Features minimize/maximize HUD, real-time metrics, and conservative item valuation (WoW Classic Anniversary)
+## Author: Claude Code
+## Version: 0.9.0
+## SavedVariables: GoldPH_DB_Account
+## SavedVariablesPerCharacter: GoldPH_DB
+## SavedVariablesPerCharacter: GoldPH_Settings
+
+# Core modules (load order matters)
+Ledger.lua
+PriceSources.lua
+Valuation.lua
+Holdings.lua
+SessionManager.lua
+Events.lua
+Debug.lua
+
+# Brand colors (shared)
+pH_Colors.lua
+
+# Index and History UI
+Index.lua
+UI_History_Filters.lua
+UI_History_List.lua
+UI_History_Detail.lua
+UI_History.lua
+
+# Main UI
+UI_HUD.lua
+
+# Entry point (must be last)
+init.lua
