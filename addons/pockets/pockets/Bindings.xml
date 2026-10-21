@@ -1,0 +1,10 @@
+<!--
+    Default binding: Shift-B (TDD §17, PRD §3.6).
+    User-assignable via the standard Key Bindings UI under the
+    "Pockets" header (BINDING_HEADER_POCKETS).
+-->
+<Bindings>
+    <Binding name="POCKETS_TOGGLE_FULL_INVENTORY" header="Pockets" category="ADDONS">
+        Pockets_ToggleFullInventory()
+    </Binding>
+</Bindings>

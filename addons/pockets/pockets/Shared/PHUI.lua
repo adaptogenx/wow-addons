@@ -1,0 +1,428 @@
+--[[
+    Shared/PHUI.lua - Generic pH-brand UI primitives (colors, fonts,
+    backdrops, panel/button/label factories).
+
+    Lives entirely inside Pockets' own namespace (Pockets.UI.PHUI) - NOT
+    published to any cross-addon global (no _G.PHUI). Pockets and pH are
+    separate installed addons that both run in WoW's single shared Lua
+    global environment, so a file that wrote to _G.PHUI here would be
+    silently visible to - and silently overridden by - pH's own separate
+    copy of a same-named file, in whichever load order the two addons
+    happen to land in. That already caused one real bug (a Pockets-only
+    addition to this file went missing whenever pH's copy loaded first).
+    This is meant to become a genuinely separate, published shared UI
+    library later; until then it's proven out here, Pockets-local only,
+    like every other Pockets module. Values below are copied from pH's
+    actual rendered compact HUD (ph/ph/UI_HUD.lua), not pH's older/
+    drifted brand color module, since UI_HUD.lua is what's actually on
+    screen.
+
+    Pockets-specific geometry (HUD width, flyout grid, etc.) does NOT
+    belong here - that stays in Pockets/Constants.lua and UI/Layout.lua.
+    This file only owns generic, reusable visual primitives.
+]]
+
+local _, Pockets = ...
+
+Pockets.UI.PHUI = Pockets.UI.PHUI or {}
+local PHUI = Pockets.UI.PHUI
+
+--------------------------------------------------
+-- Colors (ph/ph/UI_HUD.lua:42-61)
+--------------------------------------------------
+-- Palette per the Forever Glance TDD §3.3 (hex -> 0..1). Native values
+-- are preferred where visually equivalent; these are the approved ones.
+PHUI.Colors = {
+    TEXT_PRIMARY = { 0.902, 0.867, 0.784 },   -- #E6DDC8 warm ivory
+    TEXT_MUTED = { 0.663, 0.627, 0.557 },     -- #A9A08E secondary
+    TEXT_DISABLED = { 0.45, 0.42, 0.38 },
+
+    ACCENT_GOOD = { 0.388, 0.784, 0.475 },    -- #63C879 (<70%)
+    ACCENT_NEUTRAL = { 0.55, 0.70, 0.55 },
+    ACCENT_BAD = { 0.871, 0.349, 0.322 },     -- #DE5952 (>=90%)
+    ACCENT_WARNING = { 0.898, 0.722, 0.239 }, -- #E5B83D (70-89%)
+    ACCENT_GOLD = { 1.00, 0.82, 0.00 },
+
+    BG_DARK = { 0.082, 0.094, 0.090, 0.92 },     -- #151817 @ 92%
+    BG_PARCHMENT = { 0.082, 0.094, 0.090, 0.92 },
+    BADGE_BG = { 0.133, 0.102, 0.078, 0.95 },    -- dark warm charcoal/brown
+    BORDER_BRONZE = { 0.596, 0.451, 0.263 },     -- #987343
+
+    HOVER = { 0.22, 0.20, 0.17, 0.60 },
+    SELECTED = { 0.35, 0.32, 0.26, 0.75 },
+    DIVIDER = { 0.380, 0.333, 0.255, 0.60 },     -- #615541 @ 60%
+}
+
+--------------------------------------------------
+-- Fonts (ph/ph/UI_HUD.lua: stock templates throughout; FRIZQT spec at
+-- UI_HUD.lua:1355-1358 for header/glyph buttons)
+--------------------------------------------------
+PHUI.Fonts = {
+    NORMAL = "GameFontNormal",
+    SMALL = "GameFontNormalSmall",
+    LARGE = "GameFontNormalLarge",
+    HEADER = { "Fonts\\FRIZQT__.TTF", 12, "" },
+    GLYPH_OUTLINE = { "Fonts\\FRIZQT__.TTF", 12, "OUTLINE" },
+
+    -- Glance role tokens (TDD §3.2 roles, sized to the approved Glance mockup). All use the client's own Friz Quadrata
+    -- face (no bundled font). TITLE is the single token for BOTH the Glance
+    -- and the expanded header title so they can never drift apart.
+    TITLE = { "Fonts\\FRIZQT__.TTF", 16, "" },
+    -- Compact title for the native portrait-frame header (Glance chrome).
+    TITLE_COMPACT = { "Fonts\\FRIZQT__.TTF", 14, "" },
+    ETA_VALUE = { "Fonts\\FRIZQT__.TTF", 13, "" },
+    ETA_SUFFIX = { "Fonts\\FRIZQT__.TTF", 10, "" },
+    CAPACITY = { "Fonts\\FRIZQT__.TTF", 13, "" },
+    -- Count text on the Mini HUD badge.
+    -- Recent-strip item stack count.
+    -- Sidecar gold/ammo value text.
+    SIDECAR_VALUE = { "Fonts\\FRIZQT__.TTF", 12, "" },
+    NODE_STACK = { "Fonts\\FRIZQT__.TTF", 10, "OUTLINE" },
+    MINI_COUNT = { "Fonts\\FRIZQT__.TTF", 14, "" },
+    MONEY = { "Fonts\\FRIZQT__.TTF", 11, "" },
+    TAB_VALUE = { "Fonts\\FRIZQT__.TTF", 10, "" },
+    TAB_LABEL = { "Fonts\\FRIZQT__.TTF", 8, "" },
+}
+
+--------------------------------------------------
+-- Generic spacing tokens (not bag-specific geometry - that stays in
+-- Pockets/Constants.lua's LAYOUT table)
+--------------------------------------------------
+PHUI.Spacing = {
+    PADDING = 12,
+    ICON_GAP = 2,
+    PANEL_PADDING = 8,
+    -- Two distinct default icon sizes, BOTH verified against pH's real,
+    -- installed UI_HUD.lua (not guessed) - conflating them, or picking a
+    -- number that merely "looks about right," is what caused Glance's
+    -- metric-row icons to render visibly larger than pH's own equivalent
+    -- icons side-by-side, and separately caused Glance's header "+" to
+    -- mismatch Shell's own +/back/close buttons. Every UI pass must
+    -- reuse ONE of these two, never invent or eyeball a third:
+    --   ICON_SIZE - a PLAIN icon with no button chrome, sitting directly
+    --     on a panel surface (Glance's Bag/Gold/Ammo metric-row icons).
+    --     ph/UI_HUD.lua:1238 - micro-bar metric-tile icon, "12px for
+    --     ultra-compact" (verbatim comment in pH's own source).
+    ICON_SIZE = 12,
+    --   ICON_BUTTON_SIZE - a bordered, clickable CreateIconButton/
+    --     CreateCloseButton (back/close/+/Search - anything with a
+    --     backdrop+border and a hover highlight). ph/UI_HUD.lua:110 -
+    --     "local ICON_SIZE = 20 -- Match stop button height (20px)",
+    --     pH's own button-icon size (minMaxBtn/historyBtn/overflowBtn).
+    --     This is the established size already used throughout Shell's
+    --     expanded header (back/close/+) - Glance's header buttons must
+    --     match it too, not the smaller plain-icon size.
+    -- Pockets/Constants.lua's GLANCE_*/SHELL_HEADER_* size constants are
+    -- meant to equal these (Constants.lua loads before this file, so it
+    -- can't read them directly at load time - see the "Must match"
+    -- comments on those constants).
+    ICON_BUTTON_SIZE = 20,
+
+    -- Glance mockup design-spec tokens (shared with pH). PADDING above is
+    -- the 12px horizontal padding.
+    PADDING_Y = 4,         -- vertical padding
+    ICON_SPACING = 6,      -- between adjacent icons/buttons
+    SECTION_SPACING = 12,  -- between content groups (divider centered in it)
+    ICON_MAIN = 20,        -- main-row icons (bag, Recent)
+    ICON_TAB = 16,         -- attached-tab icons
+    -- Glance header action buttons (Search / Log): wider boxed buttons with
+    -- the icon padded inside, per the mockup. The native "+" button is
+    -- square at HEADER_BUTTON_H.
+    HEADER_BUTTON_W = 32,
+    HEADER_BUTTON_H = 22,
+    HEADER_BUTTON_ICON = 14,
+}
+
+--------------------------------------------------
+-- Backdrops (ph/ph/UI_HUD.lua:825-830 - the dominant panel pattern used
+-- throughout pH's UI)
+--------------------------------------------------
+PHUI.Backdrops = {
+    -- Lightly rounded small surface (count badges, compact strips): the
+    -- tooltip border art scaled down so the corners curve but stay thin.
+    ROUNDED_SMALL = {
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true,
+        tileSize = 16,
+        edgeSize = 8,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    },
+    -- Flat badge: solid fill with a 1px outline (no tooltip ornament).
+    BADGE = {
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    },
+    PANEL = {
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true,
+        tileSize = 16,
+        edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    },
+    -- Scaled-down border for small (~20px) icon buttons, verified against
+    -- pH's own overflowBtn (ph/UI_HUD.lua:996-1000). PANEL's edgeSize=12/
+    -- insets=3 is sized for full HUD panels - on a 20px button it eats
+    -- most of the icon's usable space, making the glyph look shrunk next
+    -- to pH's real buttons even when the outer button size matches.
+    ICON_BUTTON = {
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true,
+        tileSize = 16,
+        edgeSize = 10,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    },
+}
+
+--------------------------------------------------
+-- Backdrop application
+--------------------------------------------------
+
+-- Applies the shared panel backdrop (or opts.backdrop override) plus
+-- bg/border colors (defaulting to BG_PARCHMENT/BORDER_BRONZE, pH's HUD
+-- panel treatment) to any BackdropTemplate-mixin frame.
+function PHUI.ApplyBackdrop(frame, opts)
+    opts = opts or {}
+    local backdrop = opts.backdrop or PHUI.Backdrops.PANEL
+    local bgColor = opts.bgColor or PHUI.Colors.BG_PARCHMENT
+    local borderColor = opts.borderColor or PHUI.Colors.BORDER_BRONZE
+
+    frame:SetBackdrop(backdrop)
+    frame:SetBackdropColor(bgColor[1], bgColor[2], bgColor[3], opts.bgAlpha or bgColor[4] or 1)
+    frame:SetBackdropBorderColor(borderColor[1], borderColor[2], borderColor[3], opts.borderAlpha or borderColor[4] or 1)
+end
+
+--------------------------------------------------
+-- Text styling
+--------------------------------------------------
+
+local TEXT_STYLE_COLOR = {
+    primary = "TEXT_PRIMARY",
+    muted = "TEXT_MUTED",
+    disabled = "TEXT_DISABLED",
+    good = "ACCENT_GOOD",
+    bad = "ACCENT_BAD",
+    warning = "ACCENT_WARNING",
+    gold = "ACCENT_GOLD",
+}
+
+local TEXT_STYLE_FONT = {
+    primary = PHUI.Fonts.NORMAL,
+    muted = PHUI.Fonts.SMALL,
+    disabled = PHUI.Fonts.SMALL,
+    good = PHUI.Fonts.NORMAL,
+    bad = PHUI.Fonts.NORMAL,
+    warning = PHUI.Fonts.NORMAL,
+    gold = PHUI.Fonts.NORMAL,
+}
+
+-- Applies a named text style (font template + color) to an existing
+-- FontString. styleName: "primary" | "muted" | "disabled" | "good" |
+-- "bad" | "warning" | "gold".
+function PHUI.ApplyTextStyle(fontString, styleName)
+    local colorKey = TEXT_STYLE_COLOR[styleName] or TEXT_STYLE_COLOR.primary
+    local color = PHUI.Colors[colorKey]
+    fontString:SetTextColor(color[1], color[2], color[3], color[4] or 1)
+    return fontString
+end
+
+-- Creates a FontString with a named style applied. Font template is
+-- fixed per style (see TEXT_STYLE_FONT); pass fontTemplate to override.
+function PHUI.CreateLabel(parent, styleName, text, fontTemplate)
+    local template = fontTemplate or TEXT_STYLE_FONT[styleName] or PHUI.Fonts.NORMAL
+    local fontString
+    if type(template) == "table" then
+        -- { path, size, flags } role token (PHUI.Fonts.TITLE etc.)
+        fontString = parent:CreateFontString(nil, "OVERLAY")
+        fontString:SetFont(template[1], template[2], template[3] or "")
+        fontString:SetShadowOffset(1, -1)
+        fontString:SetShadowColor(0, 0, 0, 0.9)
+    else
+        fontString = parent:CreateFontString(nil, "OVERLAY", template)
+    end
+    PHUI.ApplyTextStyle(fontString, styleName)
+    if text then
+        fontString:SetText(text)
+    end
+    return fontString
+end
+
+-- Thin wrapper over Blizzard's stock close-button template so every PHUI
+-- panel gets the same close-button treatment instead of each caller
+-- re-declaring "UIPanelCloseButton" + a size by hand.
+-- pH's own close button (ph/UI_History.lua:156-157) never calls SetSize
+-- at all - it renders at UIPanelCloseButton's native/default size (32px).
+-- Forcing this template down to a small size (it was 20px here before)
+-- doesn't scale cleanly - the template's border/glow art is fixed-inset,
+-- not proportional, so a forced-small button visibly doesn't match pH's
+-- real X even though it's the same template. Default to that native
+-- size unless a caller has a real reason to override it.
+PHUI.NATIVE_CLOSE_BUTTON_SIZE = 32
+
+-- pH's own collapsed HUD frame width (ph/UI_HUD.lua:2629/2834 -
+-- hudFrame:SetWidth(266)). Pockets' own Glance stays intentionally
+-- narrower (sized to its actual content, not a pH clone), but any
+-- Pockets view meant to visually align/match pH's real HUD footprint
+-- (Shell's expanded Search/Menu/Category/All) should use this exact
+-- value, not an independently-chosen one.
+PHUI.PH_HUD_WIDTH = 266
+
+-- pH's expanded HUD width (ph/UI_HUD.lua FRAME_WIDTH_EXPANDED = 340): the
+-- width Glance shares so the two HUDs stack flush.
+PHUI.PH_HUD_WIDTH_EXPANDED = 340
+
+-- WoW Forever's UIPanelCloseButton art renders visibly larger than
+-- Classic's at the same size (user report: X too big), so it gets a
+-- smaller box there. Classic keeps pH's native 32.
+PHUI.FOREVER_CLOSE_BUTTON_SIZE = 24
+
+function PHUI.CreateCloseButton(parent, opts)
+    opts = opts or {}
+    local button = CreateFrame("Button", nil, parent, "UIPanelCloseButton")
+    local size = opts.size or PHUI.NATIVE_CLOSE_BUTTON_SIZE
+    local ClientAPI = Pockets.Adapters.ClientAPI
+    if ClientAPI and ClientAPI:IsForever() then
+        size = PHUI.FOREVER_CLOSE_BUTTON_SIZE
+    end
+    button:SetSize(size, size)
+    if opts.onClick then
+        button:SetScript("OnClick", opts.onClick)
+    end
+    return button
+end
+
+--------------------------------------------------
+-- Native icon presentation: a plain texture meant to sit directly on a
+-- panel surface (Glance's bag/ammo icons) - never wrapped in an
+-- ItemButton/bordered-slot treatment. Shares the same 0.08/0.92 texcoord
+-- inset CreateIconButton's icon uses, since that's what crops the black
+-- padding baked into most stock WoW icon art. Pass insetTexCoord = false
+-- for art (e.g. the backpack button texture) that's already clean at the
+-- edges.
+--------------------------------------------------
+function PHUI.CreateNativeIcon(parent, size, texture, opts)
+    opts = opts or {}
+    local icon = parent:CreateTexture(nil, opts.layer or "ARTWORK")
+    icon:SetSize(size, size)
+    if texture then
+        icon:SetTexture(texture)
+    end
+    if opts.insetTexCoord ~= false then
+        local inset = opts.texCoordInset or 0.08
+        icon:SetTexCoord(inset, 1 - inset, inset, 1 - inset)
+    end
+    return icon
+end
+
+--------------------------------------------------
+-- Buttons
+--------------------------------------------------
+
+-- Chrome icon button: backdrop panel + centered icon (trimmed with the
+-- 0.08/0.92 texcoord inset pH uses to crop default icon padding) + hover
+-- border-color highlight + optional tooltip/disabled support. Mirrors
+-- pH's CreateMenuIconButton (UI_HUD.lua:1323-1379).
+function PHUI.CreateIconButton(parent, size, texturePath, opts)
+    opts = opts or {}
+    local button = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    button:SetSize(size, size)
+    PHUI.ApplyBackdrop(button, { backdrop = opts.backdrop or PHUI.Backdrops.ICON_BUTTON,
+        bgColor = opts.bgColor, borderColor = opts.borderColor, bgAlpha = opts.bgAlpha })
+
+    button.icon = button:CreateTexture(nil, "ARTWORK")
+    button.icon:SetPoint("TOPLEFT", button, "TOPLEFT", 2, -2)
+    button.icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
+    if texturePath then
+        button.icon:SetTexture(texturePath)
+    end
+    button.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    button:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+
+    local borderColor = opts.borderColor or PHUI.Colors.BORDER_BRONZE
+    button:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(PHUI.Colors.ACCENT_GOLD[1], PHUI.Colors.ACCENT_GOLD[2], PHUI.Colors.ACCENT_GOLD[3], 1.0)
+        if opts.tooltipText then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(opts.tooltipText)
+            GameTooltip:Show()
+        end
+    end)
+    button:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(borderColor[1], borderColor[2], borderColor[3], 1.0)
+        if opts.tooltipText then
+            GameTooltip:Hide()
+        end
+    end)
+    if opts.onClick then
+        button:SetScript("OnClick", function(self)
+            if not self.isActionDisabled then
+                opts.onClick(self)
+            end
+        end)
+    end
+
+    return button
+end
+
+--------------------------------------------------
+-- Icon texture paths (ph/UI_HUD.lua:103-108) - real Blizzard icon art
+-- pH uses directly. Any Pockets element meaning the same thing must use
+-- the exact same texture, never a font-drawn character standing in for
+-- it - a font glyph never visually matches Blizzard's own icon art (the
+-- "+" mismatch this table exists to fix).
+--------------------------------------------------
+PHUI.Icons = {
+    PLUS = "Interface\\Buttons\\UI-PlusButton-Up",
+    MINUS = "Interface\\Buttons\\UI-MinusButton-Up",
+    -- Loot Log entry point. Pockets-only affordance (pH's History button
+    -- is a quest-log BOOK, deliberately a different thing), so a stock
+    -- Blizzard scroll item icon; boxed via CreateIconButton like Search
+    -- because item icon art carries baked-in padding.
+    SCROLL = "Interface\\Icons\\INV_Scroll_03",
+    -- "More / next" arrow (Recent strip's ">>"): Blizzard's spellbook
+    -- next-page arrow with its stock pressed variant - a real texture,
+    -- borderless like PLUS (the arrow art is its own button face).
+    NEXT = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up",
+    NEXT_PUSHED = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down",
+    -- Back arrow: the spellbook previous-page sibling of NEXT.
+    PREV = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up",
+}
+
+--- Borderless icon button: a plain Blizzard texture with no backdrop/box
+--- chrome, matching pH's own minMaxBtn/historyBtn (ph/UI_HUD.lua:956-990)
+--- - those have zero SetBackdrop call; their "border" is baked into the
+--- texture art itself. Use this (not CreateIconButton) for any icon that
+--- has a real Blizzard texture equivalent (e.g. PHUI.Icons.PLUS). Keep
+--- using CreateIconButton's boxed style only for Pockets-only affordances
+--- with no pH element to match (e.g. Search).
+function PHUI.CreateNativeIconButton(parent, size, texturePath, opts)
+    opts = opts or {}
+    local button = CreateFrame("Button", nil, parent)
+    button:SetSize(size, size)
+    button:SetNormalTexture(texturePath)
+    if opts.pushedTexture then
+        button:SetPushedTexture(opts.pushedTexture)
+    end
+    button:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+    if opts.tooltipText then
+        button:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(opts.tooltipText)
+            GameTooltip:Show()
+        end)
+        button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
+    if opts.onClick then
+        button:SetScript("OnClick", function(self)
+            if not self.isActionDisabled then
+                opts.onClick(self)
+            end
+        end)
+    end
+    return button
+end

@@ -1,0 +1,89 @@
+## Interface: 11509, 20504, 16001
+## Title: Pockets
+## Notes: Minimal, opinionated bag HUD with progressive disclosure, bag-full ETA, and automatic categorization (WoW Classic Anniversary, TBC-compatible)
+## Author: Adaptogen <DADS>
+## Version: 1.0.0
+## SavedVariables: PocketsDB
+## SavedVariablesPerCharacter: PocketsCharDB
+
+# Bootstrap (namespace + constants must load first)
+Init.lua
+Constants.lua
+
+# Generic UI theming primitives (colors/fonts/backdrops/panel+button
+# factories), namespaced under Pockets.UI.PHUI - Pockets-local only, not
+# a cross-addon global (see Shared/PHUI.lua's header comment)
+Shared/PHUI.lua
+Shared/GlanceFrame.lua
+Shared/CapacityRing.lua
+Shared/CircularPortrait.lua
+
+# WoW API Adapters (isolate direct Blizzard API access)
+Adapters/ClientAPI.lua
+Adapters/BagAPI.lua
+Adapters/ItemAPI.lua
+Adapters/CombatAPI.lua
+Adapters/TooltipAPI.lua
+Adapters/BindingsAPI.lua
+Adapters/MailAPI.lua
+Adapters/MoneyAPI.lua
+
+# NOTE: Bindings.xml is intentionally NOT listed here. WoW auto-discovers
+# and parses a file literally named "Bindings.xml" in the addon's root
+# directory using its dedicated keybinding-XML parser. Listing it in Files
+# routes it through the generic UI-XML loader instead, which doesn't
+# recognize the <Binding> element/attributes and throws
+# "Unrecognized XML" errors.
+
+# Domain services (no visible frames)
+Core/EventBus.lua
+Core/ItemCategorizer.lua
+Core/RecentItems.lua
+Core/LootLog.lua
+Core/CapacityEstimator.lua
+Core/InventoryState.lua
+Core/StackConsolidator.lua
+
+# UI
+UI/Layout.lua
+UI/MoneyFormat.lua
+UI/MetricRow.lua
+UI/PositionStrategy.lua
+UI/ItemButtonPool.lua
+UI/ItemPreview.lua
+UI/RecentItemStrip.lua
+UI/MiniHUD.lua
+UI/SidecarHUD.lua
+UI/Search.lua
+UI/ScrollBar.lua
+UI/LootLog.lua
+UI/Shell.lua
+UI/TooltipCounts.lua
+
+# Cross-cutting event wiring + public API
+Events.lua
+API.lua
+
+# Debug/test infrastructure
+Debug.lua
+Tests/TestRunner.lua
+Tests/CategorizerTests.lua
+Tests/RecentItemsTests.lua
+Tests/LootLogTests.lua
+Tests/LootLogUITests.lua
+Tests/CapacityEstimatorTests.lua
+Tests/InventoryStateTests.lua
+Tests/BagAPITests.lua
+Tests/ClientAPITests.lua
+Tests/MailAPITests.lua
+Tests/SearchTests.lua
+Tests/ItemButtonPoolTests.lua
+Tests/SecureBindingTests.lua
+Tests/ScrollBarTests.lua
+Tests/MoneyFormatTests.lua
+Tests/APITests.lua
+Tests/ShellTests.lua
+Tests/MiniHUDTests.lua
+Tests/SidecarHUDTests.lua
+Tests/StackResolverTests.lua
+Tests/PositionStrategyTests.lua
