@@ -24,7 +24,15 @@ local pH_History_Detail = {
     currentSessionId = nil,
     currentSession = nil,
     currentMetrics = nil,
+
+    -- "history" (archived, static) or "active" (in-progress session, live updates)
+    mode = "history",
+    live = false,
+    liveFingerprint = nil,
 }
+
+local LIVE_TICK_SEC = 1.0
+local FormatFriendlyDate  -- defined below
 
 -- Item quality colors (WoW standard)
 local QualityColors = {
@@ -125,6 +133,17 @@ function pH_History_Detail:Initialize(parent, historyController)
         self.contentFrames[tabInfo.key] = contentFrame
     end
 
+    -- Live ticker: child OnUpdate only runs while the pane is visible.
+    local ticker = CreateFrame("Frame", nil, parent)
+    local elapsed = 0
+    ticker:SetScript("OnUpdate", function(_, dt)
+        if not pH_History_Detail.live then return end
+        elapsed = elapsed + dt
+        if elapsed < LIVE_TICK_SEC then return end
+        elapsed = 0
+        pH_History_Detail:LiveTick()
+    end)
+
     -- Show summary tab by default
     self:SwitchTab("summary")
 end
@@ -171,12 +190,98 @@ end
 -- Set Session (called when user selects a session)
 --------------------------------------------------
 function pH_History_Detail:SetSession(sessionId)
+    local session = pH_SessionManager:GetSession(sessionId)
+    self:ShowSession(session, { mode = "history" })
     self.currentSessionId = sessionId
-    self.currentSession = pH_SessionManager:GetSession(sessionId)
-    self.currentMetrics = self.currentSession and pH_SessionManager:GetMetrics(self.currentSession) or nil
+end
 
-    -- Render active tab
+--------------------------------------------------
+-- Show Session (archived or active; same renderers for both)
+-- options: { mode = "history" | "active", live = boolean }
+-- Active sessions are read straight from SessionManager - never copied or archived.
+--------------------------------------------------
+function pH_History_Detail:ShowSession(session, options)
+    options = options or {}
+    self.mode = options.mode or "history"
+    self.live = options.live == true and self.mode == "active"
+    self.currentSession = session
+    self.currentSessionId = session and session.id or nil
+    self.currentMetrics = session and pH_SessionManager:GetMetrics(session) or nil
+    self.liveFingerprint = self.currentMetrics and self:ComputeFingerprint(session, self.currentMetrics) or nil
+
     self:RenderActiveTab()
+end
+
+-- Re-resolve the current session (after an edit such as zone rename).
+function pH_History_Detail:Refresh()
+    if self.mode == "active" then
+        self:ShowSession(pH_SessionManager:GetActiveSession(), { mode = "active", live = true })
+    else
+        self:SetSession(self.currentSessionId)
+    end
+end
+
+-- Cheap change detector: totals only (rates drift every second and would force rebuilds).
+function pH_History_Detail:ComputeFingerprint(session, metrics)
+    return table.concat({
+        tostring(metrics.totalValue or 0),
+        tostring(metrics.xpGained or 0),
+        tostring(metrics.repGained or 0),
+        tostring(metrics.honorGained or 0),
+        tostring(session.pausedAt ~= nil),
+        tostring(session.zone or ""),
+    }, "|")
+end
+
+-- Called ~1/sec while an active session is displayed and the pane is visible.
+function pH_History_Detail:LiveTick()
+    if self.mode ~= "active" then return end
+
+    local active = pH_SessionManager:GetActiveSession()
+    local shown = self.currentSession
+
+    if active and shown and active.id == shown.id then
+        local metrics = pH_SessionManager:GetMetrics(active)
+        self.currentSession = active
+        self.currentMetrics = metrics
+        local fp = self:ComputeFingerprint(active, metrics)
+        if fp ~= self.liveFingerprint then
+            self.liveFingerprint = fp
+            self:RenderActiveTab()
+        elseif self.activeTab == "summary" then
+            local subText = self.contentFrames.summary.scrollChild.subText
+            if subText then
+                subText:SetText(self:BuildSubText(active, metrics))
+            end
+        end
+        return
+    end
+
+    if active then
+        -- A different session started while the detail was open.
+        self:ShowSession(active, { mode = "active", live = true })
+        return
+    end
+
+    -- Session ended (stopped/archived or reset).
+    local finalized = shown and pH_SessionManager:GetSession(shown.id)
+    if pH_History and pH_History.OnActiveSessionEnded then
+        pH_History:OnActiveSessionEnded(finalized)
+    elseif finalized then
+        self:SetSession(finalized.id)
+    else
+        self:ShowSession(nil, { mode = "active", live = true })
+    end
+end
+
+function pH_History_Detail:BuildSubText(session, metrics)
+    local text = string.format("Started %s  |  Duration %s",
+        FormatFriendlyDate(session.startedAt),
+        pH_SessionManager:FormatDuration(metrics.durationSec))
+    if self.mode == "active" then
+        text = text .. (session.pausedAt and "  |  Paused" or "  |  Live")
+    end
+    return text
 end
 
 --------------------------------------------------
@@ -232,14 +337,14 @@ function pH_History_Detail:RenderEmptyState()
 
     local emptyText = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     emptyText:SetPoint("CENTER", scrollChild, "CENTER")
-    emptyText:SetText("No session selected")
+    emptyText:SetText(self.mode == "active" and "No active session" or "No session selected")
     emptyText:SetTextColor(pH_Colors.TEXT_DISABLED[1], pH_Colors.TEXT_DISABLED[2], pH_Colors.TEXT_DISABLED[3])
 end
 
 --------------------------------------------------
 -- Helper: Format friendly date
 --------------------------------------------------
-local function FormatFriendlyDate(timestamp)
+function FormatFriendlyDate(timestamp)
     if not timestamp then return "Unknown" end
 
     local now = time()
@@ -373,7 +478,7 @@ function pH_History_Detail:RenderSummaryTab()
         scrollChild.headerText = headerText
     end
     headerText:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 10, yOffset)
-    headerText:SetText("Session #" .. session.id .. " - " .. (session.zone or "Unknown"))
+    headerText:SetText((self.mode == "active" and "Active Session #" or "Session #") .. session.id .. " - " .. (session.zone or "Unknown"))
     headerText:SetTextColor(pH_Colors.ACCENT_GOLD[1], pH_Colors.ACCENT_GOLD[2], pH_Colors.ACCENT_GOLD[3])
     headerText:Show()
     yOffset = yOffset - 20
@@ -384,9 +489,7 @@ function pH_History_Detail:RenderSummaryTab()
         scrollChild.subText = subText
     end
     subText:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 10, yOffset)
-    subText:SetText(string.format("Started %s  |  Duration %s",
-        FormatFriendlyDate(session.startedAt),
-        pH_SessionManager:FormatDuration(metrics.durationSec)))
+    subText:SetText(self:BuildSubText(session, metrics))
     subText:SetTextColor(pH_Colors.TEXT_MUTED[1], pH_Colors.TEXT_MUTED[2], pH_Colors.TEXT_MUTED[3])
     subText:Show()
     yOffset = yOffset - 20
@@ -435,7 +538,7 @@ function pH_History_Detail:RenderSummaryTab()
             end
             if pH_Index then pH_Index:MarkStale() end
             if pH_History then pH_History:RefreshList() end
-            detail:SetSession(detail.currentSessionId)
+            detail:Refresh()
             self:Hide()
         end)
         zoneEditBox:SetScript("OnEscapePressed", function(self)

@@ -77,7 +77,7 @@ local function InitializeSavedVariables()
         pH_Settings = {
             trackZone = true,
             hudVisible = true,
-            hudMinimized = false,
+            hudMinimized = true,
             startPanelExpanded = true,  -- Expanded on first load (shows tips/zone context)
             historyVisible = false,
             historyMinimized = false,
@@ -236,7 +236,7 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
             pH_Settings = {
                 trackZone = true,
                 hudVisible = true,
-                hudMinimized = false,
+                hudMinimized = true,
                 historyVisible = false,
                 historyMinimized = false,
                 historyPosition = nil,
@@ -281,7 +281,7 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
             pH_Settings.hudVisible = true
         end
         if pH_Settings.hudMinimized == nil then
-            pH_Settings.hudMinimized = false
+            pH_Settings.hudMinimized = true
         end
         if pH_Settings.microBars == nil then
             pH_Settings.microBars = {

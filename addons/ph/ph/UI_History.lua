@@ -162,6 +162,20 @@ function pH_History:Initialize()
         pH_History:Hide()
     end)
 
+    -- Active session shortcut (opens the live view in the same Detail pane)
+    local activeBtn = CreateFrame("Button", nil, frame, "BackdropTemplate")
+    activeBtn:SetSize(110, 22)
+    activeBtn:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -8)
+    activeBtn:SetBackdrop(PHUI.Backdrops.PANEL)
+    activeBtn:SetBackdropColor(pH_Colors.BG_DARK[1], pH_Colors.BG_DARK[2], pH_Colors.BG_DARK[3], 0.90)
+    activeBtn:SetBackdropBorderColor(pH_Colors.BORDER_BRONZE[1], pH_Colors.BORDER_BRONZE[2], pH_Colors.BORDER_BRONZE[3], 0.70)
+    local activeBtnText = activeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    activeBtnText:SetPoint("CENTER")
+    activeBtnText:SetText("Active session")
+    activeBtn:SetScript("OnClick", function() pH_History:ShowActive() end)
+    activeBtn:Hide()
+    self.activeBtn = activeBtn
+
     -- Filters pane (top, 40px height)
     local filtersPane = CreateFrame("Frame", nil, frame, "BackdropTemplate")
     filtersPane:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -35)
@@ -274,8 +288,13 @@ function pH_History:Show()
     -- Apply filters and refresh list
     self:RefreshList()
 
-    -- Auto-select first session if none selected
-    if not self.selectedSessionId then
+    self:UpdateActiveButton()
+    if pH_History_Detail.mode == "active" then
+        pH_History_Detail:LiveTick()  -- catch up if the session ended while hidden
+    end
+
+    -- Auto-select first session if none selected (unless the live view is showing)
+    if not self.selectedSessionId and pH_History_Detail.mode ~= "active" then
         local sessionIds = pH_Index:QuerySessions(self.filterState)
         if #sessionIds > 0 then
             self:SelectSession(sessionIds[1])
@@ -341,6 +360,44 @@ function pH_History:SelectSession(sessionId)
 
     -- Notify detail pane to show session
     pH_History_Detail:SetSession(sessionId)
+end
+
+--------------------------------------------------
+-- Active session (live Detail view)
+--------------------------------------------------
+function pH_History:UpdateActiveButton()
+    if not self.activeBtn then return end
+    if pH_SessionManager:GetActiveSession() then
+        self.activeBtn:Show()
+    else
+        self.activeBtn:Hide()
+    end
+end
+
+-- Open History with the in-progress session in the Detail pane.
+function pH_History:ShowActive()
+    local active = pH_SessionManager:GetActiveSession()
+    if not active then return end
+    self:Show()
+    self.selectedSessionId = nil
+    pH_History_List:SetSelection(nil)
+    pH_History_Detail:ShowSession(active, { mode = "active", live = true })
+    self:UpdateActiveButton()
+end
+
+-- Live Detail noticed the active session ended. `finalized` is the archived
+-- session (stop) or nil (reset/discard). Keeps the window open on the result.
+function pH_History:OnActiveSessionEnded(finalized)
+    if pH_Index then pH_Index:MarkStale() end
+    self:RefreshList()
+    if finalized then
+        self:SelectSession(finalized.id)
+    else
+        self.selectedSessionId = nil
+        pH_History_List:SetSelection(nil)
+        pH_History_Detail:ShowSession(nil, { mode = "active", live = true })
+    end
+    self:UpdateActiveButton()
 end
 
 --------------------------------------------------
