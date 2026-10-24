@@ -450,6 +450,18 @@ function BagAPI:UsesSecureItemAttributes()
     return Pockets.Adapters.ClientAPI:IsForever()
 end
 
+-- Opens/closes the player's regular bags: the same entry point the "B"
+-- binding runs, so it lands on Blizzard's bags or whichever bag addon has
+-- replaced them. Returns false if the client has no such function.
+function BagAPI:ToggleDefaultBags()
+    local toggle = _G.ToggleAllBags or _G.OpenAllBags
+    if not toggle then
+        return false
+    end
+    toggle()
+    return true
+end
+
 -- Left-click/drag-start behavior: picks the item up onto the cursor (or
 -- swaps with whatever's already on the cursor) - identical to Blizzard's
 -- own ContainerFrameItemButton_OnClick/OnDragStart.

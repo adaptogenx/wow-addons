@@ -65,6 +65,12 @@ local function EnsureSavedVariables()
         PocketsDB.settings.recentItemPreviewEnabled = Pockets.Constants.DEFAULT_SETTINGS.recentItemPreviewEnabled
     end
 
+    for _, key in ipairs({ "glanceOpensBags", "gridView" }) do
+        if PocketsDB.settings[key] == nil then
+            PocketsDB.settings[key] = Pockets.Constants.DEFAULT_SETTINGS[key]
+        end
+    end
+
     if not PocketsCharDB then
         PocketsCharDB = { debug = { enabled = false, verbose = false } }
     end
@@ -244,6 +250,11 @@ mainFrame:SetScript("OnEvent", function(_, event, addonName, blockedFunc)
         ScheduleRefresh("player_entering_world")
     elseif event == "PLAYER_MONEY" then
         Pockets.Services.LootLog:ObserveMoney(Pockets.Adapters.MoneyAPI:GetMoney())
+        -- Gold changes (vendor, repair, mail, ...) don't touch bags, so no
+        -- domain event fires for them; redraw the HUD/footer money directly.
+        if Pockets.UI.Shell.frame then
+            Pockets.UI.Shell:OnDataChanged()
+        end
     elseif event == "LOOT_OPENED" then
         Pockets.Services.LootLog:SetLootWindowOpen(true)
     elseif event == "LOOT_CLOSED" then
@@ -278,6 +289,8 @@ end)
 local function ShowHelp()
     print("|cff00ff00=== Pockets Commands ===|r")
     print("|cffffff00/pockets show|r - Show/hide the HUD")
+    print("|cffffff00/pockets bags [on||off]|r - Clicking the Mini opens your regular bags (the \"B\" binding) instead of the Pockets panel (default off)")
+    print("|cffffff00/pockets view [grid||list]|r - one grid of categories + items (the only mode when on) or the category list (default grid)")
     print("|cffffff00/pockets recentpreview [on||off]|r - Show or set the large icon + tooltip preview when hovering Recent items (default off)")
     print("|cffffff00/pockets help|r - Show this help")
     print("|cffffff00/pockets help dev|r - Show debug/testing commands")
@@ -326,6 +339,31 @@ local function HandleCommand(msg)
                 .. (Pockets.SavedSettings.recentItemPreviewEnabled and "on" or "off"))
         else
             print("[Pockets] Usage: /pockets recentpreview on||off")
+        end
+    elseif cmd == "bags" then
+        local requested = (args[2] or ""):lower()
+        if requested == "on" or requested == "off" then
+            Pockets.SavedSettings.glanceOpensBags = (requested == "on")
+            print("[Pockets] Clicking the Mini now opens "
+                .. (requested == "on" and "your regular bags" or "the Pockets panel"))
+        elseif requested == "" then
+            print("[Pockets] Clicking the Mini opens "
+                .. (Pockets.SavedSettings.glanceOpensBags and "your regular bags" or "the Pockets panel"))
+        else
+            print("[Pockets] Usage: /pockets bags on||off")
+        end
+    elseif cmd == "view" then
+        local requested = (args[2] or ""):lower()
+        if requested == "grid" or requested == "list" then
+            Pockets.SavedSettings.gridView = (requested == "grid")
+            print("[Pockets] View: " .. requested .. (requested == "grid" and " (categories + items in one grid)" or ""))
+            if Pockets.UI.Shell.frame then
+                Pockets.UI.Shell:SetState(Pockets.UI.Shell.STATE.GLANCE)
+            end
+        elseif requested == "" then
+            print("[Pockets] View: " .. (Pockets.SavedSettings.gridView and "grid" or "list"))
+        else
+            print("[Pockets] Usage: /pockets view grid||list")
         end
     elseif cmd == "debug" then
         Pockets.Debug:HandleCommand(args)

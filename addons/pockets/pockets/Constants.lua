@@ -167,6 +167,8 @@ Constants.LAYOUT = {
 
     -- Item button size (ItemButtonPool).
     ITEM_BUTTON_SIZE = 40,
+    GRID_GAP = 4, -- gap between buttons in the All Items grid
+    GRID_HEADER_HEIGHT = 18, -- small category header above each grid section
 
     -- Search strip magnifier icon.
     SEARCH_ICON_SIZE = 14,
@@ -240,4 +242,10 @@ Constants.DEFAULT_SETTINGS = {
     -- warn against a large configuration surface, so new visual extras
     -- default OFF rather than always-on).
     recentItemPreviewEnabled = false,
+    -- Clicking the Mini opens the player's regular bags (whatever "B" is
+    -- bound to - Blizzard's or another bag addon) instead of the Pockets panel.
+    glanceOpensBags = false,
+    -- Bag view: categories + items in one grid is the only mode; false falls
+    -- back to the category list / drill-down.
+    gridView = true,
 }

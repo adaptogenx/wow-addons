@@ -632,7 +632,10 @@ function Shell:Initialize()
         if Shell.state ~= Shell.STATE.GLANCE then
             return
         end
-        Shell:SetState(Shell.STATE.MENU)
+        if Pockets.SavedSettings.glanceOpensBags and Pockets.Adapters.BagAPI:ToggleDefaultBags() then
+            return
+        end
+        Shell:SetState(Shell:GetOpenState())
     end)
 
     -- Escape dismisses straight to Glance (HandleEscape), never stepping
@@ -842,6 +845,9 @@ function Shell:ClearBody()
     end
     for _, row in ipairs(shell.allListRows) do
         row:Hide()
+    end
+    for _, header in ipairs(shell.gridHeaders or {}) do
+        header:Hide()
     end
     Pockets.UI.LootLog:Hide(shell.lootView)
     Pockets.UI.ItemButtonPool:ReleaseAll(shell.content)
@@ -1117,9 +1123,17 @@ function Shell:UpdateCombatBindings()
 end
 
 -- The view a combat open shows: it can't be laid out then, so it is built
--- ahead of time. Opening always lands on the category list (Menu), in and
--- out of combat.
+-- ahead of time. Opening lands on GetOpenState, in and out of combat.
 function Shell:GetCombatOpenState()
+    return self:GetOpenState()
+end
+
+-- Where opening from Glance lands: grid view is the only mode when enabled
+-- (categories + items in one view), otherwise the category list.
+function Shell:GetOpenState()
+    if Pockets.SavedSettings and Pockets.SavedSettings.gridView then
+        return self.STATE.ALL
+    end
     return self.STATE.MENU
 end
 
@@ -1262,6 +1276,7 @@ function Shell:ConfigureHeader()
 
     header.backButton:Show()
     header.closeButton:Show()
+    local showAllButton = not Pockets.SavedSettings.gridView
     local chrome = self.expanded.chrome
     local function SetTitle(text)
         -- The template's own title; lower case to match "pockets" everywhere.
@@ -1270,7 +1285,7 @@ function Shell:ConfigureHeader()
 
     if state == self.STATE.MENU then
         SetTitle("Pockets")
-        header.plusButton:Show()
+        header.plusButton:SetShown(showAllButton)
         header.lootButton:Show()
         -- The category list carries the search strip too (typing switches
         -- to All Items with the query); disabled in combat.
@@ -1280,14 +1295,14 @@ function Shell:ConfigureHeader()
         header.searchBox:Show()
     elseif state == self.STATE.CATEGORY then
         SetTitle(Constants.CATEGORY_LABEL[self.context.categoryID] or "")
-        header.plusButton:Show()
+        header.plusButton:SetShown(showAllButton)
         header.lootButton:Show()
         header.searchBox:Hide()
     elseif state == self.STATE.ALL then
-        SetTitle("All")
+        SetTitle(Pockets.SavedSettings.gridView and "Pockets" or "All")
         -- Search lives in its own strip, so every header keeps the same
         -- Loot Log / All buttons.
-        header.plusButton:Show()
+        header.plusButton:SetShown(showAllButton)
         header.lootButton:Show()
         header.searchBox:Show()
     elseif state == self.STATE.LOOT then
@@ -1718,12 +1733,87 @@ function Shell:RenderAllList(query)
     SetScrollBarShown(shell, contentHeight, usedContentHeight)
 end
 
+-- Grid view: every category (Recent excluded - it duplicates items) as a small
+-- header followed by its items as real item buttons. A search query just
+-- filters each category; empty categories are skipped.
+function Shell:RenderAllGrid(query)
+    local shell = self.frame.shell
+    local content = shell.content
+    local viewportWidth = BodyViewportWidth()
+    local Search = Pockets.UI.Search
+    local hasQuery = query ~= nil and query ~= ""
+
+    local size, gap = L.ITEM_BUTTON_SIZE, L.GRID_GAP
+    local headerHeight = L.GRID_HEADER_HEIGHT
+    local columns = math.max(1, math.floor((viewportWidth + gap) / (size + gap)))
+    shell.gridHeaders = shell.gridHeaders or {}
+
+    local y, headerCount, blocked = 0, 0, false
+    for _, categoryID in ipairs(Constants.CATEGORY_ORDER) do
+        if categoryID ~= Constants.CATEGORY.RECENT and not blocked then
+            local items = {}
+            for _, item in ipairs(Pockets.API.GetAggregatedCategoryItems(categoryID)) do
+                if not hasQuery or Search:Matches(item, query) then
+                    table.insert(items, item)
+                end
+            end
+            table.sort(items, function(a, b)
+                local an, bn = (a.name or ""):lower(), (b.name or ""):lower()
+                if an ~= bn then
+                    return an < bn
+                end
+                return (a.itemID or 0) < (b.itemID or 0)
+            end)
+
+            if #items > 0 then
+                headerCount = headerCount + 1
+                local header = shell.gridHeaders[headerCount]
+                if not header then
+                    header = PHUI.CreateLabel(content, "muted", nil, PHUI.Fonts.SMALL)
+                    header:SetJustifyH("LEFT")
+                    shell.gridHeaders[headerCount] = header
+                end
+                header:SetText(Constants.CATEGORY_LABEL[categoryID] or "")
+                header:ClearAllPoints()
+                header:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -y)
+                header:Show()
+                y = y + headerHeight
+
+                for index, item in ipairs(items) do
+                    local button = Pockets.UI.ItemButtonPool:Acquire(content)
+                    if not button then
+                        blocked = true
+                        break
+                    end
+                    Pockets.UI.ItemButtonPool:Configure(button, item)
+                    local col, row = (index - 1) % columns, math.floor((index - 1) / columns)
+                    button:ClearAllPoints()
+                    button:SetPoint("TOPLEFT", content, "TOPLEFT", col * (size + gap), -(y + row * (size + gap)))
+                    button:Show()
+                end
+                y = y + math.ceil(#items / columns) * (size + gap) + gap
+            end
+        end
+    end
+
+    local contentHeight = math.max(y - gap, 0)
+    local usedContentHeight = ResolveViewport(contentHeight)
+    self:ApplyDimensions()
+    content:SetWidth(viewportWidth)
+    content:SetHeight(math.max(contentHeight, 1))
+    SetScrollBarShown(shell, contentHeight, usedContentHeight)
+end
+
 function Shell:RenderAll(query)
     if self:DeferIfItemsBlocked() then
         return
     end
     self:ClearBody()
-    self:RenderAllList(query)
+    if Pockets.SavedSettings.gridView then
+        self:RenderAllGrid(query)
+    else
+        self:RenderAllList(query)
+    end
 end
 
 --------------------------------------------------

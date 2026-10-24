@@ -1318,3 +1318,26 @@ Pockets.Tests.TestRunner:Register("Shell: secure open/close in combat is followe
             tostring(opened), tostring(navRejected), tostring(closed))
     end)
 end)
+
+Pockets.Tests.TestRunner:Register("Settings: glanceOpensBags and gridView exist (bags off, grid on by default)", function()
+    local defaults = Pockets.Constants.DEFAULT_SETTINGS
+    local saved = Pockets.SavedSettings
+    local ok = defaults.glanceOpensBags == false and defaults.gridView == true
+        and type(saved.glanceOpensBags) == "boolean" and type(saved.gridView) == "boolean"
+    return ok, ok and "OK" or "expected boolean glanceOpensBags/gridView settings (false/true defaults)"
+end)
+
+Pockets.Tests.TestRunner:Register("Shell: All Items grid render leaves no list rows shown", function()
+    local was = Pockets.SavedSettings.gridView
+    Pockets.SavedSettings.gridView = true
+    Shell:SetState(Shell.STATE.ALL)
+    local shown = false
+    for _, row in ipairs(Shell.frame.shell.allListRows) do
+        if row:IsShown() then
+            shown = true
+        end
+    end
+    Pockets.SavedSettings.gridView = was
+    ResetToGlance()
+    return not shown, shown and "list rows visible in grid mode" or "OK"
+end)
