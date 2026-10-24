@@ -1024,6 +1024,10 @@ function pH_SessionManager:RecordMetricDelta(session, metricKey, delta, atTime)
         table.insert(buckets, current)
     end
     current.delta = (current.delta or 0) + value
+    local label = ({ xp = "Experience gained", rep = "Reputation gained", honor = "Honor gained" })[metricKey]
+    if label then
+        self:LogActivity(session, metricKey, label, value)
+    end
 
     local maxBuckets = bucketState.maxBuckets or RATE_BUCKET_MAX
     while #buckets > maxBuckets do
@@ -1470,6 +1474,38 @@ local function PushSample(buffer, value)
     end
 end
 
+-- Whole-session overview series: one sample per `interval` seconds, capped at
+-- OVERVIEW_MAX points per metric. When full, neighbouring points are averaged
+-- pairwise and the interval doubles, so any session length fits in bounded memory.
+local OVERVIEW_MAX = 360
+local OVERVIEW_START_INTERVAL = 60
+local OVERVIEW_KEYS = { "gold", "xp", "rep", "honor" }
+
+local function PushOverview(history, values, now)
+    local ov = history.overview
+    if not ov then
+        ov = { interval = OVERVIEW_START_INTERVAL, lastAt = 0, metrics = { gold = {}, xp = {}, rep = {}, honor = {} } }
+        history.overview = ov
+    end
+    if ov.lastAt > 0 and (now - ov.lastAt) < ov.interval then return end
+    ov.lastAt = now
+    for _, key in ipairs(OVERVIEW_KEYS) do
+        local series = ov.metrics[key]
+        series[#series + 1] = values[key] or 0
+    end
+    if #ov.metrics.gold > OVERVIEW_MAX then
+        for _, key in ipairs(OVERVIEW_KEYS) do
+            local old, merged = ov.metrics[key], {}
+            for i = 1, #old - 1, 2 do
+                merged[#merged + 1] = (old[i] + old[i + 1]) / 2
+            end
+            if #old % 2 == 1 then merged[#merged + 1] = old[#old] end
+            ov.metrics[key] = merged
+        end
+        ov.interval = ov.interval * 2
+    end
+end
+
 function pH_SessionManager:SampleMetricHistory(session, metrics)
     if not session or not metrics then return end
     if self:IsPaused(session) then return end
@@ -1479,6 +1515,14 @@ function pH_SessionManager:SampleMetricHistory(session, metrics)
     if not history then return end
 
     local now = time()
+    local values = {
+        gold = metrics.totalPerHour or 0,
+        xp = metrics.xpPerHour or 0,
+        rep = metrics.repPerHour or 0,
+        honor = metrics.honorPerHour or 0,
+    }
+    PushOverview(history, values, now)
+
     if history.lastSampleAt > 0 and (now - history.lastSampleAt) < history.sampleInterval then
         return
     end
@@ -1487,10 +1531,44 @@ function pH_SessionManager:SampleMetricHistory(session, metrics)
     local metricBuffers = history.metrics
     if not metricBuffers then return end
 
-    PushSample(metricBuffers.gold, metrics.totalPerHour or 0)
-    PushSample(metricBuffers.xp, metrics.xpPerHour or 0)
-    PushSample(metricBuffers.rep, metrics.repPerHour or 0)
-    PushSample(metricBuffers.honor, metrics.honorPerHour or 0)
+    PushSample(metricBuffers.gold, values.gold)
+    PushSample(metricBuffers.xp, values.xp)
+    PushSample(metricBuffers.rep, values.rep)
+    PushSample(metricBuffers.honor, values.honor)
+end
+
+-- Recorded rate samples for a metric ("gold","xp","rep","honor"), oldest first.
+-- maxMinutes (optional) limits to the most recent window. Returns the array and
+-- the sample interval in seconds. Reads the existing bounded ring buffer only.
+function pH_SessionManager:GetMetricSeries(session, metricKey, maxMinutes)
+    local history = session and session.metricHistory
+    local buffer = history and history.metrics and history.metrics[metricKey]
+    local interval = history and history.sampleInterval or 10
+    local out = {}
+
+    -- No window given: prefer the whole-session overview when it covers more
+    -- time than the recent ring buffer does.
+    local ov = history and history.overview
+    local ovSeries = ov and ov.metrics and ov.metrics[metricKey]
+    if not maxMinutes and ovSeries and #ovSeries >= 2
+        and (#ovSeries * ov.interval) > ((buffer and buffer.count or 0) * interval) then
+        for i = 1, #ovSeries do out[i] = ovSeries[i] end
+        return out, ov.interval
+    end
+
+    if not buffer or buffer.count == 0 then
+        return out, interval
+    end
+    local n = buffer.count
+    if maxMinutes then
+        n = math.min(n, math.max(1, math.floor(maxMinutes * 60 / interval)))
+    end
+    for offset = n - 1, 0, -1 do
+        local index = buffer.head - offset
+        if index <= 0 then index = index + buffer.capacity end
+        out[#out + 1] = buffer.samples[index] or 0
+    end
+    return out, interval
 end
 
 -- Format duration in human-readable form
@@ -1805,6 +1883,24 @@ function pH_SessionManager:RepriceAllSessions()
 end
 
 -- Add or update item in session.items aggregate
+-- Recent activity feed (display only; never read by accounting). Bounded ring of
+-- the newest ACTIVITY_LOG_MAX entries stored on the session itself.
+-- kind: "gold" | "expense" | "xp" | "rep" | "honor" | "gather"
+-- value: copper for gold/expense, points for xp/rep/honor, nil for gather
+local ACTIVITY_LOG_MAX = 50
+function pH_SessionManager:LogActivity(session, kind, text, value)
+    if not session or not kind or not text then return end
+    local log = session.activityLog
+    if not log then
+        log = {}
+        session.activityLog = log
+    end
+    log[#log + 1] = { t = time(), kind = kind, text = text, value = value }
+    while #log > ACTIVITY_LOG_MAX do
+        table.remove(log, 1)
+    end
+end
+
 function pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, count, expectedEach)
     if not session.items[itemID] then
         -- Create new item aggregate
@@ -1825,6 +1921,9 @@ function pH_SessionManager:AddItem(session, itemID, itemName, quality, bucket, c
     session.items[itemID].expectedTotal = session.items[itemID].expectedTotal + (count * expectedEach)
 
     self:AdjustRepPotentialForItem(session, itemID, count, itemName)
+    if count and count > 0 then
+        self:LogActivity(session, "gold", string.format("Looted %d x %s", count, itemName or "item"), count * (expectedEach or 0))
+    end
 end
 
 -- Increment gathering node counters
@@ -1853,6 +1952,7 @@ function pH_SessionManager:AddGatherNode(session, nodeName)
         session.gathering.nodesByType = {}
     end
     session.gathering.nodesByType[name] = (session.gathering.nodesByType[name] or 0) + 1
+    self:LogActivity(session, "gather", "Gathered " .. name)
 end
 
 -- Export module

@@ -322,6 +322,7 @@ function pH_Events:OnLootedCoin(message)
     if copper and copper > 0 then
         -- Post double-entry: Dr Assets:Cash, Cr Income:LootedCoin
         pH_Ledger:Post(session, "Assets:Cash", "Income:LootedCoin", copper)
+        pH_SessionManager:LogActivity(session, "gold", "Looted coin", copper)
 
         -- Phase 6: Pickpocket and lockbox attribution (reporting only, no double-post)
         -- INVARIANT: Only ONE Post to Assets:Cash per looted coin (above).
@@ -923,6 +924,7 @@ function pH_Events:OnQuestTurnedIn(questID, xpReward, moneyReward)
 
     -- Post double-entry: Dr Assets:Cash, Cr Income:Quest
     pH_Ledger:Post(session, "Assets:Cash", "Income:Quest", moneyReward)
+    pH_SessionManager:LogActivity(session, "gold", "Quest reward", moneyReward)
 
     if pH_DB_Account.debug.verbose then
         print(string.format("[pH] Quest reward: %s (Quest ID: %d)", 
@@ -1182,6 +1184,7 @@ function pH_Events:OnRepairAll(guildBankRepair)
 
         -- Post expense: Cr Assets:Cash (decrease), Dr Expense:Repairs
         pH_Ledger:Post(session, "Expense:Repairs", "Assets:Cash", repairCost)
+        pH_SessionManager:LogActivity(session, "expense", "Repairs", repairCost)
 
         -- Debug logging
         if pH_DB_Account.debug.verbose then
@@ -1631,6 +1634,7 @@ end
 function pH_Events:ProcessVendorSale(session, itemID, itemName, count, vendorProceeds, bucket)
     -- Post cash proceeds: Dr Assets:Cash, Cr Income:VendorSales
     pH_Ledger:Post(session, "Assets:Cash", "Income:VendorSales", vendorProceeds)
+    pH_SessionManager:LogActivity(session, "gold", string.format("Sold %d x %s", count, itemName), vendorProceeds)
 
     -- Consume FIFO lots to get held expected value by bucket
     local bucketValues = pH_Holdings:ConsumeFIFO(session, itemID, count)
