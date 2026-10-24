@@ -35,6 +35,9 @@ local function newFake(kind, parent)
     function methods.SetPushedTexture(self, t) self.pushedTexture = t end
     function methods.SetColorTexture(self, r, g, b, a) self.colorTexture = { r, g, b, a } end
     function methods.CreateTexture(self) return newFake("Texture", self) end
+    function methods.CreateLine(self) return newFake("Line", self) end
+    function methods.SetStartPoint(self, ...) self.startPoint = { ... } end
+    function methods.SetEndPoint(self, ...) self.endPoint = { ... } end
     function methods.CreateFontString(self, _, _, template)
         local fs = newFake("FontString", self)
         fs.template = template
@@ -80,7 +83,8 @@ function M.newEnv(opts)
         pcall = pcall, error = error, setmetatable = setmetatable, unpack = unpack or table.unpack,
         next = next, print = print,
     }
-    globals.GetBuildInfo = function() return "1.0", "1", "d", opts.interface or 11504 end
+    -- The live client returns extra values after the TOC number; keep that shape.
+    globals.GetBuildInfo = function() return "1.0", "1", "d", opts.interface or 11504, "Release", "Anniversary" end
     globals.UIParent = newFake("Frame")
     globals.UIParent.left, globals.UIParent.top, globals.UIParent.w, globals.UIParent.h = 0, 1080, 1920, 1080
     globals.GameTooltip = newFake("Frame")

@@ -319,6 +319,98 @@ end)
 --------------------------------------------------------------------
 -- pH adoption (Phase B): tokens used by pH UI resolve to PHUI
 --------------------------------------------------------------------
+test("Sparkline: downsample is bounded and never mutates input", function()
+    local _, ns = freshPHUI(nil, "ph")
+    local input = {}
+    for i = 1, 100 do input[i] = i end
+    local out = ns.UI.Sparkline.Downsample(input, 10)
+    eq(#out, 10); eq(#input, 100); eq(input[1], 1)
+    eq(#ns.UI.Sparkline.Downsample({ 1, 2, 3 }, 10), 3)
+end)
+
+test("Sparkline: <2 samples draws one flat baseline; zeros stay flat; pool is reused", function()
+    local _, ns, env = freshPHUI(nil, "ph")
+    local s = ns.UI.Sparkline:Create(env.G.UIParent, { width = 100, height = 20, maxPoints = 8 })
+    s:SetValues({ 5 })
+    eq(#s.lines, 1); eq(s.lines[1].shown, true)
+    s:SetValues({ 0, 0, 0, 0 })
+    for i = 1, 3 do
+        eq(s.lines[i].startPoint[4], 1, "zero data starts at baseline")
+        eq(s.lines[i].endPoint[4], 1, "zero data ends at baseline")
+    end
+    local vals = {}
+    for i = 1, 200 do vals[i] = i % 7 end
+    s:SetValues(vals)
+    eq(#s.lines, 7, "maxPoints 8 -> 7 segments")
+    s:SetValues({ 1, 2 })
+    eq(#s.lines, 7, "pool never shrinks")
+    eq(s.lines[1].shown, true); eq(s.lines[2].shown, false)
+    s:Clear()
+    eq(s.lines[1].shown, false)
+end)
+
+test("Panel and Tabs: structure and selection", function()
+    local _, ns, env = freshPHUI(nil, "ph")
+    local panel = ns.UI.Panel:Create(env.G.UIParent, { width = 100, height = 50, title = "T" })
+    eq(panel.title.text, "T"); assert(panel.body, "body")
+    local row = ns.UI.Panel:CreateRow(panel.body, "L", "V")
+    row:SetValue("W"); eq(row.value.text, "W")
+    local picked
+    local tabs = ns.UI.Tabs:Create(env.G.UIParent, {
+        tabs = { { key = "a", label = "A" }, { key = "b", label = "B" } },
+        onSelect = function(k) picked = k end, selected = "a",
+    })
+    eq(picked, "a"); tabs:Select("b"); eq(picked, "b"); eq(tabs:GetSelected(), "b")
+    tabs:Select("zzz"); eq(tabs:GetSelected(), "b", "unknown key ignored")
+end)
+
+test("pH summary: detail sections keep every accounting breakdown", function()
+    local env = stub.newEnv()
+    local ns = loadAddon(env, ADDONS.ph)
+    local Detail = {}
+    rawset(env.G, "pH_History_Detail", Detail)
+    rawset(env.G, "pH_Ledger", {
+        FormatMoney = function(_, c) return "M" .. tostring(c) end,
+        FormatMoneyShort = function(_, c) return "S" .. tostring(c) end,
+        GetBalance = function(_, _, acct) return ({ ["Income:LootedCoin"] = 300, ["Income:VendorSales"] = 100 })[acct] or 0 end,
+    })
+    stub.loadAddonFile(env, "addons/ph/ph/UI_History_Summary.lua", "ph", ns)
+    local metrics = {
+        totalPerHour = 10, cashPerHour = 6, expectedPerHour = 4, income = 300, incomeQuest = 0,
+        expenseRepairs = 50, expenseVendorBuys = 0, expenseTravel = 0, invVendorTrash = 0, invMarketItems = 0,
+        invGathering = 0, totalValue = 400, durationHours = 2,
+        xpEnabled = true, xpGained = 1500, xpPerHour = 750, xpBySource = { mob = 1000, quest = 500 }, xpQuestsCompleted = 2,
+        xpMobKillsByType = { Wolf = 3, Boar = 5 },
+        repEnabled = true, repGained = 20, repPerHour = 10, repTopFactions = { { name = "Org", gain = 20 } },
+        honorEnabled = false, honorGained = 0,
+    }
+    local sections = Detail:BuildDetailSections({ gathering = { totalNodes = 4 } }, metrics)
+    local byTitle = {}
+    for _, s in ipairs(sections) do byTitle[s.title] = s end
+    for _, t in ipairs({ "Economic Summary", "Income / Expenses", "Inventory Expected", "Gold by Source", "Gathering", "Experience", "Reputation" }) do
+        assert(byTitle[t], "missing section " .. t)
+    end
+    assert(not byTitle["Honor"], "honor hidden without gains")
+    assert(not byTitle["Pickpocket"], "pickpocket hidden without data")
+    eq(byTitle["Income / Expenses"].rows[4][3], "bad", "repairs flagged as expense")
+    eq(byTitle["Gathering"].rows[2][2], "2", "nodes/hour from duration")
+    eq(byTitle["Experience"].rows[#byTitle["Experience"].rows][1], "  Wolf", "mob kills sorted by count then name")
+end)
+
+test("PHUI.SetTooltipOwner: default anchors right; host hook takes over; nil restores", function()
+    local PHUI, _, env = freshPHUI()
+    local btn = PHUI.CreateIconButton(env.G.UIParent, 20, "x", { tooltipText = "T" })
+    btn.__scripts.OnEnter(btn)
+    eq(env.G.GameTooltip.anchor, "ANCHOR_RIGHT")
+    local seen
+    PHUI.SetTooltipOwner(function(owner) seen = owner; env.G.GameTooltip:SetOwner(owner, "ANCHOR_NONE") end)
+    btn.__scripts.OnEnter(btn)
+    eq(seen, btn); eq(env.G.GameTooltip.anchor, "ANCHOR_NONE")
+    PHUI.SetTooltipOwner(nil)
+    btn.__scripts.OnEnter(btn)
+    eq(env.G.GameTooltip.anchor, "ANCHOR_RIGHT")
+end)
+
 test("pH UI files only reference PHUI backdrops/colors that exist", function()
     local PHUI = freshPHUI(nil, "ph")
     for _, f in ipairs({ "UI_HUD", "UI_History", "UI_History_Detail", "UI_History_Filters", "UI_History_List" }) do

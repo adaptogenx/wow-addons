@@ -274,7 +274,9 @@ local function DefaultForeverDetector()
     if not GetBuildInfo then
         return false
     end
-    local toc = tonumber(select(4, GetBuildInfo()))
+    -- Parenthesised: GetBuildInfo returns more values after the TOC number, and
+    -- tonumber would take the next one as its base argument.
+    local toc = tonumber((select(4, GetBuildInfo())))
     return toc ~= nil and toc >= FOREVER_MIN and toc <= FOREVER_MAX
 end
 
@@ -333,6 +335,22 @@ end
 -- 0.08/0.92 texcoord inset pH uses to crop default icon padding) + hover
 -- border-color highlight + optional tooltip/disabled support. Mirrors
 -- pH's CreateMenuIconButton (UI_HUD.lua:1323-1379).
+-- Tooltip placement hook. Default anchors to the owner's right; a host addon
+-- can replace it with PHUI.SetTooltipOwner(fn) where fn(owner) calls
+-- GameTooltip:SetOwner itself (e.g. to pin tooltips beside its own window).
+local function DefaultTooltipOwner(owner)
+    GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+end
+local tooltipOwner = DefaultTooltipOwner
+
+function PHUI.SetTooltipOwner(fn)
+    tooltipOwner = fn or DefaultTooltipOwner
+end
+
+function PHUI.OwnTooltip(owner)
+    tooltipOwner(owner)
+end
+
 function PHUI.CreateIconButton(parent, size, texturePath, opts)
     opts = opts or {}
     local button = CreateFrame("Button", nil, parent, "BackdropTemplate")
@@ -354,7 +372,7 @@ function PHUI.CreateIconButton(parent, size, texturePath, opts)
     button:SetScript("OnEnter", function(self)
         self:SetBackdropBorderColor(PHUI.Colors.ACCENT_GOLD[1], PHUI.Colors.ACCENT_GOLD[2], PHUI.Colors.ACCENT_GOLD[3], 1.0)
         if opts.tooltipText then
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            PHUI.OwnTooltip(self)
             GameTooltip:SetText(opts.tooltipText)
             GameTooltip:Show()
         end
@@ -418,7 +436,7 @@ function PHUI.CreateNativeIconButton(parent, size, texturePath, opts)
     button:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
     if opts.tooltipText then
         button:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            PHUI.OwnTooltip(self)
             GameTooltip:SetText(opts.tooltipText)
             GameTooltip:Show()
         end)
