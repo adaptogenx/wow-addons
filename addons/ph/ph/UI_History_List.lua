@@ -4,7 +4,7 @@
     Displays sessions in a scrollable list with row pooling for performance.
 ]]
 
--- luacheck: globals time date pH_Index pH_Ledger CreateFrame UIDropDownMenu_Initialize UIDropDownMenu_CreateInfo ToggleDropDownMenu CloseDropDownMenus DropDownList1 UIDROPDOWNMENU_OPEN_MENU GameTooltip
+-- luacheck: globals pH_Tooltip time date pH_Index pH_Ledger pH_SessionManager UnitName CreateFrame UIDropDownMenu_Initialize UIDropDownMenu_CreateInfo ToggleDropDownMenu CloseDropDownMenus DropDownList1 UIDROPDOWNMENU_OPEN_MENU GameTooltip
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
@@ -19,6 +19,8 @@ local pH_History_List = {
     selectedId = nil,    -- Currently selected session ID
 
     rowHeight = 45,
+    poolSize = 8,        -- Row frames created (numVisibleRows shrinks by one while the active row shows)
+    activeRow = nil,
     numVisibleRows = 8,  -- Calculated based on available height
 
     -- Row actions dropdown
@@ -63,11 +65,24 @@ function pH_History_List:Initialize(parent, historyController)
     end)
     self.scrollBar = scrollBar
 
+    self.poolSize = self.numVisibleRows
+
     -- Create row pool
     for i = 1, self.numVisibleRows do
         local row = self:CreateRow(i)
         self.rows[i] = row
     end
+
+    -- Pinned "Current Session" row above the scrolling list
+    self:CreateActiveRow()
+    local ticker = CreateFrame("Frame", nil, parent)
+    local elapsed = 0
+    ticker:SetScript("OnUpdate", function(_, dt)
+        elapsed = elapsed + dt
+        if elapsed < 1 then return end
+        elapsed = 0
+        pH_History_List:UpdateActive()
+    end)
 
     -- Enable mouse wheel scrolling on content frame
     contentFrame:EnableMouseWheel(true)
@@ -116,7 +131,8 @@ function pH_History_List:CreateRow(index)
     local zoneText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     zoneText:SetPoint("TOPLEFT", row, "TOPLEFT", 5, -4)
     zoneText:SetJustifyH("LEFT")
-    zoneText:SetPoint("RIGHT", goldPerHour, "LEFT", -10, 0)  -- Extend to left of gold/hr text
+    zoneText:SetWordWrap(false)
+    zoneText:SetPoint("RIGHT", goldPerHour, "LEFT", -6, 0)  -- Extend to left of gold/hr text
     row.zoneText = zoneText
 
     local durationText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -160,7 +176,7 @@ function pH_History_List:CreateRow(index)
         if self.sessionId then
             local summary = pH_Index:GetSummary(self.sessionId)
             if summary then
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                pH_Tooltip:Own(self)
                 GameTooltip:SetText("Session #" .. summary.id, 1, 0.82, 0)
                 GameTooltip:AddLine(summary.zone or "Unknown", 1, 1, 1)
                 GameTooltip:AddLine(" ")
@@ -211,6 +227,81 @@ function pH_History_List:CreateRow(index)
 end
 
 --------------------------------------------------
+-- Active session row (always first when a session is running)
+--------------------------------------------------
+function pH_History_List:CreateActiveRow()
+    -- Same factory as every other row; only anchoring and click behavior differ.
+    local row = self:CreateRow(1)
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", self.parent, "TOPLEFT", 10, -5)
+    row:SetPoint("RIGHT", self.parent, "RIGHT", -30, 0)
+    row:SetScript("OnMouseUp", function()
+        pH_History_List.historyController:ShowActive()
+    end)
+    row:SetScript("OnEnter", function(self)
+        if not self.isSelected then self:SetBackdropColor(HOVER[1], HOVER[2], HOVER[3], 0.5) end
+    end)
+    row:SetScript("OnLeave", function(self)
+        if not self.isSelected then self:SetBackdropColor(0, 0, 0, 0) end
+    end)
+    self.activeRow = row
+end
+
+-- Show/hide and refresh the pinned row; shifts the list down by one row while visible.
+function pH_History_List:UpdateActive()
+    local row = self.activeRow
+    if not row then return end
+    local session = pH_SessionManager:GetActiveSession()
+    local wasShown = row:IsShown()
+
+    if not session then
+        row:Hide()
+        if wasShown then self:ApplyActiveLayout(false) end
+        return
+    end
+
+    local metrics = pH_SessionManager:GetMetrics(session)
+    row.goldPerHour:SetText(pH_Ledger:FormatMoneyShort(metrics.totalPerHour or 0) .. "/hr")
+
+    local zoneName = session.zone or "Unknown"
+    if #zoneName > 20 then
+        zoneName = zoneName:sub(1, 17) .. "..."
+    end
+    row.zoneText:SetText(zoneName)
+
+    local state = pH_SessionManager:IsPaused(session) and "Paused" or "In progress"
+    row.durationText:SetText(self:FormatDurationShort(metrics.durationSec) .. "  ·  " .. state)
+
+    row.charText:SetText(UnitName("player") or "")
+
+    local badges = ""
+    if metrics.xpGained and metrics.xpGained > 0 then badges = badges .. "|cff80ccff[XP]|r " end
+    if metrics.repGained and metrics.repGained > 0 then badges = badges .. "|cff4dff4d[Rep]|r " end
+    if metrics.honorGained and metrics.honorGained > 0 then badges = badges .. "|cffff8000[Hon]|r" end
+    row.badgesText:SetText(badges)
+
+    local selected = self.historyController and self.historyController:IsActiveSelected()
+    row.isSelected = selected
+    if selected then
+        row:SetBackdropColor(SELECTED[1], SELECTED[2], SELECTED[3], 0.75)
+    else
+        row:SetBackdropColor(0, 0, 0, 0)
+    end
+
+    row:Show()
+    if not wasShown then self:ApplyActiveLayout(true) end
+end
+
+function pH_History_List:ApplyActiveLayout(hasActive)
+    local offset = hasActive and self.rowHeight or 0
+    self.contentFrame:ClearAllPoints()
+    self.contentFrame:SetPoint("TOPLEFT", self.parent, "TOPLEFT", 5, -5 - offset)
+    self.contentFrame:SetPoint("BOTTOMRIGHT", self.parent, "BOTTOMRIGHT", -25, 5)
+    self.numVisibleRows = math.max(1, self.poolSize - (hasActive and 1 or 0))
+    self:SetSessions(self.sessionIds)
+end
+
+--------------------------------------------------
 -- Set Sessions (from query)
 --------------------------------------------------
 function pH_History_List:SetSessions(sessionIds)
@@ -242,6 +333,9 @@ end
 function pH_History_List:RenderVisibleRows(offset)
     offset = math.floor(offset)
 
+    for i = self.numVisibleRows + 1, #self.rows do
+        self.rows[i]:Hide()
+    end
     for i = 1, self.numVisibleRows do
         local row = self.rows[i]
         local dataIndex = offset + i

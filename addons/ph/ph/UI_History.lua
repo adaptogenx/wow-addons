@@ -4,7 +4,7 @@
     Manages the session history window with filters, list, and detail panes.
 ]]
 
--- luacheck: globals pH_Settings pH_Index UnitName GetRealmName UnitFactionGroup StaticPopupDialogs StaticPopup_Show
+-- luacheck: globals pH_Settings pH_Index SlashCmdList pH_AutoSession UnitName GetRealmName UnitFactionGroup StaticPopupDialogs StaticPopup_Show
 local _, addon = ...
 local PHUI = addon.UI.PHUI
 
@@ -114,9 +114,9 @@ function pH_History:Initialize()
         return
     end
 
-    -- Create main frame (640x480, centered)
+    -- Create main frame (centered)
     local frame = CreateFrame("Frame", "pH_HistoryFrame", UIParent, "BackdropTemplate")
-    frame:SetSize(640, 480)
+    frame:SetSize(760, 540)
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("DIALOG")
     frame:SetMovable(true)
@@ -136,45 +136,43 @@ function pH_History:Initialize()
         pH_History:OnKeyDown(key)
     end)
 
-    -- Backdrop (pH brand colors)
-    frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 16,
-        insets = {left = 4, right = 4, top = 4, bottom = 4}
-    })
-    local PH_BG_PARCHMENT = pH_Colors.BG_PARCHMENT
-    local PH_BORDER_BRONZE = pH_Colors.BORDER_BRONZE
-    frame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], 0.95)
-    frame:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 1)
+    -- Shared PHUI panel treatment
+    PHUI.ApplyBackdrop(frame, { backdrop = PHUI.Backdrops.PANEL, bgAlpha = 0.95 })
 
-    -- Title bar
-    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOP", frame, "TOP", 0, -10)
-    title:SetText("Session History")
+    -- Title
+    local title = PHUI.CreateLabel(frame, "primary", "pH \226\128\148 Session", PHUI.Fonts.TITLE)
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -12)
 
     -- Close button
-    local closeBtn = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    closeBtn:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -5, -5)
-    closeBtn:SetScript("OnClick", function()
-        pH_History:Hide()
-    end)
+    local closeBtn = PHUI.CreateCloseButton(frame, { size = 38, onClick = function() pH_History:Hide() end })
+    closeBtn:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -3)
 
-    -- Active session shortcut (opens the live view in the same Detail pane)
-    local activeBtn = CreateFrame("Button", nil, frame, "BackdropTemplate")
-    activeBtn:SetSize(110, 22)
-    activeBtn:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -8)
-    activeBtn:SetBackdrop(PHUI.Backdrops.PANEL)
-    activeBtn:SetBackdropColor(pH_Colors.BG_DARK[1], pH_Colors.BG_DARK[2], pH_Colors.BG_DARK[3], 0.90)
-    activeBtn:SetBackdropBorderColor(pH_Colors.BORDER_BRONZE[1], pH_Colors.BORDER_BRONZE[2], pH_Colors.BORDER_BRONZE[3], 0.70)
-    local activeBtnText = activeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    activeBtnText:SetPoint("CENTER")
-    activeBtnText:SetText("Active session")
-    activeBtn:SetScript("OnClick", function() pH_History:ShowActive() end)
-    activeBtn:Hide()
-    self.activeBtn = activeBtn
+    -- Settings and Help, left of the close button
+    local settingsBtn = PHUI.CreateIconButton(frame, 20, "Interface\\Buttons\\UI-OptionsButton", {
+        tooltipText = "Settings",
+        onClick = function()
+            if type(pH_AutoSession) == "table" and pH_AutoSession.OpenSettingsPanel then
+                pH_AutoSession:OpenSettingsPanel()
+            elseif SlashCmdList["PH"] then
+                SlashCmdList["PH"]("auto status")
+            end
+        end,
+    })
+    settingsBtn:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -38, -12)
+    self.settingsBtn = settingsBtn
+
+    local helpBtn = PHUI.CreateIconButton(frame, 20, "Interface\\Icons\\INV_Misc_QuestionMark", {
+        tooltipText = "Help",
+        onClick = function()
+            if SlashCmdList["PH"] then
+                SlashCmdList["PH"]("help")
+            else
+                print("[pH] Type /ph help for commands")
+            end
+        end,
+    })
+    helpBtn:SetPoint("RIGHT", settingsBtn, "LEFT", -2, 0)
+    self.helpBtn = helpBtn
 
     -- Filters pane (top, 40px height)
     local filtersPane = CreateFrame("Frame", nil, frame, "BackdropTemplate")
@@ -183,25 +181,19 @@ function pH_History:Initialize()
     filtersPane:SetHeight(40)
     self.filtersPane = filtersPane
 
-    -- List pane (left, 240px width) - pH brand colors
+    -- List pane (left, narrow)
     local listPane = CreateFrame("Frame", nil, frame, "BackdropTemplate")
     listPane:SetPoint("TOPLEFT", filtersPane, "BOTTOMLEFT", 0, -5)
     listPane:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 10)
-    listPane:SetWidth(240)
-    listPane:SetBackdrop(PHUI.Backdrops.PANEL)
-    local PH_BG_DARK = pH_Colors.BG_DARK
-    local PH_DIVIDER = pH_Colors.DIVIDER
-    listPane:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.90)
-    listPane:SetBackdropBorderColor(PH_DIVIDER[1], PH_DIVIDER[2], PH_DIVIDER[3], 0.80)
+    listPane:SetWidth(190)
+    PHUI.ApplyBackdrop(listPane, { backdrop = PHUI.Backdrops.PANEL, bgColor = PHUI.Colors.BG_DARK, borderColor = PHUI.Colors.DIVIDER })
     self.listPane = listPane
 
-    -- Detail pane (right, remaining width) - pH brand colors
+    -- Detail pane (right, remaining width)
     local detailPane = CreateFrame("Frame", nil, frame, "BackdropTemplate")
     detailPane:SetPoint("TOPLEFT", listPane, "TOPRIGHT", 5, 0)
     detailPane:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -10, 10)
-    detailPane:SetBackdrop(PHUI.Backdrops.PANEL)
-    detailPane:SetBackdropColor(PH_BG_DARK[1], PH_BG_DARK[2], PH_BG_DARK[3], 0.90)
-    detailPane:SetBackdropBorderColor(PH_DIVIDER[1], PH_DIVIDER[2], PH_DIVIDER[3], 0.80)
+    PHUI.ApplyBackdrop(detailPane, { backdrop = PHUI.Backdrops.PANEL, bgColor = PHUI.Colors.BG_DARK, borderColor = PHUI.Colors.DIVIDER })
     self.detailPane = detailPane
 
     self.frame = frame
@@ -288,16 +280,20 @@ function pH_History:Show()
     -- Apply filters and refresh list
     self:RefreshList()
 
-    self:UpdateActiveButton()
+    pH_History_List:UpdateActive()
     if pH_History_Detail.mode == "active" then
         pH_History_Detail:LiveTick()  -- catch up if the session ended while hidden
     end
 
-    -- Auto-select first session if none selected (unless the live view is showing)
+    -- Nothing selected: the running session comes first, otherwise the newest listed one
     if not self.selectedSessionId and pH_History_Detail.mode ~= "active" then
-        local sessionIds = pH_Index:QuerySessions(self.filterState)
-        if #sessionIds > 0 then
-            self:SelectSession(sessionIds[1])
+        if pH_SessionManager:GetActiveSession() then
+            self:SelectActive()
+        else
+            local sessionIds = pH_Index:QuerySessions(self.filterState)
+            if #sessionIds > 0 then
+                self:SelectSession(sessionIds[1])
+            end
         end
     end
 
@@ -360,29 +356,38 @@ function pH_History:SelectSession(sessionId)
 
     -- Notify detail pane to show session
     pH_History_Detail:SetSession(sessionId)
+    pH_History_List:UpdateActive()
 end
 
 --------------------------------------------------
 -- Active session (live Detail view)
 --------------------------------------------------
-function pH_History:UpdateActiveButton()
-    if not self.activeBtn then return end
-    if pH_SessionManager:GetActiveSession() then
-        self.activeBtn:Show()
-    else
-        self.activeBtn:Hide()
-    end
+function pH_History:IsActiveSelected()
+    return self.selectedSessionId == nil and pH_History_Detail.mode == "active"
+        and pH_SessionManager:GetActiveSession() ~= nil
 end
 
--- Open History with the in-progress session in the Detail pane.
-function pH_History:ShowActive()
+-- Select the in-progress session in the Detail pane (no window changes).
+function pH_History:SelectActive()
     local active = pH_SessionManager:GetActiveSession()
     if not active then return end
-    self:Show()
     self.selectedSessionId = nil
     pH_History_List:SetSelection(nil)
     pH_History_Detail:ShowSession(active, { mode = "active", live = true })
-    self:UpdateActiveButton()
+    pH_History_List:UpdateActive()
+end
+
+-- Open History with the in-progress session in the Detail pane.
+-- metricKey (optional): chart to show on the Summary tab.
+function pH_History:ShowActive(metricKey)
+    if not pH_SessionManager:GetActiveSession() then return end
+    if not (self.frame and self.frame:IsShown()) then
+        self:Show()
+    end
+    self:SelectActive()
+    if metricKey then
+        pH_History_Detail:SelectMetric(metricKey)
+    end
 end
 
 -- Live Detail noticed the active session ended. `finalized` is the archived
@@ -397,7 +402,7 @@ function pH_History:OnActiveSessionEnded(finalized)
         pH_History_List:SetSelection(nil)
         pH_History_Detail:ShowSession(nil, { mode = "active", live = true })
     end
-    self:UpdateActiveButton()
+    pH_History_List:UpdateActive()
 end
 
 --------------------------------------------------

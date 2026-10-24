@@ -4,7 +4,7 @@
     Shows real-time session metrics in accounting-style layout.
 ]]
 
--- luacheck: globals pH_Settings pH_History pH_Ledger pH_SessionManager pH_Index SlashCmdList pH_AutoSession
+-- luacheck: globals pH_Tooltip pH_Settings pH_History pH_Ledger pH_SessionManager pH_Index SlashCmdList pH_AutoSession
 
 local _, addon = ...
 local PHUI = addon.UI.PHUI
@@ -17,10 +17,13 @@ local UPDATE_INTERVAL = 1.0 -- Update every 1 second
 local UpdateStartPanelContent  -- Forward declaration (defined after Initialize)
 
 -- Layout constants (single source of truth)
-local PADDING = 12              -- Inner padding on all sides
+local PADDING = PHUI.Spacing.PADDING  -- Inner padding on all sides
 local HEADER_HEIGHT = 20        -- Header row height (logo, buttons, icons)
 local BODY_GAP = 6              -- Gap between header and body
-local TILE_HEIGHT = 18          -- Micro-bar tile (icon 12 + gap 2 + bar 4)
+local TILE_HEIGHT = 23          -- Metric cell: icon/rate row (12) + gap (3) + sparkline (8)
+local TILE_WIDTH = 54
+local TILE_GAP = 8              -- Divider sits centered in this gap
+local SPARK_HEIGHT = 8
 
 -- Frame heights computed from content
 local function ComputeMicroFrameHeight()
@@ -34,20 +37,18 @@ local FRAME_WIDTH = 180
 local FRAME_HEIGHT = 180        -- Base; expanded height computed dynamically
 local FRAME_HEIGHT_MINI = ComputeMicroFrameHeight()
 
--- Glance width for exactly 4 metrics: left pad + 4*tile + 3*gap + right pad = 12 + 200 + 42 + 12
+-- Glance width (unchanged from the original compact HUD)
 local GLANCE_WIDTH = 266
 
--- pH Brand colors (from PH_BRAND_BRIEF.md - Classic-safe)
-local PH_TEXT_PRIMARY = {0.86, 0.82, 0.70}
-local PH_TEXT_MUTED = {0.62, 0.58, 0.50}
-local PH_ACCENT_GOOD = {0.25, 0.78, 0.42}
-local PH_BG_DARK = {0.08, 0.07, 0.06, 0.85}
-local PH_BG_PARCHMENT = {0.18, 0.16, 0.13, 0.85}
-local PH_BORDER_BRONZE = {0.52, 0.42, 0.28}
-
--- Additional pH brand tokens
-local PH_ACCENT_BAD = {0.85, 0.38, 0.32}  -- Red for stop/warnings
-local PH_ACCENT_GOLD_INCOME = PHUI.Colors.ACCENT_GOLD  -- Classic gold for income highlights
+-- Shared PHUI palette
+local PH_TEXT_PRIMARY = PHUI.Colors.TEXT_PRIMARY
+local PH_TEXT_MUTED = PHUI.Colors.TEXT_MUTED
+local PH_ACCENT_GOOD = PHUI.Colors.ACCENT_GOOD
+local PH_BG_DARK = PHUI.Colors.BG_DARK
+local PH_BG_PARCHMENT = PHUI.Colors.BG_PARCHMENT
+local PH_BORDER_BRONZE = PHUI.Colors.BORDER_BRONZE
+local PH_ACCENT_BAD = PHUI.Colors.ACCENT_BAD
+local PH_ACCENT_GOLD_INCOME = PHUI.Colors.ACCENT_GOLD
 
 -- Micro-bar colors (pH brand palette)
 local MICROBAR_COLORS = {
@@ -90,11 +91,11 @@ local HEADER_ICON_HISTORY = "Interface\\QUESTFRAME\\UI-QuestLog-BookIcon"
 local HEADER_ICON_MINUS = "Interface\\Buttons\\UI-MinusButton-Up"
 local HEADER_ICON_PLUS = "Interface\\Buttons\\UI-PlusButton-Up"
 local HEADER_ICON_SETTINGS = "Interface\\Buttons\\UI-OptionsButton"
-local ICON_GAP = 2
-local ICON_SIZE = 20  -- Match stop button height (20px)
+local ICON_GAP = PHUI.Spacing.ICON_GAP
+local ICON_SIZE = PHUI.Spacing.ICON_BUTTON_SIZE  -- Match stop button height
 local OVERFLOW_ICON_SIZE = 14
-local HEADER_MIN_WIDTH = 226
 local PRIMARY_BTN_WIDTH = 78
+local STOP_BTN_WIDTH = 48
 
 -- Color keys mapping for micro-bar colors
 local colorKeys = { gold = "GOLD", xp = "XP", rep = "REP", honor = "HONOR" }
@@ -111,14 +112,21 @@ local metricStates = {
 local METRIC_ORDER = { "gold", "rep", "xp", "honor" }
 
 local HideOverflowMenu
+local LayoutHeader
 local lastSessionStateKey = nil
 
 --------------------------------------------------
 -- Micro-Bar Helper Functions
 --------------------------------------------------
 
--- Format rate for micro-bar display (ultra-compact, no /h suffix to save space)
+local FormatRateBase
+
+-- Format rate for the Glance cell (compact; callers add the /h suffix)
 local function FormatRateForMicroBar(metricKey, rate)
+    return FormatRateBase(metricKey, rate)
+end
+
+function FormatRateBase(metricKey, rate)
     if metricKey == "gold" then
         -- Inline FormatAccountingShort logic for gold
         if not rate or rate == 0 then
@@ -510,7 +518,7 @@ local function RenderRepTooltip(model)
     GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
     GameTooltip:AddLine("- Potential rep means rep you could gain if turning in quest items (normalized per item).", 0.62, 0.58, 0.50, true)
     GameTooltip:AddLine("- Potential rep will be converted to gained rep if turned in during this session.", 0.62, 0.58, 0.50, true)
-    GameTooltip:AddLine("- Bar shows current rate vs. session rate.", 0.62, 0.58, 0.50, true)
+    GameTooltip:AddLine("- Sparkline: recent rate samples (last 30 min).", 0.62, 0.58, 0.50, true)
 end
 
 local function FormatMetricRateTooltip(metricKey, ratePerHour)
@@ -530,7 +538,7 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
         headerText = "Rep/Hour"
     end
     local currentText = state.lastUpdatedText ~= "" and state.lastUpdatedText or "0"
-    GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
+    pH_Tooltip:Own(anchor)
     GameTooltip:SetText(headerText)
     if metricKey ~= "rep" and metricKey ~= "xp" then
         GameTooltip:AddLine(string.format("Current: %s", currentText), 0.86, 0.82, 0.70)
@@ -552,11 +560,11 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
             GameTooltip:AddLine("Recent pace adjusted for burst XP", 0.8, 0.8, 0.8)
         end
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
-        GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
+        GameTooltip:AddLine("Sparkline: recent rate samples (last 30 min).", 0.62, 0.58, 0.50, true)
     elseif metricKey == "rep" then
         RenderRepTooltip(state.tooltipData)
     else
-        GameTooltip:AddLine("Bar shows recent rate compared to session avg.", 0.62, 0.58, 0.50, true)
+        GameTooltip:AddLine("Sparkline: recent rate samples (last 30 min).", 0.62, 0.58, 0.50, true)
         if state.icon and state.icon:GetAlpha() < 1 then
             GameTooltip:AddLine("No tracked gain this session.", 0.62, 0.58, 0.50)
         end
@@ -564,45 +572,50 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
     GameTooltip:Show()
 end
 
--- Reposition tiles horizontally in fixed order (gold, rep, xp, honor)
-local function RepositionTiles(isCollapsed)
-    local tileWidth = 50
-    local tileSpacing = 14
+-- Reposition tiles horizontally in fixed order (gold, rep, xp, honor) and
+-- place a divider in the gap between neighbouring visible tiles.
+local function RepositionTiles()
     local orderedTiles = {}
-    
-    -- Build ordered list of tiles (all tiles, in fixed order)
     for _, metricKey in ipairs(METRIC_ORDER) do
         local state = metricStates[metricKey]
         if state and state.tile and state.tile:IsShown() then
             table.insert(orderedTiles, state)
         end
     end
-    
-    local tileCount = #orderedTiles
-    if tileCount == 0 then return end
 
-    if isCollapsed then
-        -- Horizontal layout: tiles in bodyContainer (below header)
-        for i, state in ipairs(orderedTiles) do
-            state.tile:ClearAllPoints()
-            if i == 1 then
-                state.tile:SetPoint("TOPLEFT", hudFrame.bodyContainer, "TOPLEFT", 0, 0)
-            else
-                -- Subsequent tiles: align top with first tile, position to right
-                state.tile:SetPoint("TOP", orderedTiles[1].tile, "TOP", 0, 0)
-                state.tile:SetPoint("LEFT", orderedTiles[i-1].tile, "RIGHT", tileSpacing, 0)
-            end
-        end
-    else
-        -- Expanded layout: centered below header timer (headerContainer removed)
-        local totalWidth = (tileCount * tileWidth) + ((tileCount - 1) * tileSpacing)
-        local startX = -totalWidth / 2 + tileWidth / 2
-        for i, state in ipairs(orderedTiles) do
-            local xOffset = startX + ((i - 1) * (tileWidth + tileSpacing))
-            state.tile:ClearAllPoints()
-            state.tile:SetPoint("TOP", hudFrame.headerTimer, "BOTTOM", xOffset, -8)
+    local dividers = hudFrame.tileDividers or {}
+    for i, state in ipairs(orderedTiles) do
+        state.tile:ClearAllPoints()
+        if i == 1 then
+            state.tile:SetPoint("TOPLEFT", hudFrame.bodyContainer, "TOPLEFT", 0, 0)
+        else
+            state.tile:SetPoint("TOPLEFT", orderedTiles[i - 1].tile, "TOPRIGHT", TILE_GAP, 0)
         end
     end
+    for i, divider in ipairs(dividers) do
+        divider:ClearAllPoints()
+        local left = orderedTiles[i]
+        if left and orderedTiles[i + 1] then
+            divider:SetPoint("TOP", left.tile, "TOPRIGHT", TILE_GAP / 2, 0)
+            divider:SetPoint("BOTTOM", left.tile, "BOTTOMRIGHT", TILE_GAP / 2, 0)
+            divider:Show()
+        else
+            divider:Hide()
+        end
+    end
+end
+
+local SPARK_MINUTES = 30
+
+-- Redraw a tile's sparkline only when a new sample has been recorded.
+local function RefreshSparkline(state, metricKey, session, color)
+    local history = session and session.metricHistory
+    local stamp = history and history.lastSampleAt or 0
+    local sig = tostring(session and session.id) .. ":" .. stamp .. ":" .. tostring(color)
+    if state.sparkSig == sig then return end
+    state.sparkSig = sig
+    state.spark:SetColor(color)
+    state.spark:SetValues((pH_SessionManager:GetMetricSeries(session, metricKey, SPARK_MINUTES)))
 end
 
 -- Update micro-bars for collapsed state
@@ -658,16 +671,6 @@ local function UpdateMicroBars(session, metrics)
             if isActive then
                 -- Keep tile text stable with session context while bar fill reflects recent pace.
                 state.displayRate = sessionAvgRate
-                local normalized = 0
-                if sessionAvgRate > 0 then
-                    normalized = recentAvgRate / sessionAvgRate
-                elseif recentAvgRate > 0 then
-                    normalized = 1
-                end
-                if normalized < 0 then normalized = 0 end
-                if normalized > 1 then normalized = 1 end
-                state.bar:SetValue(normalized)
-
                 -- Update text (avoid string churn)
                 local newText = FormatRateForMicroBar(metricKey, state.displayRate)
                 if metricKey == "rep" and state.hasProjected then
@@ -681,13 +684,11 @@ local function UpdateMicroBars(session, metrics)
                 -- Set active colors (full opacity)
                 state.icon:SetVertexColor(1, 1, 1)  -- Full color, no tinting
                 state.icon:SetAlpha(1.0)  -- Full opacity
-                state.valueText:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+                state.valueText:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
                 local colorKey = colorKeys[metricKey]
-                local fillColor = MICROBAR_COLORS[colorKey].fill
-                state.bar:GetStatusBarTexture():SetVertexColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4])
+                RefreshSparkline(state, metricKey, session, MICROBAR_COLORS[colorKey].fill)
             else
                 -- Inactive: gray out (reduced opacity)
-                state.bar:SetValue(0)  -- Empty bar
                 local inactiveText = "0"
                 if metricKey == "rep" and state.hasProjected then
                     inactiveText = "0*"
@@ -699,57 +700,68 @@ local function UpdateMicroBars(session, metrics)
                 state.icon:SetVertexColor(0.6, 0.6, 0.6)  -- Gray tint
                 state.icon:SetAlpha(0.7)  -- Reduced opacity but still visible
                 state.icon:Show()  -- Ensure icon is always visible
-                state.valueText:SetTextColor(0.4, 0.4, 0.4, 0.5)
-                -- Gray out bar fill
-                state.bar:GetStatusBarTexture():SetVertexColor(0.3, 0.3, 0.3, 0.3)
+                state.valueText:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3], 0.8)
+                -- Flat, dimmed sparkline
+                RefreshSparkline(state, metricKey, session, PHUI.Colors.TEXT_DISABLED)
             end
         end
     end
 
     -- Reposition tiles horizontally in fixed order (collapsed layout)
-    RepositionTiles(true)
+    RepositionTiles()
 end
 
 -- CreateHeaderIcons - icon row shared by all HUD states
 -- Order (right to left): Session detail | History | Overflow
+-- Re-anchor the header controls for the current state (called from Update).
+LayoutHeader = function(hasSession)
+    local gap = ICON_GAP
+    hudFrame.stopBtn:ClearAllPoints()
+    hudFrame.stopBtn:SetPoint("RIGHT", hudFrame.minMaxBtn, "LEFT", -gap, 0)
+    hudFrame.pauseBtn:ClearAllPoints()
+    hudFrame.pauseBtn:SetPoint("RIGHT", hudFrame.stopBtn, "LEFT", -gap, 0)
+    hudFrame.overflowBtn:ClearAllPoints()
+    hudFrame.overflowBtn:SetPoint("RIGHT", hasSession and hudFrame.pauseBtn or hudFrame.stopBtn, "LEFT", -gap, 0)
+    hudFrame.historyBtn:ClearAllPoints()
+    hudFrame.historyBtn:SetPoint("RIGHT", hasSession and hudFrame.pauseBtn or hudFrame.stopBtn, "LEFT", -gap, 0)
+end
+
+local function SetMinMaxGlyph(btn, texture, tooltip)
+    btn.icon:SetTexture(texture)
+    btn.tooltipText = tooltip
+end
+
 local function CreateHeaderIcons(parent)
     if not parent then return end
 
-    -- Minimize/Maximize (rightmost)
-    local minMaxBtn = CreateFrame("Button", nil, parent)
-    minMaxBtn:SetSize(ICON_SIZE, ICON_SIZE)
+    -- Detail / start-panel toggle (rightmost). Boxed shared icon button; glyph and
+    -- tooltip are swapped per state via SetMinMaxGlyph.
+    local minMaxBtn = PHUI.CreateIconButton(parent, ICON_SIZE, HEADER_ICON_PLUS)
     minMaxBtn:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -PADDING, -PADDING)
-    minMaxBtn:SetNormalTexture(HEADER_ICON_MINUS)
-    minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
-    minMaxBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
+    minMaxBtn.tooltipText = "Session detail"
+    minMaxBtn:HookScript("OnEnter", function(self)
+        if self.tooltipText then
+            pH_Tooltip:Own(self)
+            GameTooltip:SetText(self.tooltipText)
+            GameTooltip:Show()
+        end
+    end)
+    minMaxBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
     minMaxBtn:SetScript("OnClick", function()
         HideOverflowMenu()
         pH_HUD:OpenSessionDetail()
     end)
-    minMaxBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Session detail")
-        GameTooltip:Show()
-    end)
-    minMaxBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     parent.minMaxBtn = minMaxBtn
 
     -- History (middle)
-    local historyBtn = CreateFrame("Button", nil, parent)
-    historyBtn:SetSize(ICON_SIZE, ICON_SIZE)
+    local historyBtn = PHUI.CreateIconButton(parent, ICON_SIZE, HEADER_ICON_HISTORY, {
+        tooltipText = "View session history",
+        onClick = function()
+            HideOverflowMenu()
+            pH_History:Toggle()
+        end,
+    })
     historyBtn:SetPoint("RIGHT", minMaxBtn, "LEFT", -ICON_GAP, 0)
-    historyBtn:SetNormalTexture(HEADER_ICON_HISTORY)
-    historyBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
-    historyBtn:SetScript("OnClick", function()
-        HideOverflowMenu()
-        pH_History:Toggle()
-    end)
-    historyBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("View session history")
-        GameTooltip:Show()
-    end)
-    historyBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     parent.historyBtn = historyBtn
 
     -- Overflow menu trigger (leftmost icon)
@@ -765,7 +777,7 @@ local function CreateHeaderIcons(parent)
     overflowText:SetTextColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3])
     overflowBtn:SetScript("OnEnter", function(self)
         self:SetBackdropBorderColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3], 1.0)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        pH_Tooltip:Own(self)
         GameTooltip:SetText("More actions")
         GameTooltip:Show()
     end)
@@ -850,19 +862,7 @@ function pH_HUD:Initialize()
     hudFrame:SetSize(FRAME_WIDTH, FRAME_HEIGHT)
     hudFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 50, -50)
 
-    -- Apply WoW-themed backdrop with pH brand colors
-    hudFrame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 },
-    })
-    -- Use pH brand parchment background
-    hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], PH_BG_PARCHMENT[4])
-    -- Use pH brand bronze border
-    hudFrame:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 1)
+    PHUI.ApplyBackdrop(hudFrame, { backdrop = PHUI.Backdrops.PANEL })
 
     -- Make it movable
     hudFrame:SetMovable(true)
@@ -893,10 +893,35 @@ function pH_HUD:Initialize()
     hudFrame.stopBtn = stopBtn
     hudFrame.primarySessionBtn = stopBtn
 
+    -- Pause / resume toggle (active session only), left of Stop
+    local headerPauseBtn = PHUI.CreateIconButton(hudFrame, ICON_SIZE, HEADER_ICON_PAUSE)
+    headerPauseBtn.tooltipText = "Pause session"
+    headerPauseBtn:HookScript("OnEnter", function(self)
+        pH_Tooltip:Own(self)
+        GameTooltip:SetText(self.tooltipText)
+        GameTooltip:Show()
+    end)
+    headerPauseBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
+    headerPauseBtn:SetScript("OnClick", function()
+        HideOverflowMenu()
+        local active = pH_SessionManager:GetActiveSession()
+        if not active then return end
+        local ok, message
+        if pH_SessionManager:IsPaused(active) then
+            ok, message = pH_SessionManager:ResumeSession("manual", "hud_pause")
+        else
+            ok, message = pH_SessionManager:PauseSession("manual", "hud_pause")
+        end
+        if ok then pH_HUD:Update() end
+        if message then print("[pH] " .. message) end
+    end)
+    headerPauseBtn:Hide()
+    hudFrame.pauseBtn = headerPauseBtn
+
     --------------------------------------------------
     -- Header row (fixed height, all elements vertically centered)
     --------------------------------------------------
-    local HEADER_ROW_HEIGHT = 20
+    local HEADER_ROW_HEIGHT = HEADER_HEIGHT
     local headerRow = CreateFrame("Frame", nil, hudFrame)
     headerRow:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 0, -PADDING)
     headerRow:SetPoint("TOPRIGHT", hudFrame, "TOPRIGHT", 0, -PADDING)
@@ -908,21 +933,15 @@ function pH_HUD:Initialize()
     hudFrame.minMaxBtn:SetPoint("RIGHT", headerRow, "RIGHT", -PADDING, 0)
 
     -- Title (always visible) - "pH" branding (lowercase p, uppercase H)
-    local title = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local title = PHUI.CreateLabel(hudFrame, "primary", "pH", PHUI.Fonts.HEADER)
     title:SetPoint("LEFT", headerRow, "LEFT", PADDING, 0)
-    title:SetText("pH")
-    title:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])  -- pH brand primary text
-    -- Apply Friz Quadrata font per brand brief (WoW's built-in font)
-    title:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
     hudFrame.title = title
 
     -- Timer (always visible, next to title)
-    local headerTimer = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local headerTimer = PHUI.CreateLabel(hudFrame, "primary", "0m", PHUI.Fonts.NORMAL)
     headerTimer:SetPoint("LEFT", title, "RIGHT", 6, 0)
-    headerTimer:SetPoint("RIGHT", stopBtn, "LEFT", -6, 0)
+    headerTimer:SetPoint("RIGHT", hudFrame.pauseBtn, "LEFT", -6, 0)
     headerTimer:SetJustifyH("LEFT")
-    headerTimer:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])  -- pH brand muted text
-    headerTimer:SetText("0m")
     hudFrame.headerTimer = headerTimer
 
     -- Header container (for backward compatibility, positioned below header row)
@@ -969,14 +988,11 @@ function pH_HUD:Initialize()
     --------------------------------------------------
     -- Micro-bar metric tiles (for collapsed state - single horizontal line)
     --------------------------------------------------
-    local tileWidth = 50
-
     for metricKey, state in pairs(metricStates) do
         local key = metricKey
         local metricState = state
-        -- Create tile container (child of bodyContainer)
         local tile = CreateFrame("Frame", nil, bodyContainer)
-        tile:SetSize(tileWidth, TILE_HEIGHT)
+        tile:SetSize(TILE_WIDTH, TILE_HEIGHT)
         tile:EnableMouse(true)
         tile:SetScript("OnEnter", function(self)
             ShowMicroMetricTooltip(self, key, metricState)
@@ -984,51 +1000,39 @@ function pH_HUD:Initialize()
         tile:SetScript("OnLeave", function()
             GameTooltip:Hide()
         end)
+        tile:SetScript("OnMouseUp", function()
+            HideOverflowMenu()
+            pH_HUD:OpenSessionDetail(key)
+        end)
         state.tile = tile
 
-        -- Icon (compact, positioned at top left) - 12px for ultra-compact
         local icon = tile:CreateTexture(nil, "ARTWORK")
         icon:SetSize(12, 12)
         icon:SetPoint("TOPLEFT", tile, "TOPLEFT", 0, 0)
         icon:SetTexture(METRIC_ICONS[metricKey])
         state.icon = icon
 
-        -- Rate text (pH brand muted color, compact) - positioned after icon, top-aligned
-        local rateText = tile:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        rateText:SetPoint("LEFT", icon, "RIGHT", 2, 0)
-        rateText:SetPoint("TOP", tile, "TOP", 0, 0)
+        local rateText = PHUI.CreateLabel(tile, "primary", "0", PHUI.Fonts.SMALL)
+        rateText:SetPoint("LEFT", icon, "RIGHT", 3, 0)
         rateText:SetJustifyH("LEFT")
-        rateText:SetText("0")
-        rateText:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
         state.valueText = rateText
 
-        -- Micro-bar background (pH brand dark background) - full width below icon/text, 4px height
-        local barBg = CreateFrame("Frame", nil, tile, "BackdropTemplate")
-        -- Bar spans from left edge to right edge of tile (full width)
-        barBg:SetPoint("TOPLEFT", tile, "TOPLEFT", 0, -14)  -- Below icon/text row (12px + 2px gap)
-        barBg:SetPoint("TOPRIGHT", tile, "TOPRIGHT", 0, -14)
-        barBg:SetHeight(4)  -- 4px tall bar
-        barBg:SetBackdrop({
-            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-            tile = true,
-            tileSize = 16,
+        local spark = addon.UI.Sparkline:Create(tile, {
+            width = TILE_WIDTH,
+            height = SPARK_HEIGHT,
+            color = MICROBAR_COLORS[colorKeys[metricKey]].fill,
         })
-        local colorKey = colorKeys[metricKey]
-        local bgColor = MICROBAR_COLORS[colorKey].bg
-        barBg:SetBackdropColor(bgColor[1], bgColor[2], bgColor[3], bgColor[4])
+        spark:SetPoint("TOPLEFT", tile, "TOPLEFT", 0, -(12 + 3))
+        state.spark = spark
 
-        -- StatusBar fill (pH brand colors)
-        local bar = CreateFrame("StatusBar", nil, barBg)
-        bar:SetAllPoints(barBg)
-        bar:SetMinMaxValues(0, 1)
-        bar:SetValue(0)
-        bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-        local fillColor = MICROBAR_COLORS[colorKey].fill
-        bar:GetStatusBarTexture():SetVertexColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4])
-        state.bar = bar
-
-        -- Initially hidden (will be shown and positioned by UpdateMicroBars when session is active)
         tile:Hide()
+    end
+
+    -- Dividers between metric cells (3 gaps for 4 cells)
+    hudFrame.tileDividers = {}
+    for i = 1, 3 do
+        hudFrame.tileDividers[i] = addon.UI.Panel:CreateDivider(bodyContainer, "vertical")
+        hudFrame.tileDividers[i]:Hide()
     end
 
     --------------------------------------------------
@@ -1036,16 +1040,12 @@ function pH_HUD:Initialize()
     -- Single line: logo | Start | History | ... | Min/Max
     --------------------------------------------------
     local bodyTopOffset = -(PADDING + HEADER_HEIGHT + BODY_GAP)
-    -- Final header right-side order:
-    -- Primary | History | Overflow | Min/Max
+    -- Header right side (right to left): Expand | Stop/Start | Pause (session) or History (no session)
+    -- Pause is active-session only and History is start-screen only, so the
+    -- chain is re-anchored per state by LayoutHeader().
     hudFrame.minMaxBtn:ClearAllPoints()
     hudFrame.minMaxBtn:SetPoint("RIGHT", headerRow, "RIGHT", -PADDING, 0)
-    hudFrame.overflowBtn:ClearAllPoints()
-    hudFrame.overflowBtn:SetPoint("RIGHT", hudFrame.minMaxBtn, "LEFT", -ICON_GAP, 0)
-    hudFrame.historyBtn:ClearAllPoints()
-    hudFrame.historyBtn:SetPoint("RIGHT", hudFrame.overflowBtn, "LEFT", -ICON_GAP, 0)
-    hudFrame.stopBtn:ClearAllPoints()
-    hudFrame.stopBtn:SetPoint("RIGHT", hudFrame.historyBtn, "LEFT", -ICON_GAP, 0)
+    LayoutHeader(true)
 
     -- Overflow menu and outside-click catcher
     local overflowBackdrop = CreateFrame("Button", nil, UIParent)
@@ -1115,7 +1115,7 @@ function pH_HUD:Initialize()
         btn:SetScript("OnEnter", function(self)
             self:SetBackdropBorderColor(PH_ACCENT_GOLD_INCOME[1], PH_ACCENT_GOLD_INCOME[2], PH_ACCENT_GOLD_INCOME[3], 1.0)
             if self.tooltipText then
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                pH_Tooltip:Own(self)
                 GameTooltip:SetText(self.tooltipText)
                 GameTooltip:Show()
             end
@@ -1407,23 +1407,16 @@ UpdateStartPanelContent = function()
         content.tipText2:SetText("      View History to see detailed breakdowns")
     end
     
-    -- Compute adaptive width based on actual text content
-    local maxTextWidth = 0
+    -- The HUD keeps one constant width; long lines truncate instead of wrapping
+    -- into the line below.
     local measuredLines = {content.zoneTitle, content.contentLine1, content.contentLine2,
                            content.contentLine3, content.contentLine4, content.tipText1, content.tipText2}
+    local textWidth = GLANCE_WIDTH - 2 * PADDING
+    hudFrame.startExpanded:SetSize(GLANCE_WIDTH, 120)
     for _, line in ipairs(measuredLines) do
-        local w = line:GetStringWidth()
-        if w > maxTextWidth then maxTextWidth = w end
+        line:SetWordWrap(false)
+        line:SetWidth(textWidth)
     end
-    -- Clamp between collapsed width (210) and max (340), add padding + margin
-    local adaptiveWidth = math.max(HEADER_MIN_WIDTH, math.min(maxTextWidth + 2 * PADDING + 20, 340))
-    hudFrame.startExpanded:SetSize(adaptiveWidth, 120)
-    -- Update text width constraints to match new width
-    for _, line in ipairs(measuredLines) do
-        line:SetWidth(adaptiveWidth - 2 * PADDING)
-    end
-    content.zoneTitle:SetWidth(adaptiveWidth - 2 * PADDING)
-    hudFrame.startExpandedWidth = adaptiveWidth
 end
 
 -- Update HUD display
@@ -1468,16 +1461,10 @@ function pH_HUD:Update()
             end
             
             -- Update expand button icon
-            hudFrame.minMaxBtn:SetNormalTexture(HEADER_ICON_MINUS)
-            hudFrame.minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
-            hudFrame.minMaxBtn:SetScript("OnEnter", function(self)
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-                GameTooltip:SetText("Collapse start panel")
-                GameTooltip:Show()
-            end)
+            SetMinMaxGlyph(hudFrame.minMaxBtn, HEADER_ICON_MINUS, "Collapse start panel")
             
             -- Frame size: expanded with content (width set by adaptive calc, fallback 340)
-            local expWidth = math.max(HEADER_MIN_WIDTH, hudFrame.startExpandedWidth or 340)
+            local expWidth = GLANCE_WIDTH
             local startBodyHeight = 120  -- Zone context + tips content
             local expHeight = PADDING + HEADER_HEIGHT + BODY_GAP + startBodyHeight + PADDING
             hudFrame:Show()
@@ -1494,17 +1481,11 @@ function pH_HUD:Update()
             end
             
             -- Update expand button icon
-            hudFrame.minMaxBtn:SetNormalTexture(HEADER_ICON_PLUS)
-            hudFrame.minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-PlusButton-Down")
-            hudFrame.minMaxBtn:SetScript("OnEnter", function(self)
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-                GameTooltip:SetText("Expand start panel")
-                GameTooltip:Show()
-            end)
+            SetMinMaxGlyph(hudFrame.minMaxBtn, HEADER_ICON_PLUS, "Expand start panel")
             
             -- Frame size: header only
             hudFrame:Show()
-            hudFrame:SetSize(HEADER_MIN_WIDTH, ComputeStartCollapsedHeight())
+            hudFrame:SetSize(GLANCE_WIDTH, ComputeStartCollapsedHeight())
             hudFrame:SetBackdropColor(PH_BG_PARCHMENT[1], PH_BG_PARCHMENT[2], PH_BG_PARCHMENT[3], PH_BG_PARCHMENT[4])
         end
         
@@ -1513,6 +1494,7 @@ function pH_HUD:Update()
         hudFrame.headerTimer:Hide()
         if hudFrame.stopBtn then
             hudFrame.stopBtn:Show()
+            hudFrame.stopBtn:SetWidth(PRIMARY_BTN_WIDTH)
             hudFrame.stopBtn.textObj:SetText("Start")
             hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3])
             hudFrame.stopBtn:SetScript("OnClick", function()
@@ -1525,7 +1507,7 @@ function pH_HUD:Update()
             end)
             hudFrame.stopBtn:SetScript("OnEnter", function(self)
                 self:SetBackdropBorderColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3], 1.0)
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                pH_Tooltip:Own(self)
                 GameTooltip:SetText("Start tracking gold, XP, rep, and honor per hour", nil, nil, nil, nil, true)
                 GameTooltip:Show()
             end)
@@ -1535,13 +1517,13 @@ function pH_HUD:Update()
             end)
         end
 
-        -- Icon row: all right-side controls visible
+        -- Icon row: all right-side controls visible (no pause without a session)
+        LayoutHeader(false)
+        hudFrame.pauseBtn:Hide()
         hudFrame.historyBtn:Show()
         hudFrame.historyBtn:Enable()
         hudFrame.historyBtn:SetAlpha(1)
-        hudFrame.overflowBtn:Show()
-        hudFrame.overflowBtn:Enable()
-        hudFrame.overflowBtn:SetAlpha(1)
+        hudFrame.overflowBtn:Hide()  -- "More actions" removed for now; Help/Settings live in the detail window
         hudFrame.minMaxBtn:Show()
         hudFrame.minMaxBtn:Enable()
         hudFrame.minMaxBtn:SetAlpha(1)
@@ -1569,63 +1551,45 @@ function pH_HUD:Update()
     hudFrame.title:Show()
     hudFrame.headerTimer:Show()
     local isPaused = pH_SessionManager:IsPaused(session)
-    if hudFrame.stopBtn then
-        hudFrame.stopBtn:Show()
-        if isPaused then
-            hudFrame.stopBtn.textObj:SetText("Resume")
-            hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3])
-        else
-            hudFrame.stopBtn.textObj:SetText("Stop")
-            hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3])
-        end
-        hudFrame.stopBtn:SetScript("OnClick", function()
-            local ok, message
-            local active = pH_SessionManager:GetActiveSession()
-            if active and pH_SessionManager:IsPaused(active) then
-                ok, message = pH_SessionManager:ResumeSession("manual", "hud_primary")
-            else
-                ok, message = pH_SessionManager:StopSession()
-            end
-            if ok then
-                print("[pH] " .. message)
-                pH_HUD:Update()
-            end
-        end)
-        hudFrame.stopBtn:SetScript("OnEnter", function(self)
-            self:SetBackdropBorderColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3], 1.0)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            local active = pH_SessionManager:GetActiveSession()
-            if active and pH_SessionManager:IsPaused(active) then
-                GameTooltip:SetText("Resume paused session")
-            else
-                GameTooltip:SetText("Stop session and save results")
-            end
-            GameTooltip:Show()
-        end)
-        hudFrame.stopBtn:SetScript("OnLeave", function(self)
-            self:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
-            GameTooltip:Hide()
-        end)
-    end
+    LayoutHeader(true)
 
-    -- Icon row: all active
-    hudFrame.historyBtn:Show()
-    hudFrame.overflowBtn:Show()
-    hudFrame.overflowBtn:Enable()
-    hudFrame.overflowBtn:SetAlpha(1)
+    -- Stop is always Stop; pause/resume has its own button.
+    hudFrame.stopBtn:Show()
+    hudFrame.stopBtn:SetWidth(STOP_BTN_WIDTH)
+    hudFrame.stopBtn.textObj:SetText("Stop")
+    hudFrame.stopBtn.textObj:SetTextColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3])
+    hudFrame.stopBtn:SetScript("OnClick", function()
+        local ok, message = pH_SessionManager:StopSession()
+        if ok then
+            print("[pH] " .. message)
+            pH_HUD:Update()
+        end
+    end)
+    hudFrame.stopBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(PH_ACCENT_BAD[1], PH_ACCENT_BAD[2], PH_ACCENT_BAD[3], 1.0)
+        pH_Tooltip:Own(self)
+        GameTooltip:SetText("Stop session and save results")
+        GameTooltip:Show()
+    end)
+    hudFrame.stopBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(PH_BORDER_BRONZE[1], PH_BORDER_BRONZE[2], PH_BORDER_BRONZE[3], 0.8)
+        GameTooltip:Hide()
+    end)
+
+    hudFrame.pauseBtn:Show()
+    hudFrame.pauseBtn.icon:SetTexture(isPaused and HEADER_ICON_PLAY or HEADER_ICON_PAUSE)
+    hudFrame.pauseBtn.tooltipText = isPaused and "Resume session" or "Pause session"
+
+    -- Icon row: History lives in the session detail window while a session runs
+    hudFrame.historyBtn:Hide()
+    hudFrame.overflowBtn:Hide()
     hudFrame.minMaxBtn:Show()
     hudFrame.minMaxBtn:Enable()
     hudFrame.minMaxBtn:SetAlpha(1)
-    hudFrame.minMaxBtn:SetNormalTexture(HEADER_ICON_PLUS)
-    hudFrame.minMaxBtn:SetPushedTexture("Interface\\Buttons\\UI-PlusButton-Down")
+    SetMinMaxGlyph(hudFrame.minMaxBtn, HEADER_ICON_PLUS, "Session detail")
     hudFrame.minMaxBtn:SetScript("OnClick", function()
         HideOverflowMenu()
         pH_HUD:OpenSessionDetail()
-    end)
-    hudFrame.minMaxBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Session detail")
-        GameTooltip:Show()
     end)
 
     -- Show HUD if session active
@@ -1644,7 +1608,7 @@ function pH_HUD:Update()
     local timerText = pH_SessionManager:FormatDuration(metrics.durationSec)
 
     hudFrame.headerTimer:SetText(timerText)
-    hudFrame.headerTimer:SetTextColor(PH_TEXT_MUTED[1], PH_TEXT_MUTED[2], PH_TEXT_MUTED[3])
+    hudFrame.headerTimer:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
 
     -- Second header line removed - no longer updating headerGold or headerTimer2
 
@@ -1700,9 +1664,9 @@ end
 
 -- Open the active session in the unified Session Detail (History window).
 -- The Glance HUD is left untouched.
-function pH_HUD:OpenSessionDetail()
+function pH_HUD:OpenSessionDetail(metricKey)
     if pH_SessionManager:GetActiveSession() then
-        pH_History:ShowActive()
+        pH_History:ShowActive(metricKey)
     else
         pH_History:Show()
     end
@@ -1728,7 +1692,7 @@ function pH_HUD:ApplyMinimizeState()
     hudFrame:ClearAllPoints()
     hudFrame:SetPoint(point, relativeTo, relativePoint, xOfs, yOfs)
 
-    RepositionTiles(true)
+    RepositionTiles()
     self:Update()
 end
 

@@ -11,6 +11,12 @@ local PHUI = addon.UI.PHUI
 -- Access pH brand colors
 local pH_Colors = _G.pH_Colors
 
+-- Column geometry shared with UI_History.lua's panes
+local LIST_COLUMN_WIDTH = 190
+local COLUMN_GAP = 5
+local DROPDOWN_GAP = 5
+local FILTER_HEIGHT = 25
+
 local pH_History_Filters = {
     parent = nil,
     historyController = nil,
@@ -40,10 +46,24 @@ function pH_History_Filters:Initialize(parent, historyController)
     self.parent = parent
     self.historyController = historyController
 
-    -- Search box (left side, 120px width)
-    local searchBox = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
-    searchBox:SetSize(120, 25)
-    searchBox:SetPoint("LEFT", parent, "LEFT", 10, 0)
+    -- Search: same height and frame treatment as the dropdowns, as wide as the left (list)
+    -- column, with a magnifier icon on the left inside the frame.
+    local searchFrame = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    searchFrame:SetSize(LIST_COLUMN_WIDTH, FILTER_HEIGHT)
+    searchFrame:SetPoint("LEFT", parent, "LEFT", 0, 0)
+    PHUI.ApplyBackdrop(searchFrame, { backdrop = PHUI.Backdrops.PANEL, bgColor = pH_Colors.BG_DARK, borderColor = pH_Colors.BORDER_BRONZE, borderAlpha = 0.7, bgAlpha = 0.9 })
+    self.searchFrame = searchFrame
+
+    local searchIcon = searchFrame:CreateTexture(nil, "OVERLAY")
+    searchIcon:SetSize(12, 12)
+    searchIcon:SetPoint("LEFT", searchFrame, "LEFT", 8, -1)
+    searchIcon:SetTexture("Interface\\Common\\UI-Searchbox-Icon")
+    searchIcon:SetVertexColor(PHUI.Colors.TEXT_MUTED[1], PHUI.Colors.TEXT_MUTED[2], PHUI.Colors.TEXT_MUTED[3])
+
+    local searchBox = CreateFrame("EditBox", nil, searchFrame)
+    searchBox:SetPoint("TOPLEFT", searchFrame, "TOPLEFT", 24, -3)
+    searchBox:SetPoint("BOTTOMRIGHT", searchFrame, "BOTTOMRIGHT", -8, 3)
+    searchBox:SetFontObject("GameFontHighlightSmall")
     searchBox:SetAutoFocus(false)
     searchBox:SetMaxLetters(30)
     searchBox:SetScript("OnTextChanged", function(self)
@@ -58,42 +78,44 @@ function pH_History_Filters:Initialize(parent, historyController)
     end)
     self.searchBox = searchBox
 
-    -- Search label
-    local searchLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    searchLabel:SetPoint("BOTTOM", searchBox, "TOP", 0, 2)
-    searchLabel:SetText("Search")
-
-    -- Sort dropdown (next to search)
-    local sortBtn = self:CreateDropdownButton(parent, "Sort", 80)
-    sortBtn:SetPoint("LEFT", searchBox, "RIGHT", 10, 0)
+    -- Four dropdowns share the right (detail) column edge to edge.
+    local sortBtn = self:CreateDropdownButton(parent, "Sort", 100)
     sortBtn:SetScript("OnClick", function(self)
         pH_History_Filters:ShowSortMenu(self)
     end)
     self.sortDropdown = sortBtn
 
-    -- Zone dropdown
     local zoneBtn = self:CreateDropdownButton(parent, "Zone: All", 100)
-    zoneBtn:SetPoint("LEFT", sortBtn, "RIGHT", 5, 0)
     zoneBtn:SetScript("OnClick", function(self)
         pH_History_Filters:ShowZoneMenu(self)
     end)
     self.zoneDropdown = zoneBtn
 
-    -- Character dropdown
     local charBtn = self:CreateDropdownButton(parent, "Char: All", 100)
-    charBtn:SetPoint("LEFT", zoneBtn, "RIGHT", 5, 0)
     charBtn:SetScript("OnClick", function(self)
         pH_History_Filters:ShowCharMenu(self)
     end)
     self.charDropdown = charBtn
 
-    -- Flags dropdown (replaces multiple checkboxes to avoid overflow)
-    local flagsBtn = self:CreateDropdownButton(parent, "Flags: Any", 160)
-    flagsBtn:SetPoint("LEFT", charBtn, "RIGHT", 10, 0)
+    local flagsBtn = self:CreateDropdownButton(parent, "Flags: Any", 100)
     flagsBtn:SetScript("OnClick", function(self)
         pH_History_Filters:ShowFlagsMenu(self)
     end)
     self.flagsDropdown = flagsBtn
+
+    local dropdowns = { sortBtn, zoneBtn, charBtn, flagsBtn }
+    local function LayoutDropdowns()
+        local total = (parent:GetWidth() or 0) - LIST_COLUMN_WIDTH - COLUMN_GAP
+        if total <= 0 then return end
+        local width = math.floor((total - DROPDOWN_GAP * (#dropdowns - 1)) / #dropdowns)
+        for i, btn in ipairs(dropdowns) do
+            btn:SetWidth(width)
+            btn:ClearAllPoints()
+            btn:SetPoint("LEFT", parent, "LEFT", LIST_COLUMN_WIDTH + COLUMN_GAP + (i - 1) * (width + DROPDOWN_GAP), 0)
+        end
+    end
+    parent:SetScript("OnSizeChanged", LayoutDropdowns)
+    LayoutDropdowns()
 end
 
 --------------------------------------------------
@@ -101,7 +123,7 @@ end
 --------------------------------------------------
 function pH_History_Filters:CreateDropdownButton(parent, text, width)
     local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
-    btn:SetSize(width, 25)
+    btn:SetSize(width, FILTER_HEIGHT)
     btn:SetBackdrop(PHUI.Backdrops.PANEL)
     local PH_BG_DARK = pH_Colors.BG_DARK
     local PH_BORDER_BRONZE = pH_Colors.BORDER_BRONZE
