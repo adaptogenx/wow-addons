@@ -4,9 +4,7 @@ Player-facing changes, newest first. Written to paste into CurseForge release no
 Add an entry under **Unreleased** whenever a user-visible feature ships; on release,
 rename it to the version number.
 
-## 1.2.2
-
-First release on CurseForge. Same addon as the 1.2.1 GitHub release.
+## 1.2.1
 
 ### Resizable bag window
 - Drag the bottom-right corner of the bag window to make it wider or taller. The grid reflows to fit, and the size is remembered per character.
