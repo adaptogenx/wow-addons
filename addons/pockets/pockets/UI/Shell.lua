@@ -646,6 +646,12 @@ function Shell:Initialize()
             if not Shell.isDragging then
                 return
             end
+            -- StopMovingOrSizing is blocked in combat on this frame; if combat
+            -- began mid-drag, finish when it ends (OnCombatEnded).
+            if Shell:IsCombatBlocked() then
+                Shell.pendingStop = self
+                return
+            end
             self:StopMovingOrSizing()
             Shell.isDragging = false
             Shell:SavePosition(self)
@@ -777,6 +783,10 @@ function Shell:BuildResizeGrip()
     end)
     grip:SetScript("OnMouseUp", function()
         if not self.isResizing then
+            return
+        end
+        if self:IsCombatBlocked() then
+            self.pendingStop = f
             return
         end
         f:StopMovingOrSizing()
@@ -1027,6 +1037,22 @@ end
 -- PLAYER_REGEN_ENABLED: repair secure bindings from current state, then
 -- paint whatever was deferred.
 function Shell:OnCombatEnded()
+    -- A move/resize that was still active when combat started could not be
+    -- stopped then (blocked); finish it now.
+    local pending = self.pendingStop
+    if pending then
+        self.pendingStop = nil
+        pending:StopMovingOrSizing()
+        if self.isResizing then
+            self.isResizing = false
+            local w, h = ClampPanelSize(pending:GetWidth(), pending:GetHeight())
+            Pockets.CharDB.hud.size = { w = w, h = h }
+        else
+            self.isDragging = false
+            self:SavePosition(pending)
+        end
+        self:Render()
+    end
     self:SetSearchEnabled(true)
     self:UpdateCombatBindings()
     local pool = Pockets.UI.ItemButtonPool
