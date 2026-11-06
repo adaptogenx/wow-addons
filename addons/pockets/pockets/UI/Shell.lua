@@ -759,48 +759,63 @@ function Shell:BuildResizeGrip()
     grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
     self.resizeGrip = grip
 
-    -- Native sizing: the client resizes the TOPLEFT-anchored frame live under
-    -- the cursor; the result is clamped/snapped and saved on release.
+    -- Manual sizing with a live outline: a lightweight preview frame follows
+    -- the cursor while dragging; the real panel is resized and re-laid out
+    -- once on release (Render -> ApplyDimensions), the path that is known to
+    -- apply reliably.
     local f = self.expanded
-    f:SetResizable(true)
-    -- Bounds depend on the screen size, which is not reliable at load time:
-    -- set them fresh at the start of every resize.
-    local function ApplyBounds()
-        local maxW = math.max(MIN_PANEL_WIDTH, math.min(MAX_PANEL_WIDTH, UIParent:GetWidth() - 20))
-        local maxH = math.max(MIN_PANEL_HEIGHT, math.min(MAX_PANEL_HEIGHT, UIParent:GetHeight() - 20))
-        if f.SetResizeBounds then
-            f:SetResizeBounds(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT, maxW, maxH)
-        elseif f.SetMinResize then
-            f:SetMinResize(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT)
-            if f.SetMaxResize then
-                f:SetMaxResize(maxW, maxH)
-            end
+    local preview = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    preview:SetFrameStrata("TOOLTIP")
+    preview:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 2,
+    })
+    preview:SetBackdropColor(0.9, 0.75, 0.3, 0.12)
+    preview:SetBackdropBorderColor(0.9, 0.75, 0.3, 0.9)
+    preview:Hide()
+    self.resizePreview = preview
+
+    local function Finish(commit)
+        grip:SetScript("OnUpdate", nil)
+        preview:Hide()
+        self.isResizing = false
+        if commit and self.pendingSize then
+            Pockets.CharDB.hud.size = self.pendingSize
         end
+        self.pendingSize = nil
+        self:Render()
     end
 
-    grip:SetScript("OnMouseDown", function(_, button)
+    grip:SetScript("OnMouseDown", function(btn, button)
         if button ~= "LeftButton" or self:IsCombatBlocked() then
             return
         end
+        local scale = UIParent:GetEffectiveScale()
+        local cx, cy = GetCursorPosition()
+        local startX, startY = cx / scale, cy / scale
+        local w, h = f:GetWidth(), f:GetHeight()
         self.isResizing = true
-        ApplyBounds()
-        f:StartSizing("BOTTOMRIGHT")
+        self.pendingSize = nil
+        preview:ClearAllPoints()
+        preview:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+        preview:SetSize(w, h)
+        preview:Show()
+        btn:SetScript("OnUpdate", function()
+            if self:IsCombatBlocked() then
+                Finish(false)
+                return
+            end
+            local nx, ny = GetCursorPosition()
+            local newW, newH = ClampPanelSize(w + (nx / scale - startX), h + (startY - ny / scale))
+            self.pendingSize = { w = newW, h = newH }
+            preview:SetSize(newW, newH)
+        end)
     end)
     grip:SetScript("OnMouseUp", function()
-        if not self.isResizing then
-            return
+        if self.isResizing then
+            Finish(true)
         end
-        if self:IsCombatBlocked() then
-            self.pendingStop = f
-            return
-        end
-        f:StopMovingOrSizing()
-        self.isResizing = false
-        local w, h = ClampPanelSize(f:GetWidth(), f:GetHeight())
-        Pockets.CharDB.hud.size = { w = w, h = h }
-        -- StopMovingOrSizing can leave the frame on a different anchor pair;
-        -- re-apply the saved TOPLEFT and final size, then re-lay out.
-        self:Render()
     end)
 end
 
@@ -1048,14 +1063,8 @@ function Shell:OnCombatEnded()
     if pending then
         self.pendingStop = nil
         pending:StopMovingOrSizing()
-        if self.isResizing then
-            self.isResizing = false
-            local w, h = ClampPanelSize(pending:GetWidth(), pending:GetHeight())
-            Pockets.CharDB.hud.size = { w = w, h = h }
-        else
-            self.isDragging = false
-            self:SavePosition(pending)
-        end
+        self.isDragging = false
+        self:SavePosition(pending)
         self:Render()
     end
     self:SetSearchEnabled(true)
