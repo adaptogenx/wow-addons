@@ -73,7 +73,10 @@ end
 
 local MIN_PANEL_WIDTH = L.NATIVE_PANEL_WIDTH
 local MAX_PANEL_WIDTH = 760
-local MIN_PANEL_HEIGHT = ChromeHeight() + L.NATIVE_BODY_ROWS * L.LIST_ROW_HEIGHT
+local DEFAULT_PANEL_HEIGHT = ChromeHeight() + L.NATIVE_BODY_ROWS * L.LIST_ROW_HEIGHT
+-- The smallest the user can shrink the body to (whole rows).
+local MIN_BODY_ROWS = 3
+local MIN_PANEL_HEIGHT = ChromeHeight() + MIN_BODY_ROWS * L.LIST_ROW_HEIGHT
 local MAX_PANEL_HEIGHT = 900
 
 -- Clamps a requested panel size to its limits and the screen, snapping the
@@ -93,7 +96,7 @@ local function PanelSize()
     if size and size.w and size.h then
         return ClampPanelSize(size.w, size.h)
     end
-    return MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT
+    return MIN_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT
 end
 
 -- Viewport height of the panel body.

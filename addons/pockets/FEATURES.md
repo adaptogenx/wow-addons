@@ -8,7 +8,7 @@ rename it to the version number.
 
 ### Resizable bag window
 - Drag the bottom-right corner of the bag window to make it wider or taller. The grid reflows to fit, and the size is remembered per character.
-- Height snaps to whole rows. The window can't go smaller than its original size.
+- Height snaps to whole rows. The window can be shortened to about three rows, and can't be made narrower than its original width.
 - Resizing is disabled in combat. `/pockets panel reset` restores the default size and position.
 
 ### Separate panel position
