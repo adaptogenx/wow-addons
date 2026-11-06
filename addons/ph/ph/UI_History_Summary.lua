@@ -105,7 +105,11 @@ local function Expense(c)
     return c > 0 and ("-" .. Money(c)) or Money(c), c > 0 and "bad" or nil
 end
 
-function pH_History_Detail:BuildDetailSections(session, metrics)
+-- `active` adds the live-only figures (recent averages, level ETA, faction progress,
+-- potential rep) the HUD tooltips show; they read the current character, so they
+-- would be meaningless for an archived session.
+function pH_History_Detail:BuildDetailSections(session, metrics, active)
+    local insights = _G.pH_Insights
     local sections = {}
     local function add(title) local s = { title = title, rows = {} }; sections[#sections + 1] = s; return s end
     local function row(s, label, value, style) s.rows[#s.rows + 1] = { label, value, style } end
@@ -114,6 +118,9 @@ function pH_History_Detail:BuildDetailSections(session, metrics)
     row(s, "Total Per Hour", pH_Ledger:FormatMoneyShort(metrics.totalPerHour) .. "/hr")
     row(s, "Gold Per Hour", pH_Ledger:FormatMoneyShort(metrics.cashPerHour) .. "/hr", "good")
     row(s, "Expected Per Hour", pH_Ledger:FormatMoneyShort(metrics.expectedPerHour) .. "/hr")
+    if active then
+        row(s, "Recent Per Hour", pH_Ledger:FormatMoneyShort(metrics.goldRecentPerHourBucketed or 0) .. "/hr")
+    end
 
     s = add("Income / Expenses")
     row(s, "Looted Coin", Money(metrics.income))
@@ -188,6 +195,15 @@ function pH_History_Detail:BuildDetailSections(session, metrics)
         local src = metrics.xpBySource or {}
         row(s, "XP Gained", FormatInt(metrics.xpGained))
         row(s, "XP Per Hour", FormatInt(metrics.xpPerHour) .. "/hr")
+        if active and insights then
+            local eta = insights.BuildXPEtaData(metrics)
+            if not eta.isCapped then
+                row(s, "To Level", string.format("%s xp  (%s)", FormatInt(eta.remainingXP),
+                    insights.BuildEtaRangeText(eta.etaRecentSec, eta.etaSessionSec)))
+            end
+            row(s, "Session Avg", FormatInt(eta.sessionPerHour) .. "/hr")
+            row(s, "Recent Avg", FormatInt(eta.recentPerHour) .. "/hr")
+        end
         row(s, "Mob XP", FormatInt(tonumber(src.mob) or 0))
         row(s, "Quest XP", FormatInt(tonumber(src.quest) or 0))
         if (tonumber(src.other) or 0) > 0 then
@@ -208,12 +224,36 @@ function pH_History_Detail:BuildDetailSections(session, metrics)
         end
     end
 
-    if metrics.repEnabled and (metrics.repGained or 0) > 0 then
+    local hasRepPotential = active and (tonumber(metrics.repPotentialTotal) or 0) > 0
+    if (metrics.repEnabled and (metrics.repGained or 0) > 0) or hasRepPotential then
         s = add("Reputation")
         row(s, "Rep Gained", FormatInt(metrics.repGained))
         row(s, "Rep Per Hour", FormatInt(metrics.repPerHour) .. "/hr")
-        for _, f in ipairs(metrics.repTopFactions or {}) do
-            row(s, "  " .. f.name, string.format("+%d", f.gain), "muted")
+        if active and insights then
+            local model = insights.BuildRepModel(metrics)
+            row(s, "Recent Avg", FormatInt(model.currentAvg) .. "/hr")
+            for _, f in ipairs(model.gainedFactions) do
+                row(s, "  " .. f.name, string.format("+%s", FormatInt(f.gain)), "muted")
+                row(s, "      to " .. (f.nextStanding or "next"),
+                    string.format("%s rep  (%s)", FormatInt(f.remainingRep or 0), f.etaSessionText or insights.FormatEtaInfinity()), "muted")
+            end
+            if #model.potentialRows > 0 then
+                row(s, "Potential Rep", "turn-ins not yet done", "good")
+                for _, p in ipairs(model.potentialRows) do
+                    row(s, "  " .. (p.factionName or "Unknown"), "+" .. FormatInt(p.potentialRep or 0), "muted")
+                    local parts = {}
+                    for _, hint in ipairs(p.hintList or {}) do
+                        parts[#parts + 1] = string.format("%s/%s %s", FormatInt(hint.count or 0), FormatInt(hint.bundleSize or 1), hint.itemName or "Rep Item")
+                    end
+                    if #parts > 0 then
+                        row(s, "      items", table.concat(parts, ", "), "muted")
+                    end
+                end
+            end
+        else
+            for _, f in ipairs(metrics.repTopFactions or {}) do
+                row(s, "  " .. f.name, string.format("+%d", f.gain), "muted")
+            end
         end
     end
 
@@ -221,6 +261,9 @@ function pH_History_Detail:BuildDetailSections(session, metrics)
         s = add("Honor")
         row(s, "Honor Gained", FormatInt(metrics.honorGained))
         row(s, "Honor Per Hour", FormatInt(metrics.honorPerHour) .. "/hr")
+        if active then
+            row(s, "Recent Avg", FormatInt(metrics.honorRecentPerHourBucketed or 0) .. "/hr")
+        end
         if (metrics.honorKills or 0) > 0 then
             row(s, "Honorable Kills", tostring(metrics.honorKills))
         end
@@ -528,7 +571,7 @@ function pH_History_Detail:UpdateSummary()
     ui.recent:SetHeight(PAD * 2 + 18 + shown * (ROW_H - 2) + 2)
 
     -- Detail sections
-    local sections = self:BuildDetailSections(session, metrics)
+    local sections = self:BuildDetailSections(session, metrics, active)
     for i, sec in ipairs(sections) do
         local panel = EnsureSection(ui, i, self.contentFrames.summary.scrollChild)
         panel.title:SetText(sec.title)

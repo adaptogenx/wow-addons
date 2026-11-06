@@ -390,6 +390,22 @@ test("pH summary: detail sections keep every accounting breakdown", function()
     for _, t in ipairs({ "Economic Summary", "Income / Expenses", "Inventory Expected", "Gold by Source", "Gathering", "Experience", "Reputation" }) do
         assert(byTitle[t], "missing section " .. t)
     end
+    -- live-only figures appear for the active session and never for an archived one
+    local function titles(secs) local t = {} for _, sec in ipairs(secs) do t[sec.title] = sec end return t end
+    local function hasRow(sec, label) for _, rr in ipairs(sec.rows) do if rr[1] == label then return true end end return false end
+    rawset(env.G, "pH_Insights", {
+        BuildXPEtaData = function() return { remainingXP = 4000, etaRecentSec = 60, etaSessionSec = 120, sessionPerHour = 5, recentPerHour = 9 } end,
+        BuildEtaRangeText = function() return "1m - 2m" end,
+        FormatEtaInfinity = function() return "inf" end,
+        BuildRepModel = function() return { currentAvg = 3, gainedFactions = { { name = "Org", gain = 20, remainingRep = 7, nextStanding = "Honored", etaSessionText = "5m" } }, potentialRows = {} } end,
+    })
+    local live = titles(Detail:BuildDetailSections({ gathering = { totalNodes = 4 } }, metrics, true))
+    assert(hasRow(live["Experience"], "To Level") and hasRow(live["Experience"], "Recent Avg"), "xp live rows")
+    assert(hasRow(live["Reputation"], "Recent Avg"), "rep live rows")
+    assert(hasRow(live["Economic Summary"], "Recent Per Hour"), "gold recent")
+    local archived = titles(Detail:BuildDetailSections({ gathering = { totalNodes = 4 } }, metrics, false))
+    assert(not hasRow(archived["Experience"], "To Level"), "no ETA for archived")
+    assert(not hasRow(archived["Economic Summary"], "Recent Per Hour"), "no recent avg for archived")
     assert(not byTitle["Honor"], "honor hidden without gains")
     assert(not byTitle["Pickpocket"], "pickpocket hidden without data")
     eq(byTitle["Income / Expenses"].rows[4][3], "bad", "repairs flagged as expense")

@@ -99,6 +99,7 @@ function pH_History_List:Initialize(parent, historyController)
     emptyLabel:SetTextColor(TEXT_MUTED[1], TEXT_MUTED[2], TEXT_MUTED[3])
     emptyLabel:SetText("No sessions found.\nTry Char: All or /ph debug data")
     emptyLabel:SetJustifyH("CENTER")
+    emptyLabel:SetWidth(150)  -- wrap inside the narrow column
     emptyLabel:Hide()
     self.emptyLabel = emptyLabel
 end
@@ -257,6 +258,7 @@ function pH_History_List:UpdateActive()
     if not session then
         row:Hide()
         if wasShown then self:ApplyActiveLayout(false) end
+        self:RefreshEmptyLabel()
         return
     end
 
@@ -290,6 +292,15 @@ function pH_History_List:UpdateActive()
 
     row:Show()
     if not wasShown then self:ApplyActiveLayout(true) end
+    self:RefreshEmptyLabel()
+end
+
+-- "No sessions found" only when there is nothing to show at all: no history rows
+-- and no running session (the pinned Current Session row counts as a session).
+function pH_History_List:RefreshEmptyLabel()
+    if not self.emptyLabel then return end
+    local hasActive = self.activeRow and self.activeRow:IsShown()
+    self.emptyLabel:SetShown(#self.sessionIds == 0 and not hasActive)
 end
 
 function pH_History_List:ApplyActiveLayout(hasActive)
@@ -307,9 +318,7 @@ end
 function pH_History_List:SetSessions(sessionIds)
     self.sessionIds = sessionIds
 
-    if self.emptyLabel then
-        self.emptyLabel:SetShown(#sessionIds == 0)
-    end
+    self:RefreshEmptyLabel()
 
     -- Update scroll bar range
     local maxScroll = math.max(0, #sessionIds - self.numVisibleRows)

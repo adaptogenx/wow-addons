@@ -14,6 +14,8 @@ echo ""
 WOW_PATHS=(
     "/Applications/World of Warcraft/_anniversary_/Interface/AddOns"
     "$HOME/Applications/World of Warcraft/_anniversary_/Interface/AddOns"
+    "/Applications/World of Warcraft/_forever_/Interface/AddOns"
+    "$HOME/Applications/World of Warcraft/_forever_/Interface/AddOns"
     "/Applications/World of Warcraft/_classic_beta_/Interface/Addons"
     "$HOME/Applications/World of Warcraft/_classic_beta_/Interface/Addons"
 )
@@ -26,20 +28,6 @@ for path in "${WOW_PATHS[@]}"; do
     fi
 done
 
-# Check if WoW Anniversary installation was found
-if [ ${#FOUND_PATHS[@]} -eq 0 ]; then
-    echo "❌ Error: Could not find WoW Classic Anniversary AddOns directory"
-    echo ""
-    echo "Searched in:"
-    for path in "${WOW_PATHS[@]}"; do
-        echo "  - $path"
-    done
-    echo ""
-    echo "Please ensure WoW Classic Anniversary is installed or specify the path manually:"
-    echo "  ./install.sh /path/to/WoW/_anniversary_/Interface/AddOns"
-    exit 1
-fi
-
 # Install to the path given by the user, otherwise to every found install
 # (Anniversary and/or Forever beta)
 if [ -n "$1" ]; then
@@ -49,6 +37,18 @@ if [ -n "$1" ]; then
     fi
     INSTALL_DIRS=("$1")
 else
+    if [ ${#FOUND_PATHS[@]} -eq 0 ]; then
+        echo "❌ Error: Could not find WoW Classic Anniversary AddOns directory"
+        echo ""
+        echo "Searched in:"
+        for path in "${WOW_PATHS[@]}"; do
+            echo "  - $path"
+        done
+        echo ""
+        echo "Please ensure WoW Classic Anniversary is installed or specify the path manually:"
+        echo "  ./install.sh /path/to/WoW/_anniversary_/Interface/AddOns"
+        exit 1
+    fi
     INSTALL_DIRS=("${FOUND_PATHS[@]}")
 fi
 
