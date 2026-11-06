@@ -38,6 +38,7 @@ local function CopyHud(source)
         x = source.x,
         y = source.y,
         locked = source.locked,
+        panel = source.panel and { x = source.panel.x, y = source.panel.y } or nil,
     }
 end
 
@@ -65,7 +66,7 @@ local function EnsureSavedVariables()
         PocketsDB.settings.recentItemPreviewEnabled = Pockets.Constants.DEFAULT_SETTINGS.recentItemPreviewEnabled
     end
 
-    for _, key in ipairs({ "glanceOpensBags", "gridView" }) do
+    for _, key in ipairs({ "glanceOpensBags", "separatePanel", "gridView", "showSupplies", "showFood" }) do
         if PocketsDB.settings[key] == nil then
             PocketsDB.settings[key] = Pockets.Constants.DEFAULT_SETTINGS[key]
         end
@@ -291,6 +292,9 @@ local function ShowHelp()
     print("|cffffff00/pockets show|r - Show/hide the HUD")
     print("|cffffff00/pockets bags [on||off]|r - Clicking the Mini opens your regular bags (the \"B\" binding) instead of the Pockets panel (default off)")
     print("|cffffff00/pockets view [grid||list]|r - one grid of categories + items (the only mode when on) or the category list (default grid)")
+    print("|cffffff00/pockets panel [separate||attached||reset]|r - Bag panel can be dragged independently of the Mini (separate, default) or always opens over it (attached); reset puts it back on the Mini")
+    print("|cffffff00/pockets food on||off|r - Show/hide the food count (default off)")
+    print("|cffffff00/pockets supplies on||off|r - Show/hide soul shard / water counts")
     print("|cffffff00/pockets recentpreview [on||off]|r - Show or set the large icon + tooltip preview when hovering Recent items (default off)")
     print("|cffffff00/pockets help|r - Show this help")
     print("|cffffff00/pockets help dev|r - Show debug/testing commands")
@@ -351,6 +355,38 @@ local function HandleCommand(msg)
                 .. (Pockets.SavedSettings.glanceOpensBags and "your regular bags" or "the Pockets panel"))
         else
             print("[Pockets] Usage: /pockets bags on||off")
+        end
+    elseif cmd == "panel" then
+        local requested = (args[2] or ""):lower()
+        if requested == "separate" or requested == "attached" then
+            Pockets.SavedSettings.separatePanel = (requested == "separate")
+            print("[Pockets] Panel is now " .. requested .. (requested == "separate"
+                and " (opens in its own spot; drag it to move)" or " (opens over the Mini)"))
+            Pockets.UI.Shell:RestorePosition()
+            Pockets.UI.Shell:Render()
+        elseif requested == "reset" then
+            Pockets.CharDB.hud.panel = nil
+            print("[Pockets] Panel position reset")
+            Pockets.UI.Shell:RestorePosition()
+        elseif requested == "" then
+            print("[Pockets] Panel is "
+                .. (Pockets.SavedSettings.separatePanel and "separate" or "attached"))
+        else
+            print("[Pockets] Usage: /pockets panel separate||attached||reset")
+        end
+    elseif cmd == "food" or cmd == "supplies" then
+        local key = cmd == "food" and "showFood" or "showSupplies"
+        local requested = (args[2] or ""):lower()
+        if requested == "on" or requested == "off" then
+            Pockets.SavedSettings[key] = (requested == "on")
+            print("[Pockets] " .. (cmd == "food" and "Food count " or "Supply counts ")
+                .. (requested == "on" and "enabled" or "disabled"))
+            Pockets.UI.Shell:RefreshSupplies()
+        elseif requested == "" then
+            print("[Pockets] " .. (cmd == "food" and "Food count" or "Supply counts") .. " is "
+                .. (Pockets.SavedSettings[key] and "on" or "off"))
+        else
+            print("[Pockets] Usage: /pockets " .. cmd .. " on||off")
         end
     elseif cmd == "view" then
         local requested = (args[2] or ""):lower()

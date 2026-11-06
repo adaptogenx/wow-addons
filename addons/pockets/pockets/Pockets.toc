@@ -3,6 +3,7 @@
 ## Notes: Minimal, opinionated bag HUD with progressive disclosure, bag-full ETA, and automatic categorization (WoW Classic Anniversary, TBC-compatible)
 ## Author: Adaptogen <DADS>
 ## Version: 1.1.0
+## IconTexture: Interface\Icons\INV_Misc_Bag_10
 ## SavedVariables: PocketsDB
 ## SavedVariablesPerCharacter: PocketsCharDB
 
@@ -46,6 +47,7 @@ Core/ItemCategorizer.lua
 Core/RecentItems.lua
 Core/LootLog.lua
 Core/CapacityEstimator.lua
+Core/Supplies.lua
 Core/InventoryState.lua
 Core/StackConsolidator.lua
 
@@ -87,5 +89,6 @@ Tests/APITests.lua
 Tests/ShellTests.lua
 Tests/MiniHUDTests.lua
 Tests/SidecarHUDTests.lua
+Tests/SuppliesTests.lua
 Tests/StackResolverTests.lua
 Tests/PositionStrategyTests.lua

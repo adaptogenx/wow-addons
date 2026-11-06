@@ -185,10 +185,76 @@ local function CreateRow(view)
     return row
 end
 
+-- A real, transparent item button laid over an item row: right-click uses
+-- the item from your bags (left-click picks it up, shift-click links it),
+-- exactly like the other item lists. Long-lived and hidden explicitly, like
+-- Shell's list rows, so its look never leaks into the pooled grid buttons.
+local function GetUseButton(view, index)
+    local button = view.useButtons[index]
+    if button then
+        return button
+    end
+    button = Pockets.UI.ItemButtonPool:Acquire(view.poolAnchor)
+    if not button then
+        return nil
+    end
+    view.useButtons[index] = button
+    button.hideCount = true
+    -- Only the row's own text/icon should show through; the template's art
+    -- is made invisible but its hover highlight stays.
+    if button.icon then
+        button.icon:SetAlpha(0)
+    end
+    if button.IconBorder then
+        button.IconBorder:SetAlpha(0)
+    end
+    pcall(function()
+        local normal = button.GetNormalTexture and button:GetNormalTexture()
+        if normal then
+            normal:SetColorTexture(0, 0, 0, 0)
+        end
+        local pushed = button.GetPushedTexture and button:GetPushedTexture()
+        if pushed then
+            pushed:SetColorTexture(0, 0, 0, 0)
+        end
+    end)
+    return button
+end
+
+-- Binds the overlay to the item's current bag stack; with no stack left
+-- (sold, used) it stays inert and only shows the item tooltip.
+function LootLog:BindUseButton(view, index, row, entry, plan, rowWidth)
+    if InCombatLockdown and InCombatLockdown() then
+        return
+    end
+    local button = GetUseButton(view, index)
+    if not button then
+        return
+    end
+    local stack = Pockets.Services.InventoryState:ResolveSmallestStack(entry.itemID)
+    Pockets.UI.ItemButtonPool:Configure(button, {
+        itemID = entry.itemID,
+        itemLink = entry.itemLink,
+        quantity = stack and stack.quantity or entry.quantity,
+        bagID = stack and stack.bagID,
+        slotID = stack and stack.slotID,
+        interactive = stack ~= nil,
+    })
+    if button.Count then
+        button.Count:Hide()
+    end
+    button:SetSize(rowWidth, plan.height)
+    button:ClearAllPoints()
+    button:SetPoint("TOPLEFT", view.parent, "TOPLEFT", 0, -plan.y)
+    button:SetFrameLevel(row:GetFrameLevel() + 5)
+    button:Show()
+end
+
 -- parent: Shell's scroll content frame. Rows are its children so the
 -- ScrollFrame clips them (a sibling would render unclipped).
 function LootLog:Create(parent)
-    local view = { parent = parent, rows = {} }
+    local view = { parent = parent, rows = {}, useButtons = {} }
+    view.poolAnchor = CreateFrame("Frame", nil, parent)
 
     -- Off-screen scratch FontString used only to measure wrapped heights.
     view.measureText = parent:CreateFontString(nil, "ARTWORK", PHUI.Fonts.SMALL)
@@ -207,6 +273,9 @@ end
 function LootLog:Hide(view)
     for _, row in ipairs(view.rows) do
         row:Hide()
+    end
+    for _, button in pairs(view.useButtons) do
+        button:Hide()
     end
     view.emptyText:Hide()
 end
@@ -251,10 +320,14 @@ function LootLog:Render(view, entries, rowWidth)
             row.icon:Show()
             row.text:SetText(self:ItemText(entry))
             row:EnableMouse(true)
+            self:BindUseButton(view, i, row, entry, plan, rowWidth)
         else
             row.icon:Hide()
             row.text:SetText(self:MoneyText(entry))
             row:EnableMouse(false)
+            if view.useButtons[i] then
+                view.useButtons[i]:Hide()
+            end
         end
         row.text:SetTextColor(c[1], c[2], c[3])
         row:Show()
@@ -263,6 +336,9 @@ function LootLog:Render(view, entries, rowWidth)
     for i = #rows + 1, #view.rows do
         view.rows[i]:Hide()
         view.rows[i].entry = nil
+        if view.useButtons[i] then
+            view.useButtons[i]:Hide()
+        end
     end
     view.emptyText:SetShown(#rows == 0)
     return totalHeight

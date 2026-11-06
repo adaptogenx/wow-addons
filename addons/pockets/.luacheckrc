@@ -77,6 +77,7 @@ globals = {
     "GetBuildInfo",
     "GetAddOnMetadata",
     "issecretvalue",
+    "UnitClass",
     "GetItemIcon",
     "GetItemQualityColor",
     "ChatEdit_InsertLink",

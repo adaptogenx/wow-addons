@@ -15,6 +15,8 @@ echo ""
 WOW_PATHS=(
     "/Applications/World of Warcraft/_anniversary_/Interface/AddOns"
     "$HOME/Applications/World of Warcraft/_anniversary_/Interface/AddOns"
+    "/Applications/World of Warcraft/_forever_/Interface/AddOns"
+    "$HOME/Applications/World of Warcraft/_forever_/Interface/AddOns"
     "/Applications/World of Warcraft/_classic_beta_/Interface/Addons"
     "$HOME/Applications/World of Warcraft/_classic_beta_/Interface/Addons"
 )

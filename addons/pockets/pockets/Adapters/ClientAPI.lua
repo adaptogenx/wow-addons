@@ -48,6 +48,18 @@ function ClientAPI:IsForever()
     return self:GetClientType() == "forever"
 end
 
+-- Player class token ("WARLOCK", "MAGE", ...), or nil when unavailable.
+function ClientAPI:GetPlayerClass()
+    if not UnitClass then
+        return nil
+    end
+    local _, token = UnitClass("player")
+    if type(token) ~= "string" or self:IsSecret(token) then
+        return nil
+    end
+    return token
+end
+
 -- True when a value is a Secret Value (modern clients). Such values cannot
 -- be compared, indexed, or used in arithmetic; callers treat them as
 -- unavailable instead of erroring. Always false on clients without it.

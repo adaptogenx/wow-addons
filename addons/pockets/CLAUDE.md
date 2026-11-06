@@ -145,3 +145,9 @@ skins/themes, plugin ecosystem, large configuration UI.
   geometry, verified icon sourcing, and hover/combat behavior
 - `Pockets_TDD.md` - full technical design, phased implementation plan (§29),
   definition of done (§32)
+
+## Feature Log
+
+Every user-visible feature or behavior change gets an entry under
+**Unreleased** in `FEATURES.md` (player-facing wording, CurseForge-ready).
+On release, rename that section to the version number.

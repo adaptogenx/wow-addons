@@ -18,6 +18,10 @@ function API.GetAmmoStatus()
     return Pockets.Services.InventoryState:GetAmmoCapacity()
 end
 
+function API.GetSupplies()
+    return Pockets.Services.InventoryState:GetSupplies()
+end
+
 function API.GetBagETA()
     local estimator = Pockets.Services.CapacityEstimator
     return {

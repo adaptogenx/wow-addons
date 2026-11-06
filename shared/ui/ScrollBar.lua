@@ -49,6 +49,11 @@ local function SetThumbAlpha(bar, alpha)
 end
 
 local function HandleWheel(bar, delta)
+    -- Scrolling re-anchors the scroll child; blocked in combat when it holds
+    -- protected buttons (opts.isBlocked), so don't scroll at all then.
+    if bar.isBlocked and bar.isBlocked() then
+        return
+    end
     local minVal, maxVal = bar.slider:GetMinMaxValues()
     if maxVal <= minVal then
         return
@@ -72,6 +77,7 @@ function ScrollBar:Create(scrollFrame, opts)
 
     local bar = CreateFrame("Frame", nil, scrollFrame:GetParent())
     bar.scrollFrame = scrollFrame
+    bar.isBlocked = opts.isBlocked
     bar:SetPoint("TOPRIGHT", scrollFrame, "TOPRIGHT", rightOffset, 0)
     bar:SetPoint("BOTTOMRIGHT", scrollFrame, "BOTTOMRIGHT", rightOffset, 0)
     bar:SetWidth(THUMB_WIDTH)
@@ -116,6 +122,9 @@ function ScrollBar:Create(scrollFrame, opts)
     bar.slider:SetScript("OnEnter", function() SetThumbAlpha(bar, THUMB_ALPHA_HOVER) end)
     bar.slider:SetScript("OnLeave", function() SetThumbAlpha(bar, THUMB_ALPHA) end)
     bar.slider:SetScript("OnValueChanged", function(_, value)
+        if bar.isBlocked and bar.isBlocked() then
+            return
+        end
         scrollFrame:SetVerticalScroll(value)
     end)
     bar.slider:SetScript("OnMouseWheel", function(_, delta) HandleWheel(bar, delta) end)

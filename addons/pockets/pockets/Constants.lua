@@ -245,7 +245,14 @@ Constants.DEFAULT_SETTINGS = {
     -- Clicking the Mini opens the player's regular bags (whatever "B" is
     -- bound to - Blizzard's or another bag addon) instead of the Pockets panel.
     glanceOpensBags = false,
+    -- The expanded panel opens in its own spot (draggable independently of the
+    -- Mini) instead of on top of it. Off = panel opens at the Mini's position.
+    separatePanel = true,
     -- Bag view: categories + items in one grid is the only mode; false falls
     -- back to the category list / drill-down.
     gridView = true,
+    -- Supply pills (soul shards for warlocks, water for mana classes).
+    showSupplies = true,
+    -- Food count for every class: opt-in.
+    showFood = false,
 }

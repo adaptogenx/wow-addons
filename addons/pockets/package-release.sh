@@ -87,8 +87,41 @@ zip -r -q "$SCRIPT_DIR/$ZIP_PATH" Pockets/ \
 cd "$SCRIPT_DIR"
 rm -rf "$TEMP_DIR"
 
+# Release notes: the FEATURES.md section for this version, or "Unreleased"
+# when the version hasn't been named yet (a warning is printed).
+NOTES_PATH="${RELEASES_DIR}/pockets-${VERSION}-notes.md"
+extract_section() {
+    awk -v want="$1" '
+        /^## / { on = ($0 == "## " want); next }
+        on { print }
+    ' FEATURES.md | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | sed '/./,$!d'
+}
+NOTES=""
+NOTES_SECTION=""
+if [ -f FEATURES.md ]; then
+    NOTES=$(extract_section "$VERSION")
+    NOTES_SECTION="$VERSION"
+    if [ -z "$NOTES" ]; then
+        NOTES=$(extract_section "Unreleased")
+        NOTES_SECTION="Unreleased"
+    fi
+fi
+if [ -n "$NOTES" ]; then
+    printf '# Pockets %s\n\n%s\n' "$VERSION" "$NOTES" > "$NOTES_PATH"
+    echo -e "${GREEN}✓ Release notes written from FEATURES.md (${NOTES_SECTION})${NC}"
+    if [ "$NOTES_SECTION" = "Unreleased" ]; then
+        echo -e "${RED}Note: no '## ${VERSION}' section in FEATURES.md - used 'Unreleased'. Rename it to '${VERSION}' when you release.${NC}"
+    fi
+else
+    rm -f "$NOTES_PATH"
+    echo -e "${RED}Warning: no release notes found in FEATURES.md for ${VERSION} or Unreleased${NC}"
+fi
+
 # Get file size for display
 SIZE=$(ls -lh "$ZIP_PATH" | awk '{print $5}')
 
 echo -e "${GREEN}✓ Successfully created ${ZIP_NAME} (${SIZE})${NC}"
 echo -e "${BLUE}Location: ${ZIP_PATH}${NC}"
+if [ -f "$NOTES_PATH" ]; then
+    echo -e "${BLUE}Notes: ${NOTES_PATH}${NC}"
+fi

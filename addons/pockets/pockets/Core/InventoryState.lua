@@ -46,6 +46,7 @@ local function BuildRecord(slot)
         record.maxStack = meta.maxStack
         record.classID = meta.classID
         record.subclassID = meta.subclassID
+        record.minLevel = meta.minLevel
         record.quality = record.quality or meta.quality
     end
 
@@ -184,6 +185,14 @@ end
 
 function InventoryState:GetAmmoCapacity()
     return self.ammoCapacity or self:BuildCapacityResult({ used = 0, total = 0 })
+end
+
+-- Supply counters (soul shards / water / food) for the player's class.
+function InventoryState:GetSupplies()
+    return Pockets.Services.Supplies.Compute(
+        self.items,
+        Pockets.Adapters.ClientAPI:GetPlayerClass(),
+        Pockets.SavedSettings)
 end
 
 function InventoryState:GetItems()

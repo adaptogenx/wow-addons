@@ -35,7 +35,7 @@ SidecarHUD.STRIP_SPEC = {
 -- Gold amount (copper) and ammo model (or nil when not applicable): an
 -- ammo bag, or any carried ammo (any character can carry ammo, not just
 -- ones with a quiver).
-function SidecarHUD.BuildModel(gold, specialized, ammoItems)
+function SidecarHUD.BuildModel(gold, specialized, ammoItems, supplies)
     local ammoCount = 0
     for _, item in ipairs(ammoItems or {}) do
         ammoCount = ammoCount + (item.quantity or 0)
@@ -50,7 +50,27 @@ function SidecarHUD.BuildModel(gold, specialized, ammoItems)
     if not ammo and ammoCount > 0 then
         ammo = { kind = "ammo", item = ammoItems[1], ammoCount = ammoCount }
     end
-    return { gold = gold or 0, ammo = ammo }
+    return { gold = gold or 0, ammo = ammo, supplies = supplies or {} }
+end
+
+-- Max supply pills (shards, water, food).
+SidecarHUD.MAX_SUPPLY_BADGES = 3
+
+-- Height of a stack of n pills.
+function SidecarHUD.ColumnHeight(n)
+    if n <= 0 then
+        return 0
+    end
+    return n * L.SIDECAR_BADGE_HEIGHT + (n - 1) * L.SIDECAR_BADGE_GAP
+end
+
+-- Tooltip lines for a supply entry: "Water: 40" then the best item.
+function SidecarHUD.SupplyTooltip(entry)
+    local lines = { string.format("%s: %d", entry.label, entry.count or 0) }
+    if entry.bestName then
+        lines[#lines + 1] = "Best: " .. entry.bestName
+    end
+    return lines
 end
 
 -- "18m to full" for the Mini's count badge, or nil. Prefers omission to a
@@ -201,6 +221,10 @@ function SidecarHUD:Build(root, handlers)
     local sidecar = { root = root, handlers = handlers }
     sidecar.gold = CreateBadge(root, handlers)
     sidecar.ammo = CreateBadge(root, handlers)
+    sidecar.supplyBadges = {}
+    for i = 1, SidecarHUD.MAX_SUPPLY_BADGES do
+        sidecar.supplyBadges[i] = CreateBadge(root, handlers)
+    end
     -- Bag-full ETA: a text-only pill beside the Mini's count badge (right of
     -- it, or left when the HUD is on the right of the screen).
     sidecar.eta = CreateBadge(root, handlers)
@@ -245,10 +269,21 @@ function SidecarHUD:Layout(sidecar)
         stripAbove = top - L.MINI_HEIGHT - L.SIDECAR_STRIP_BELOW - L.SIDECAR_STRIP_HEIGHT < 0
     end
 
-    -- Badge column, vertically centred on the Mini portrait: gold + ammo as
-    -- a pair, or gold alone on the portrait's midpoint.
-    local column = 2 * L.SIDECAR_BADGE_HEIGHT + L.SIDECAR_BADGE_GAP
-    local columnTop = -(L.MINI_PORTRAIT_SIZE - column) / 2
+    -- Badge column, vertically centred on the Mini portrait: gold, ammo and
+    -- supply pills stacked. Taller than the portrait -> starts at the top and
+    -- pushes the recent strip down by the overflow.
+    local stack = { sidecar.gold }
+    if sidecar.ammo:IsShown() then
+        stack[#stack + 1] = sidecar.ammo
+    end
+    for _, badge in ipairs(sidecar.supplyBadges or {}) do
+        if badge:IsShown() then
+            stack[#stack + 1] = badge
+        end
+    end
+    local column = SidecarHUD.ColumnHeight(#stack)
+    local columnTop = math.min(0, -(L.MINI_PORTRAIT_SIZE - column) / 2)
+    local overflow = math.max(0, column + columnTop * -1 - L.MINI_HEIGHT)
     local function place(badge, y)
         badge:SetWidth(sideW)
         badge:ClearAllPoints()
@@ -258,12 +293,8 @@ function SidecarHUD:Layout(sidecar)
             badge:SetPoint("TOPLEFT", root, "TOPLEFT", L.MINI_WIDTH + L.SIDECAR_MINI_GAP, y)
         end
     end
-    if sidecar.ammo:IsShown() then
-        place(sidecar.gold, columnTop)
-        place(sidecar.ammo, columnTop - L.SIDECAR_BADGE_HEIGHT - L.SIDECAR_BADGE_GAP)
-    else
-        place(sidecar.gold, -(L.MINI_PORTRAIT_SIZE - L.SIDECAR_BADGE_HEIGHT) / 2)
-        place(sidecar.ammo, columnTop - L.SIDECAR_BADGE_HEIGHT - L.SIDECAR_BADGE_GAP)
+    for i, badge in ipairs(stack) do
+        place(badge, columnTop - (i - 1) * (L.SIDECAR_BADGE_HEIGHT + L.SIDECAR_BADGE_GAP))
     end
 
     -- ETA pill: vertically centred on the Mini's count badge, same side as
@@ -286,7 +317,7 @@ function SidecarHUD:Layout(sidecar)
     if stripAbove then
         strip:SetPoint("BOTTOM" .. side, root, "TOP" .. side, 0, L.SIDECAR_STRIP_BELOW)
     else
-        strip:SetPoint("TOP" .. side, root, "BOTTOM" .. side, 0, -L.SIDECAR_STRIP_BELOW)
+        strip:SetPoint("TOP" .. side, root, "BOTTOM" .. side, 0, -(L.SIDECAR_STRIP_BELOW + overflow))
     end
     strip.positionFor = function(i, shown)
         return SidecarHUD.IconX(i, shown, containerW, align)
@@ -301,7 +332,9 @@ function SidecarHUD:Render(sidecar, layout)
     local model = SidecarHUD.BuildModel(
         Pockets.Adapters.MoneyAPI:GetMoney(),
         InventoryState:GetSpecializedCapacities(),
-        Pockets.API.GetAggregatedCategoryItems(Constants.CATEGORY.AMMO))
+        Pockets.API.GetAggregatedCategoryItems(Constants.CATEGORY.AMMO),
+        (Pockets.SavedSettings == nil or Pockets.SavedSettings.showSupplies ~= false)
+            and InventoryState:GetSupplies() or {})
     local recent = SidecarHUD.BuildRecent(
         Pockets.API.GetAggregatedCategoryItems(Constants.CATEGORY.RECENT))
     Pockets.UI.ItemPreview:Hide()
@@ -333,6 +366,27 @@ function SidecarHUD:Render(sidecar, layout)
         ammo:Hide()
     end
 
+    for i, badge in ipairs(sidecar.supplyBadges) do
+        local entry = model.supplies[i]
+        if entry then
+            local icon = entry.texture or Pockets.Adapters.ItemAPI:GetIcon(entry.fallbackItemID)
+            sideW = math.max(sideW, SetBadge(badge, icon, SidecarHUD.FormatCount(entry.count)))
+            badge.onEnter = function(self)
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                local lines = SidecarHUD.SupplyTooltip(entry)
+                GameTooltip:SetText(lines[1])
+                for n = 2, #lines do
+                    GameTooltip:AddLine(lines[n], 1, 1, 1)
+                end
+                GameTooltip:Show()
+            end
+            badge.handler = sidecar.handlers.openSupplies
+            badge:Show()
+        else
+            badge:Hide()
+        end
+    end
+
     sidecar.sideW = sideW
 
     local estimator = Pockets.Services.CapacityEstimator
@@ -358,6 +412,9 @@ function SidecarHUD:SetShown(sidecar, shown)
     if not shown then
         sidecar.gold:Hide()
         sidecar.ammo:Hide()
+        for _, badge in ipairs(sidecar.supplyBadges or {}) do
+            badge:Hide()
+        end
         sidecar.eta:Hide()
         sidecar.strip:Hide()
     end

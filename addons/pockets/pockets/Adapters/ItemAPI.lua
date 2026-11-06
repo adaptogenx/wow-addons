@@ -86,7 +86,7 @@ function ItemAPI:GetItemMetadata(itemID, itemLink)
         return cached
     end
 
-    local name, link, quality, _, _, itemClass, itemSubClass, maxStack, _, texture, _, classID, subclassID,
+    local name, link, quality, _, minLevel, itemClass, itemSubClass, maxStack, _, texture, _, classID, subclassID,
         _, _, _, isCraftingReagent = self:RawGetItemInfo(itemLink or itemID)
 
     -- A Secret Value anywhere in the fields Pockets compares/sorts/indexes
@@ -116,6 +116,7 @@ function ItemAPI:GetItemMetadata(itemID, itemLink)
         itemClass = itemClass,
         itemSubClass = itemSubClass,
         maxStack = maxStack,
+        minLevel = type(minLevel) == "number" and not ClientAPI:IsSecret(minLevel) and minLevel or 0,
         texture = texture,
         isCraftingReagent = isCraftingReagent,
     }

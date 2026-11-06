@@ -27,6 +27,9 @@ local Layout = Pockets.UI.Layout
 local Constants = Pockets.Constants
 local L = Constants.LAYOUT
 local PositionStrategy = Pockets.UI.PositionStrategy
+local function ScrollBlocked()
+    return Pockets.UI.ItemButtonPool:IsStructurallyBlocked()
+end
 local PHUI = Pockets.UI.PHUI
 
 Shell.STATE = {
@@ -337,6 +340,9 @@ function Shell:BuildMini()
         openAmmo = function()
             Shell:SetState(Shell.STATE.CATEGORY, { categoryID = Constants.CATEGORY.AMMO })
         end,
+        openSupplies = function()
+            Shell:SetState(Shell.STATE.CATEGORY, { categoryID = Constants.CATEGORY.CONSUMABLE })
+        end,
         dragStart = forward("OnDragStart"),
         dragStop = forward("OnDragStop"),
     })
@@ -477,6 +483,15 @@ function Shell:BuildShell()
     shell.footerAmmoRow:SetPoint("RIGHT", shell.footer, "RIGHT", -L.SHELL_PADDING, 0)
     shell.footerAmmoRow:Hide()
 
+    -- Supply counts (shards / water / food) chain leftward from Ammo (or the
+    -- footer's right edge when Ammo is hidden); placed in ConfigureFooterRows.
+    shell.footerSupplyRows = {}
+    for i = 1, Pockets.UI.SidecarHUD.MAX_SUPPLY_BADGES do
+        local row = BuildFooterMetric(Constants.CATEGORY_ICON.consumable, nil, "primary")
+        row:Hide()
+        shell.footerSupplyRows[i] = row
+    end
+
     -- Body: the ONE region whose height actually varies by state - it
     -- fills whatever space is left between header and footer once
     -- Shell:ApplyDimensions resizes the root frame (§8), so nothing here
@@ -501,7 +516,7 @@ function Shell:BuildShell()
     shell.scrollFrame = CreateFrame("ScrollFrame", "PocketsShellScrollFrame", shell.mainHost)
     shell.scrollFrame:SetPoint("TOPLEFT", shell, "TOPLEFT", EXP_SIDE, -(EXP_HEADER + L.SHELL_PADDING))
     shell.scrollFrame:SetPoint("BOTTOMRIGHT", shell.footer, "TOPRIGHT", -(EXP_SIDE - EXP_FOOTER_SIDE), L.SHELL_PADDING)
-    shell.scrollBar = Pockets.UI.ScrollBar:Create(shell.scrollFrame)
+    shell.scrollBar = Pockets.UI.ScrollBar:Create(shell.scrollFrame, { isBlocked = ScrollBlocked })
 
     shell.content = CreateFrame("Frame", nil, shell.scrollFrame)
     shell.content:SetWidth(BodyViewportWidth())
@@ -558,6 +573,8 @@ function Shell:Initialize()
     -- frame is only ever shown/hidden in combat (never resized/re-anchored).
     local expanded = CreateFrame("Button", "PocketsExpandedFrame", UIParent, frameTemplate)
     expanded:Hide()
+    -- Above the Mini (MEDIUM) so the panel covers it when they overlap.
+    expanded:SetFrameStrata("HIGH")
     self.expanded = expanded
 
     -- Legacy single-frame facade: `Shell.frame` forwards methods to whichever
@@ -630,6 +647,11 @@ function Shell:Initialize()
             return -- the secure overlay handles combat (BuildSecureControls)
         end
         if Shell.state ~= Shell.STATE.GLANCE then
+            -- Detached: the Mini stays up beside the open panel; clicking it
+            -- again closes the panel.
+            if Shell:IsDetached() then
+                Shell:SetState(Shell.STATE.GLANCE)
+            end
             return
         end
         if Pockets.SavedSettings.glanceOpensBags and Pockets.Adapters.BagAPI:ToggleDefaultBags() then
@@ -658,6 +680,7 @@ function Shell:Initialize()
     self:BuildMini()
     self:BuildShell()
     self:BuildSecureControls()
+    self:SyncDetachedAttr()
     self:RestorePosition()
 
     Pockets.Services.EventBus:Subscribe(Constants.DOMAIN_EVENT.CAPACITY_CHANGED, function() self:OnDataChanged() end, self)
@@ -695,7 +718,15 @@ function Shell:RestorePosition()
     PositionStrategy:ApplyRootPosition(self.root, hud)
     -- The Mini sits wherever the player parked it; the (much larger) panel
     -- opens at the same top-left but is shifted just enough to stay on screen.
-    local x, y = PositionStrategy.ClampToScreen(hud.x or 0, hud.y or 0,
+    local px, py = hud.x or 0, hud.y or 0
+    if Pockets.SavedSettings and Pockets.SavedSettings.separatePanel then
+        if hud.panel then
+            px, py = hud.panel.x or px, hud.panel.y or py
+        else
+            -- Never moved: line up exactly where the attached panel would.
+        end
+    end
+    local x, y = PositionStrategy.ClampToScreen(px, py,
         L.NATIVE_PANEL_WIDTH, TotalPanelHeight(), UIParent:GetWidth(), UIParent:GetHeight())
     PositionStrategy:ApplyRootPosition(self.expanded, { x = x, y = y })
 end
@@ -718,6 +749,16 @@ local NO_OP_MOVE_THRESHOLD = 0.5
 function Shell:SavePosition(source)
     local hud = Pockets.CharDB.hud
     local captured = PositionStrategy:CaptureSavedPosition(source or self:GetActiveFrame())
+
+    if (source or self:GetActiveFrame()) == self.expanded
+        and Pockets.SavedSettings and Pockets.SavedSettings.separatePanel then
+        local cur = hud.panel or { x = hud.x or 0, y = hud.y or 0 }
+        if math.abs(captured.x - cur.x) >= NO_OP_MOVE_THRESHOLD
+            or math.abs(captured.y - cur.y) >= NO_OP_MOVE_THRESHOLD then
+            hud.panel = { x = captured.x, y = captured.y }
+        end
+        return
+    end
 
     if math.abs(captured.x - (hud.x or 0)) < NO_OP_MOVE_THRESHOLD
         and math.abs(captured.y - (hud.y or 0)) < NO_OP_MOVE_THRESHOLD then
@@ -913,6 +954,21 @@ end
 
 -- Shows exactly one of root (Glance) / expanded for the current state.
 -- Plain Show/Hide only - allowed in combat.
+function Shell:IsDetached()
+    return Pockets.SavedSettings ~= nil and Pockets.SavedSettings.separatePanel == true
+end
+
+-- Tells the secure toggle snippets whether opening the panel keeps the Mini
+-- up. Attribute writes on secure frames are blocked in combat.
+function Shell:SyncDetachedAttr()
+    if self:IsCombatBlocked() then
+        return
+    end
+    for _, b in ipairs(self.pageClickers or {}) do
+        b:SetAttribute("keepmini", self:IsDetached() and 1 or 0)
+    end
+end
+
 function Shell:ApplyVisibility()
     local showExpanded = self.state ~= self.STATE.GLANCE
     -- Insecure show/hide of these frames is blocked in combat; there only
@@ -928,7 +984,12 @@ function Shell:ApplyVisibility()
     end
     if showExpanded then
         self.expanded:Show()
-        self.root:Hide()
+        -- Detached: the Mini stays up (under the panel, see strata below).
+        if self:IsDetached() then
+            self.root:Show()
+        else
+            self.root:Hide()
+        end
     else
         self.expanded:Hide()
         self.root:Show()
@@ -1003,7 +1064,11 @@ local TOGGLE_SNIPPET = [[
     end
     if open then
         e:Show()
-        r:Hide()
+        if self:GetAttribute("keepmini") == 1 then
+            r:Show()
+        else
+            r:Hide()
+        end
     else
         e:Hide()
         r:Show()
@@ -1076,11 +1141,11 @@ function Shell:BuildSecureControls()
         o:Hide()
         RegisterStateDriver(o, "visibility", "[combat] show; hide")
     end
-    -- The Mini: in combat a click opens the prewarmed panel. The overlay is a
+    -- The Mini: in combat a click opens (or, detached, closes) the prewarmed panel. The overlay is a
     -- child of the root (already protected) and covers only the Mini's own
     -- footprint, so the sidecar's item buttons stay clickable and the Mini
     -- itself stays a plain frame that can be shown from Lua.
-    local mini = MakeSecureClicker(nil, self.root, "open")
+    local mini = MakeSecureClicker(nil, self.root, "toggle")
     mini:SetAllPoints(self.root)
     mini:SetFrameLevel(self.root:GetFrameLevel() + 50)
     mini:Hide()
@@ -1205,6 +1270,7 @@ function Shell:Render()
     -- The rest of Render only ever calls SetSize afterward, so a state
     -- transition can resize the frame but can never drift its origin.
     self:RestorePosition()
+    self:SyncDetachedAttr()
     self:ApplyVisibility()
     self.expandedVisible = state ~= self.STATE.GLANCE and not self.userHidden
 
@@ -1216,6 +1282,9 @@ function Shell:Render()
     end
 
     self:SetEscapeCatcherShown(true)
+    if self:IsDetached() then
+        self:RenderMini()
+    end
     self:RenderExpandedContent(state)
     self.displayedState, self.displayedContext = state, self.context
     self.laidOutState, self.laidOutContext = state, self.context
@@ -1311,6 +1380,17 @@ function Shell:ConfigureHeader()
         header.plusButton:Hide()
         header.lootButton:Hide()
         header.searchBox:Hide()
+    end
+
+    -- Title actions form one row packed against the X, whichever are shown
+    -- (right to left: All Items, Loot Log).
+    local anchor, gapX = self.expanded.chrome.CloseButton, -6
+    for _, button in ipairs({ header.plusButton, header.lootButton }) do
+        if button:IsShown() then
+            button:ClearAllPoints()
+            button:SetPoint("RIGHT", anchor, "LEFT", gapX, 0)
+            anchor, gapX = button, -4
+        end
     end
 end
 
@@ -1733,9 +1813,10 @@ function Shell:RenderAllList(query)
     SetScrollBarShown(shell, contentHeight, usedContentHeight)
 end
 
--- Grid view: every category (Recent excluded - it duplicates items) as a small
--- header followed by its items as real item buttons. A search query just
--- filters each category; empty categories are skipped.
+-- Grid view: every category as a small header followed by its items as real
+-- item buttons. Recent leads as a single row (newest first, so it repeats
+-- items that also appear under their category). A search query just filters
+-- each section; empty sections are skipped.
 function Shell:RenderAllGrid(query)
     local shell = self.frame.shell
     local content = shell.content
@@ -1750,20 +1831,27 @@ function Shell:RenderAllGrid(query)
 
     local y, headerCount, blocked = 0, 0, false
     for _, categoryID in ipairs(Constants.CATEGORY_ORDER) do
-        if categoryID ~= Constants.CATEGORY.RECENT and not blocked then
+        if not blocked then
+            local isRecent = categoryID == Constants.CATEGORY.RECENT
             local items = {}
             for _, item in ipairs(Pockets.API.GetAggregatedCategoryItems(categoryID)) do
                 if not hasQuery or Search:Matches(item, query) then
                     table.insert(items, item)
                 end
             end
-            table.sort(items, function(a, b)
-                local an, bn = (a.name or ""):lower(), (b.name or ""):lower()
-                if an ~= bn then
-                    return an < bn
+            if isRecent then
+                for i = #items, columns + 1, -1 do
+                    items[i] = nil
                 end
-                return (a.itemID or 0) < (b.itemID or 0)
-            end)
+            else
+                table.sort(items, function(a, b)
+                    local an, bn = (a.name or ""):lower(), (b.name or ""):lower()
+                    if an ~= bn then
+                        return an < bn
+                    end
+                    return (a.itemID or 0) < (b.itemID or 0)
+                end)
+            end
 
             if #items > 0 then
                 headerCount = headerCount + 1
@@ -1834,7 +1922,18 @@ function Shell:ConfigureFooter()
         bag = shell.footerBagRow,
         gold = shell.footerGoldRow,
         ammo = shell.footerAmmoRow,
+        supplies = shell.footerSupplyRows,
     })
+end
+
+-- Re-render supply pills/rows after a setting change.
+function Shell:RefreshSupplies()
+    if self.sidecar then
+        Pockets.UI.SidecarHUD:Render(self.sidecar, not InCombatLockdown())
+    end
+    if self.frame and self.frame.shell and self.frame.shell.footerSupplyRows then
+        self:ConfigureFooter()
+    end
 end
 
 -- Fills a footer's Bag / Gold / Ammo metric rows (the old panel's footer and
@@ -1878,6 +1977,33 @@ function Shell:ConfigureFooterRows(rows)
             rows.ammo:Show()
         else
             rows.ammo:Hide()
+        end
+    end
+
+    -- Supplies: right-to-left from Ammo (or the footer edge).
+    if rows.supplies then
+        local settings = Pockets.SavedSettings
+        local supplies = (settings == nil or settings.showSupplies ~= false)
+            and InventoryState:GetSupplies() or {}
+        local footer = rows.ammo:GetParent()
+        local prev = rows.ammo:IsShown() and rows.ammo or nil
+        for i, row in ipairs(rows.supplies) do
+            local entry = supplies[i]
+            if entry then
+                row:SetTexture(entry.texture or Pockets.Adapters.ItemAPI:GetIcon(entry.fallbackItemID))
+                row:SetPrimary(Pockets.UI.SidecarHUD.FormatCount(entry.count))
+                ResizeFooterMetric(row)
+                row:ClearAllPoints()
+                if prev then
+                    row:SetPoint("RIGHT", prev, "LEFT", -L.GLANCE_METRIC_ICON_TEXT_GAP * 2, 0)
+                else
+                    row:SetPoint("RIGHT", footer, "RIGHT", -L.SHELL_PADDING, 0)
+                end
+                row:Show()
+                prev = row
+            else
+                row:Hide()
+            end
         end
     end
 end
