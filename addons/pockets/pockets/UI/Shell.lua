@@ -63,10 +63,12 @@ local EXP_HEADER = 62
 local EXP_SIDE = 16
 local EXP_FOOTER_SIDE = 12
 local EXP_BOTTOM = 14
+-- Breathing room between the inset's top/left edge and the body content.
+local BODY_PAD = 4
 
 -- Chrome (everything that isn't the scrolling body) height.
 local function ChromeHeight()
-    return EXP_HEADER + 2 * L.SHELL_PADDING + EXP_BOTTOM + L.SHELL_FOOTER_HEIGHT
+    return EXP_HEADER + BODY_PAD + 2 * L.SHELL_PADDING + EXP_BOTTOM + L.SHELL_FOOTER_HEIGHT
 end
 
 local MIN_PANEL_WIDTH = L.NATIVE_PANEL_WIDTH
@@ -111,7 +113,7 @@ end
 -- user resizes the panel (which re-renders).
 local function BodyViewportWidth()
     local w = PanelSize()
-    return w - 2 * EXP_SIDE
+    return w - 2 * EXP_SIDE - BODY_PAD
 end
 
 -- Fixed viewport in every view; only the scrollbar depends on content.
@@ -547,7 +549,7 @@ function Shell:BuildShell()
     shell.mainHost:SetAllPoints(shell)
     shell.mainHost:SetFrameLevel(shell:GetFrameLevel())
     shell.scrollFrame = CreateFrame("ScrollFrame", "PocketsShellScrollFrame", shell.mainHost)
-    shell.scrollFrame:SetPoint("TOPLEFT", shell, "TOPLEFT", EXP_SIDE, -(EXP_HEADER + L.SHELL_PADDING))
+    shell.scrollFrame:SetPoint("TOPLEFT", shell, "TOPLEFT", EXP_SIDE + BODY_PAD, -(EXP_HEADER + L.SHELL_PADDING + BODY_PAD))
     shell.scrollFrame:SetPoint("BOTTOMRIGHT", shell.footer, "TOPRIGHT", -(EXP_SIDE - EXP_FOOTER_SIDE), L.SHELL_PADDING)
     shell.scrollBar = Pockets.UI.ScrollBar:Create(shell.scrollFrame, { isBlocked = ScrollBlocked })
 
