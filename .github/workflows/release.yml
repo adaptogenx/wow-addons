@@ -72,9 +72,16 @@ jobs:
       - name: CurseForge upload
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_PROJECT_ID: ${{ inputs.addon == 'ph' && vars.CF_PROJECT_ID_PH || vars.CF_PROJECT_ID_POCKETS }}
+          CF_PROJECT_ID_PH: ${{ vars.CF_PROJECT_ID_PH }}
+          CF_PROJECT_ID_POCKETS: ${{ vars.CF_PROJECT_ID_POCKETS }}
           CF_GAME_VERSION_IDS: ${{ vars.CF_GAME_VERSION_IDS }}
         run: |
+          # Pick strictly per addon: never fall back to another addon's project.
+          case "${{ inputs.addon }}" in
+            ph) CF_PROJECT_ID="$CF_PROJECT_ID_PH" ;;
+            pockets) CF_PROJECT_ID="$CF_PROJECT_ID_POCKETS" ;;
+            *) CF_PROJECT_ID="" ;;
+          esac
           if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_PROJECT_ID" ] || [ -z "$CF_GAME_VERSION_IDS" ]; then
             echo "CurseForge not configured; skipping."; exit 0
           fi
