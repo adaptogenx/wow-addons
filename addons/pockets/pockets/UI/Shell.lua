@@ -751,32 +751,38 @@ function Shell:BuildResizeGrip()
     grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
     self.resizeGrip = grip
 
-    grip:SetScript("OnMouseDown", function(btn, button)
+    -- Native sizing: the client resizes the TOPLEFT-anchored frame live under
+    -- the cursor; the result is clamped/snapped and saved on release.
+    local f = self.expanded
+    f:SetResizable(true)
+    local maxW = math.min(MAX_PANEL_WIDTH, UIParent:GetWidth() - 20)
+    local maxH = math.min(MAX_PANEL_HEIGHT, UIParent:GetHeight() - 20)
+    if f.SetResizeBounds then
+        f:SetResizeBounds(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT, maxW, maxH)
+    elseif f.SetMinResize then
+        f:SetMinResize(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT)
+        if f.SetMaxResize then
+            f:SetMaxResize(maxW, maxH)
+        end
+    end
+
+    grip:SetScript("OnMouseDown", function(_, button)
         if button ~= "LeftButton" or self:IsCombatBlocked() then
             return
         end
-        local scale = UIParent:GetEffectiveScale()
-        local cx, cy = GetCursorPosition()
-        local w, h = PanelSize()
-        local startX, startY = cx / scale, cy / scale
         self.isResizing = true
-        btn:SetScript("OnUpdate", function()
-            local nx, ny = GetCursorPosition()
-            local newW, newH = ClampPanelSize(w + (nx / scale - startX), h + (startY - ny / scale))
-            self.pendingSize = { w = newW, h = newH }
-            self.expanded:SetSize(newW, newH)
-        end)
+        f:StartSizing("BOTTOMRIGHT")
     end)
-    grip:SetScript("OnMouseUp", function(btn)
+    grip:SetScript("OnMouseUp", function()
         if not self.isResizing then
             return
         end
-        btn:SetScript("OnUpdate", nil)
+        f:StopMovingOrSizing()
         self.isResizing = false
-        if self.pendingSize then
-            Pockets.CharDB.hud.size = self.pendingSize
-            self.pendingSize = nil
-        end
+        local w, h = ClampPanelSize(f:GetWidth(), f:GetHeight())
+        Pockets.CharDB.hud.size = { w = w, h = h }
+        -- StopMovingOrSizing can leave the frame on a different anchor pair;
+        -- re-apply the saved TOPLEFT and final size, then re-lay out.
         self:Render()
     end)
 end
