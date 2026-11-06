@@ -88,5 +88,5 @@ jobs:
           meta=$(jq -n --rawfile c release-notes.md --argjson g "$CF_GAME_VERSION_IDS" \
             '{changelog: $c, changelogType: "markdown", releaseType: "release", gameVersions: $g}')
           curl --fail -sS -H "X-Api-Token: $CF_API_TOKEN" \
-            -F "metadata=$meta" -F "file=@dist/${{ inputs.addon }}.zip" \
+            -F "metadata=$meta" -F "file=@dist/${{ inputs.addon }}-${{ steps.version.outputs.version }}.zip" \
             "https://wow.curseforge.com/api/projects/$CF_PROJECT_ID/upload-file"
