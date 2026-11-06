@@ -763,14 +763,18 @@ function Shell:BuildResizeGrip()
     -- the cursor; the result is clamped/snapped and saved on release.
     local f = self.expanded
     f:SetResizable(true)
-    local maxW = math.min(MAX_PANEL_WIDTH, UIParent:GetWidth() - 20)
-    local maxH = math.min(MAX_PANEL_HEIGHT, UIParent:GetHeight() - 20)
-    if f.SetResizeBounds then
-        f:SetResizeBounds(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT, maxW, maxH)
-    elseif f.SetMinResize then
-        f:SetMinResize(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT)
-        if f.SetMaxResize then
-            f:SetMaxResize(maxW, maxH)
+    -- Bounds depend on the screen size, which is not reliable at load time:
+    -- set them fresh at the start of every resize.
+    local function ApplyBounds()
+        local maxW = math.max(MIN_PANEL_WIDTH, math.min(MAX_PANEL_WIDTH, UIParent:GetWidth() - 20))
+        local maxH = math.max(MIN_PANEL_HEIGHT, math.min(MAX_PANEL_HEIGHT, UIParent:GetHeight() - 20))
+        if f.SetResizeBounds then
+            f:SetResizeBounds(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT, maxW, maxH)
+        elseif f.SetMinResize then
+            f:SetMinResize(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT)
+            if f.SetMaxResize then
+                f:SetMaxResize(maxW, maxH)
+            end
         end
     end
 
@@ -779,6 +783,7 @@ function Shell:BuildResizeGrip()
             return
         end
         self.isResizing = true
+        ApplyBounds()
         f:StartSizing("BOTTOMRIGHT")
     end)
     grip:SetScript("OnMouseUp", function()
