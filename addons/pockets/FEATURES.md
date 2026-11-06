@@ -4,7 +4,7 @@ Player-facing changes, newest first. Written to paste into CurseForge release no
 Add an entry under **Unreleased** whenever a user-visible feature ships; on release,
 rename it to the version number.
 
-## Unreleased
+## 1.2.0
 
 ### Resizable bag window
 - Drag the bottom-right corner of the bag window to make it wider or taller. The grid reflows to fit, and the size is remembered per character.
@@ -14,6 +14,10 @@ rename it to the version number.
 ### Separate panel position
 - The bag panel can now be moved independently of the Mini. It starts lined up exactly where it opened before; drag it anywhere from there. The Mini stays put and stays visible, underneath the panel.
 - `/pockets panel attached` restores the old behavior, `/pockets panel separate` turns it back on, `/pockets panel reset` returns the panel to its default spot.
+
+### Fixes
+- Scrolling the bag window with the mouse wheel or trackpad in combat no longer throws an "action blocked" error.
+- Moving or resizing the window when combat starts mid-drag no longer throws an error.
 
 ### Supply counts
 - **Soul Shards** for warlocks, shown beside the gold and ammo pills.

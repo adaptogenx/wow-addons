@@ -837,12 +837,10 @@ function Shell:RestorePosition()
     -- The Mini sits wherever the player parked it; the (much larger) panel
     -- opens at the same top-left but is shifted just enough to stay on screen.
     local px, py = hud.x or 0, hud.y or 0
-    if Pockets.SavedSettings and Pockets.SavedSettings.separatePanel then
-        if hud.panel then
-            px, py = hud.panel.x or px, hud.panel.y or py
-        else
-            -- Never moved: line up exactly where the attached panel would.
-        end
+    -- Detached and moved: use the panel's own spot. Never moved: it lines up
+    -- exactly where the attached panel would.
+    if Pockets.SavedSettings and Pockets.SavedSettings.separatePanel and hud.panel then
+        px, py = hud.panel.x or px, hud.panel.y or py
     end
     local x, y = PositionStrategy.ClampToScreen(px, py,
         (PanelSize()), TotalPanelHeight(), UIParent:GetWidth(), UIParent:GetHeight())
