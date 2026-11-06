@@ -2,7 +2,7 @@
 ## Title: Pockets
 ## Notes: Minimal, opinionated bag HUD with progressive disclosure, bag-full ETA, and automatic categorization (WoW Classic Anniversary, TBC-compatible)
 ## Author: Adaptogen <DADS>
-## Version: 1.2.0
+## Version: 1.2.1
 ## IconTexture: Interface\Icons\INV_Misc_Bag_10
 ## SavedVariables: PocketsDB
 ## SavedVariablesPerCharacter: PocketsCharDB
