@@ -2,7 +2,7 @@
 ## Title: pH
 ## Notes: Session-based gold-per-hour tracking with double-ledger accounting. Features minimize/maximize HUD, real-time metrics, and conservative item valuation (WoW Classic Anniversary, WoW Forever)
 ## Author: Claude Code
-## Version: 1.7.0
+## Version: 1.7.1
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
 ## SavedVariables: pH_DB_Account
 ## SavedVariablesPerCharacter: pH_DB
