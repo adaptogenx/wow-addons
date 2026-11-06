@@ -64,21 +64,54 @@ local EXP_SIDE = 16
 local EXP_FOOTER_SIDE = 12
 local EXP_BOTTOM = 14
 
--- Fixed viewport height of a native panel (see NATIVE_BODY_ROWS).
+-- Chrome (everything that isn't the scrolling body) height.
+local function ChromeHeight()
+    return EXP_HEADER + 2 * L.SHELL_PADDING + EXP_BOTTOM + L.SHELL_FOOTER_HEIGHT
+end
+
+local MIN_PANEL_WIDTH = L.NATIVE_PANEL_WIDTH
+local MAX_PANEL_WIDTH = 760
+local MIN_PANEL_HEIGHT = ChromeHeight() + L.NATIVE_BODY_ROWS * L.LIST_ROW_HEIGHT
+local MAX_PANEL_HEIGHT = 900
+
+-- Clamps a requested panel size to its limits and the screen, snapping the
+-- body to whole list rows so no row is ever cut off at the bottom.
+local function ClampPanelSize(w, h)
+    local maxW = math.max(MIN_PANEL_WIDTH, math.min(MAX_PANEL_WIDTH, UIParent:GetWidth() - 20))
+    local maxH = math.max(MIN_PANEL_HEIGHT, math.min(MAX_PANEL_HEIGHT, UIParent:GetHeight() - 20))
+    w = math.max(MIN_PANEL_WIDTH, math.min(w, maxW))
+    h = math.max(MIN_PANEL_HEIGHT, math.min(h, maxH))
+    local rows = math.floor((h - ChromeHeight()) / L.LIST_ROW_HEIGHT + 0.5)
+    return w, ChromeHeight() + rows * L.LIST_ROW_HEIGHT
+end
+
+-- User-chosen size (per character) or the default.
+local function PanelSize()
+    local size = Pockets.CharDB and Pockets.CharDB.hud and Pockets.CharDB.hud.size
+    if size and size.w and size.h then
+        return ClampPanelSize(size.w, size.h)
+    end
+    return MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT
+end
+
+-- Viewport height of the panel body.
 local function NativeContentHeight()
-    return L.NATIVE_BODY_ROWS * L.LIST_ROW_HEIGHT
+    local _, h = PanelSize()
+    return h - ChromeHeight()
 end
 
 -- Every view has the same total height: the footer's room is reserved even
 -- when a view hides it, so no view changes the panel's height.
 local function TotalPanelHeight()
-    return EXP_HEADER + NativeContentHeight() + 2 * L.SHELL_PADDING + EXP_BOTTOM + L.SHELL_FOOTER_HEIGHT
+    local _, h = PanelSize()
+    return h
 end
 
--- The body viewport's width never varies (fixed panel width), so this is a
--- fixed computation rather than a live frame read.
+-- Body viewport width: panel width minus side margins. Changes only when the
+-- user resizes the panel (which re-renders).
 local function BodyViewportWidth()
-    return L.NATIVE_PANEL_WIDTH - 2 * EXP_SIDE
+    local w = PanelSize()
+    return w - 2 * EXP_SIDE
 end
 
 -- Fixed viewport in every view; only the scrollbar depends on content.
@@ -679,6 +712,7 @@ function Shell:Initialize()
 
     self:BuildMini()
     self:BuildShell()
+    self:BuildResizeGrip()
     self:BuildSecureControls()
     self:SyncDetachedAttr()
     self:RestorePosition()
@@ -704,6 +738,49 @@ function Shell:Initialize()
     self:Render()
 end
 
+-- Bottom-right grip: drag to resize the panel. The frame is TOPLEFT-anchored
+-- so it grows right/down; content is re-laid out once on release. Blocked in
+-- combat (the frame is in a protected button's anchor chain).
+function Shell:BuildResizeGrip()
+    local grip = CreateFrame("Button", nil, self.expanded)
+    grip:SetSize(16, 16)
+    grip:SetPoint("BOTTOMRIGHT", self.expanded, "BOTTOMRIGHT", -3, 3)
+    grip:SetFrameLevel(self.expanded:GetFrameLevel() + 800)
+    grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    self.resizeGrip = grip
+
+    grip:SetScript("OnMouseDown", function(btn, button)
+        if button ~= "LeftButton" or self:IsCombatBlocked() then
+            return
+        end
+        local scale = UIParent:GetEffectiveScale()
+        local cx, cy = GetCursorPosition()
+        local w, h = PanelSize()
+        local startX, startY = cx / scale, cy / scale
+        self.isResizing = true
+        btn:SetScript("OnUpdate", function()
+            local nx, ny = GetCursorPosition()
+            local newW, newH = ClampPanelSize(w + (nx / scale - startX), h + (startY - ny / scale))
+            self.pendingSize = { w = newW, h = newH }
+            self.expanded:SetSize(newW, newH)
+        end)
+    end)
+    grip:SetScript("OnMouseUp", function(btn)
+        if not self.isResizing then
+            return
+        end
+        btn:SetScript("OnUpdate", nil)
+        self.isResizing = false
+        if self.pendingSize then
+            Pockets.CharDB.hud.size = self.pendingSize
+            self.pendingSize = nil
+        end
+        self:Render()
+    end)
+end
+
 -- Position and size are independent concerns (§2): this is the ONLY place
 -- that ever anchors the root frame to UIParent. Every state transition
 -- afterward touches SetSize only, so the anchor set here is what pins
@@ -727,7 +804,7 @@ function Shell:RestorePosition()
         end
     end
     local x, y = PositionStrategy.ClampToScreen(px, py,
-        L.NATIVE_PANEL_WIDTH, TotalPanelHeight(), UIParent:GetWidth(), UIParent:GetHeight())
+        (PanelSize()), TotalPanelHeight(), UIParent:GetWidth(), UIParent:GetHeight())
     PositionStrategy:ApplyRootPosition(self.expanded, { x = x, y = y })
 end
 
@@ -862,7 +939,7 @@ end
 -- Since the frame is TOPLEFT-anchored, growing/shrinking always extends
 -- right/down from that fixed point.
 function Shell:ApplyDimensions()
-    self.expanded:SetSize(L.NATIVE_PANEL_WIDTH, TotalPanelHeight())
+    self.expanded:SetSize(PanelSize())
 end
 
 -- Explicit body-clear lifecycle step (§7): hides every kind of body
@@ -1249,7 +1326,7 @@ function Shell:Render()
     -- Initialize for how a plain click can trigger this. self.state is
     -- still updated by SetState even when deferred; OnDragStop flushes a
     -- fresh Render() once the drag has fully settled.
-    if self.isDragging then
+    if self.isDragging or self.isResizing then
         return
     end
     -- The Escape catcher is a plain (non-protected) frame, so it follows
@@ -1646,6 +1723,7 @@ function Shell:BuildCombatPages()
                 shell.combatPages[categoryID] = page
             end
             pool:ReleaseAll(page.content)
+            page.content:SetWidth(rowWidth)
             local items = Pockets.API.GetAggregatedCategoryItems(categoryID)
             for index, item in ipairs(items) do
                 local row = CreateCategoryListRow(page.content)

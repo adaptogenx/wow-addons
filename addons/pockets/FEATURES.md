@@ -6,6 +6,11 @@ rename it to the version number.
 
 ## Unreleased
 
+### Resizable bag window
+- Drag the bottom-right corner of the bag window to make it wider or taller. The grid reflows to fit, and the size is remembered per character.
+- Height snaps to whole rows. The window can't go smaller than its original size.
+- Resizing is disabled in combat. `/pockets panel reset` restores the default size and position.
+
 ### Separate panel position
 - The bag panel can now be moved independently of the Mini. It starts lined up exactly where it opened before; drag it anywhere from there. The Mini stays put and stays visible, underneath the panel.
 - `/pockets panel attached` restores the old behavior, `/pockets panel separate` turns it back on, `/pockets panel reset` returns the panel to its default spot.

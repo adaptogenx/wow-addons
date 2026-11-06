@@ -38,6 +38,7 @@ globals = {
     "SLASH_POCKETS1",
     "SLASH_POCKETS2",
     "SlashCmdList",
+    "GetCursorPosition",
 
     -- Core WoW API
     "GetTime",

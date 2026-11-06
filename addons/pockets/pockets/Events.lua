@@ -38,6 +38,7 @@ local function CopyHud(source)
         x = source.x,
         y = source.y,
         locked = source.locked,
+        size = source.size and { w = source.size.w, h = source.size.h } or nil,
         panel = source.panel and { x = source.panel.x, y = source.panel.y } or nil,
     }
 end
@@ -292,7 +293,7 @@ local function ShowHelp()
     print("|cffffff00/pockets show|r - Show/hide the HUD")
     print("|cffffff00/pockets bags [on||off]|r - Clicking the Mini opens your regular bags (the \"B\" binding) instead of the Pockets panel (default off)")
     print("|cffffff00/pockets view [grid||list]|r - one grid of categories + items (the only mode when on) or the category list (default grid)")
-    print("|cffffff00/pockets panel [separate||attached||reset]|r - Bag panel can be dragged independently of the Mini (separate, default) or always opens over it (attached); reset puts it back on the Mini")
+    print("|cffffff00/pockets panel [separate||attached||reset]|r - Bag panel can be dragged independently of the Mini (separate, default) or always opens over it (attached); drag its bottom-right corner to resize; reset puts it back on the Mini at the default size")
     print("|cffffff00/pockets food on||off|r - Show/hide the food count (default off)")
     print("|cffffff00/pockets supplies on||off|r - Show/hide soul shard / water counts")
     print("|cffffff00/pockets recentpreview [on||off]|r - Show or set the large icon + tooltip preview when hovering Recent items (default off)")
@@ -366,7 +367,8 @@ local function HandleCommand(msg)
             Pockets.UI.Shell:Render()
         elseif requested == "reset" then
             Pockets.CharDB.hud.panel = nil
-            print("[Pockets] Panel position reset")
+            Pockets.CharDB.hud.size = nil
+            print("[Pockets] Panel position and size reset")
             Pockets.UI.Shell:RestorePosition()
         elseif requested == "" then
             print("[Pockets] Panel is "
