@@ -38,13 +38,36 @@ jobs:
       - name: Build (syncs shared/ui first)
         run: ./scripts/build.sh ${{ inputs.addon }}
 
+      # Release notes: the "## <version>" section of the addon's FEATURES.md
+      # when it has one, otherwise a one-line fallback.
+      - name: Release notes
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          f="addons/${{ inputs.addon }}/FEATURES.md"
+          : > release-notes.md
+          if [ -f "$f" ]; then
+            awk -v v="$v" '$0 ~ "^## " && $2 == v {p=1; next} /^## / {p=0} p' "$f" > release-notes.md
+          fi
+          if [ ! -s release-notes.md ]; then
+            echo "Release $GITHUB_REF_NAME" > release-notes.md
+          fi
+          cat release-notes.md
+
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp "dist/${{ inputs.addon }}.zip" "dist/${{ inputs.addon }}-${{ steps.version.outputs.version }}.zip"
-          gh release create "$GITHUB_REF_NAME" "dist/${{ inputs.addon }}-${{ steps.version.outputs.version }}.zip" \
-            --title "${{ inputs.addon }} ${{ steps.version.outputs.version }}" --generate-notes
+          zip="dist/${{ inputs.addon }}-${{ steps.version.outputs.version }}.zip"
+          title="${{ inputs.addon }} ${{ steps.version.outputs.version }}"
+          # Idempotent, so a re-run (e.g. after adding CurseForge settings)
+          # does not fail on an existing release.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$title" --notes-file release-notes.md
+            gh release upload "$GITHUB_REF_NAME" "$zip" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$zip" --title "$title" --notes-file release-notes.md
+          fi
 
       - name: CurseForge upload
         env:
@@ -55,8 +78,8 @@ jobs:
           if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_PROJECT_ID" ] || [ -z "$CF_GAME_VERSION_IDS" ]; then
             echo "CurseForge not configured; skipping."; exit 0
           fi
-          meta=$(printf '{"changelog":"Release %s","changelogType":"text","releaseType":"release","gameVersions":%s}' \
-            "$GITHUB_REF_NAME" "$CF_GAME_VERSION_IDS")
+          meta=$(jq -n --rawfile c release-notes.md --argjson g "$CF_GAME_VERSION_IDS" \
+            '{changelog: $c, changelogType: "markdown", releaseType: "release", gameVersions: $g}')
           curl --fail -sS -H "X-Api-Token: $CF_API_TOKEN" \
             -F "metadata=$meta" -F "file=@dist/${{ inputs.addon }}.zip" \
             "https://wow.curseforge.com/api/projects/$CF_PROJECT_ID/upload-file"
