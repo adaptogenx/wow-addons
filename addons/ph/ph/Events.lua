@@ -702,22 +702,17 @@ end
 
 -- Parse item link and count from CHAT_MSG_LOOT message
 function pH_Events:ParseLootMessage(message)
-    -- Pattern: "You receive loot: [Item Link]x3."
-    -- Pattern: "You receive loot: [Item Link]."
-    local itemLink, countStr = message:match("You receive loot: (|c%x+|H.+|h.+|h|r)x(%d+)")
-
-    if itemLink and countStr then
-        return itemLink, tonumber(countStr)
+    -- Link color prefix varies by client: "|cffffffff" (Classic) or "|cnIQ2:" (retail-based Forever).
+    -- Match from the |H hyperlink so either format parses.
+    local itemLink, rest = message:match("You receive loot: (.-|H.-|h%[.-%]|h|r)(.*)")
+    if not itemLink then
+        itemLink, rest = message:match("You receive loot: (.-|H.-|h%[.-%]|h)(.*)")
     end
-
-    -- Try without count (single item)
-    itemLink = message:match("You receive loot: (|c%x+|H.+|h.+|h|r)")
-
-    if itemLink then
-        return itemLink, 1
+    if not itemLink then
+        return nil, nil
     end
-
-    return nil, nil
+    local countStr = rest and rest:match("^x(%d+)")
+    return itemLink, tonumber(countStr) or 1
 end
 
 -- Extract itemID from itemLink
