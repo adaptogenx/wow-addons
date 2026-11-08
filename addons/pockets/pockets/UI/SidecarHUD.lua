@@ -64,6 +64,17 @@ function SidecarHUD.ColumnHeight(n)
     return n * L.SIDECAR_BADGE_HEIGHT + (n - 1) * L.SIDECAR_BADGE_GAP
 end
 
+-- Pills stack vertically up to 3 high; extras start the next column.
+SidecarHUD.MAX_COLUMN_ROWS = 3
+
+function SidecarHUD.GridColumns(n)
+    return math.max(1, math.ceil(n / SidecarHUD.MAX_COLUMN_ROWS))
+end
+
+function SidecarHUD.GridRows(n)
+    return math.min(math.max(n, 0), SidecarHUD.MAX_COLUMN_ROWS)
+end
+
 -- Tooltip lines for a supply entry: "Water: 40" then the best item.
 function SidecarHUD.SupplyTooltip(entry)
     local lines = { string.format("%s: %d", entry.label, entry.count or 0) }
@@ -149,6 +160,19 @@ function SidecarHUD.IconX(i, n, width, align)
         start = (width - used) / 2
     end
     return start + (i - 1) * step
+end
+
+-- Icon x for a strip: spacing follows the single-column width so extra badge
+-- columns don't spread the icons; only the alignment uses the full width.
+function SidecarHUD.StripIconX(i, shown, containerW, sideW, align)
+    local baseW = L.MINI_WIDTH + L.SIDECAR_MINI_GAP + sideW
+    local x = SidecarHUD.IconX(i, shown, baseW, align)
+    if align == "right" then
+        x = x + (containerW - baseW)
+    elseif align == "center" then
+        x = x + (containerW - baseW) / 2
+    end
+    return x
 end
 
 -- Which side of the screen the HUD is on, by thirds of the Mini's centre.
@@ -243,6 +267,19 @@ function SidecarHUD:Build(root, handlers)
         gap = spec.gap,
     })
     sidecar.strip:Hide()
+    -- "Discard first" row (only while the bags are in the red): a small
+    -- label over a second strip of the cheapest stacks.
+    sidecar.discardLabel = PHUI.CreateLabel(root, "muted", nil, PHUI.Fonts.SMALL)
+    sidecar.discardLabel:SetText("Discard first")
+    sidecar.discardLabel:SetTextColor(1, 0.45, 0.4)
+    sidecar.discardLabel:Hide()
+    sidecar.discard = Pockets.UI.RecentItemStrip:Create(root, {
+        width = SidecarHUD.StripWidth(spec.icons, spec),
+        iconSize = spec.icon,
+        gap = spec.gap,
+        hideCount = false,
+    })
+    sidecar.discard:Hide()
     return sidecar
 end
 
@@ -258,7 +295,18 @@ function SidecarHUD:Layout(sidecar)
     local left, top = root:GetLeft(), root:GetTop()
     local screenW = UIParent:GetWidth()
     local sideW = sidecar.sideW or L.SIDECAR_BADGE_WIDTH
-    local containerW = L.MINI_WIDTH + L.SIDECAR_MINI_GAP + sideW
+    local nStack = 1
+    if sidecar.ammo:IsShown() then
+        nStack = nStack + 1
+    end
+    for _, badge in ipairs(sidecar.supplyBadges or {}) do
+        if badge:IsShown() then
+            nStack = nStack + 1
+        end
+    end
+    local cols = SidecarHUD.GridColumns(nStack)
+    local totalSideW = cols * sideW + (cols - 1) * L.SIDECAR_BADGE_GAP
+    local containerW = L.MINI_WIDTH + L.SIDECAR_MINI_GAP + totalSideW
     local align, flip, stripAbove = "left", false, false
     if left and top then
         align = SidecarHUD.Align(left + L.MINI_WIDTH / 2, screenW)
@@ -281,32 +329,24 @@ function SidecarHUD:Layout(sidecar)
             stack[#stack + 1] = badge
         end
     end
-    local column = SidecarHUD.ColumnHeight(#stack)
+    local rows = SidecarHUD.GridRows(#stack)
+    local column = SidecarHUD.ColumnHeight(rows)
     local columnTop = math.min(0, -(L.MINI_PORTRAIT_SIZE - column) / 2)
-    local overflow = math.max(0, column + columnTop * -1 - L.MINI_HEIGHT)
-    local function place(badge, y)
+    local overflow = math.max(0, column - columnTop - L.MINI_HEIGHT)
+    local function place(badge, col, y)
         badge:SetWidth(sideW)
         badge:ClearAllPoints()
+        local x = L.SIDECAR_MINI_GAP + col * (sideW + L.SIDECAR_BADGE_GAP)
         if flip then
-            badge:SetPoint("TOPRIGHT", root, "TOPLEFT", -L.SIDECAR_MINI_GAP, y)
+            badge:SetPoint("TOPRIGHT", root, "TOPLEFT", -x, y)
         else
-            badge:SetPoint("TOPLEFT", root, "TOPLEFT", L.MINI_WIDTH + L.SIDECAR_MINI_GAP, y)
+            badge:SetPoint("TOPLEFT", root, "TOPLEFT", L.MINI_WIDTH + x, y)
         end
     end
     for i, badge in ipairs(stack) do
-        place(badge, columnTop - (i - 1) * (L.SIDECAR_BADGE_HEIGHT + L.SIDECAR_BADGE_GAP))
-    end
-
-    -- ETA pill: vertically centred on the Mini's count badge, same side as
-    -- the other badges.
-    local eta = sidecar.eta
-    local etaCentre = L.MINI_HEIGHT - L.MINI_BADGE_HEIGHT / 2
-    local etaTop = -(etaCentre - eta:GetHeight() / 2)
-    eta:ClearAllPoints()
-    if flip then
-        eta:SetPoint("TOPRIGHT", root, "TOPLEFT", -L.SIDECAR_MINI_GAP, etaTop)
-    else
-        eta:SetPoint("TOPLEFT", root, "TOPLEFT", L.MINI_WIDTH + L.SIDECAR_MINI_GAP, etaTop)
+        local row = (i - 1) % SidecarHUD.MAX_COLUMN_ROWS
+        local col = math.floor((i - 1) / SidecarHUD.MAX_COLUMN_ROWS)
+        place(badge, col, columnTop - row * (L.SIDECAR_BADGE_HEIGHT + L.SIDECAR_BADGE_GAP))
     end
 
     local strip = sidecar.strip
@@ -320,10 +360,42 @@ function SidecarHUD:Layout(sidecar)
         strip:SetPoint("TOP" .. side, root, "BOTTOM" .. side, 0, -(L.SIDECAR_STRIP_BELOW + overflow))
     end
     strip.positionFor = function(i, shown)
-        return SidecarHUD.IconX(i, shown, containerW, align)
+        return SidecarHUD.StripIconX(i, shown, containerW, sideW, align)
     end
-    local shown = strip:SetItems(sidecar.recent or {})
-    strip:SetShown(shown > 0)
+    local shownRecent = strip:SetItems(sidecar.recent or {})
+    strip:SetShown(shownRecent > 0)
+
+    -- Discard-first row, stacked on the far side of the recent strip.
+    local discard, label = sidecar.discard, sidecar.discardLabel
+    discard:SetWidth(containerW)
+    discard._width = containerW
+    discard:ClearAllPoints()
+    label:ClearAllPoints()
+    discard.positionFor = strip.positionFor
+    local shownDiscard = discard:SetItems(sidecar.discardItems or {})
+    discard:SetShown(shownDiscard > 0)
+    label:SetShown(shownDiscard > 0)
+    local labelH = 12
+    if stripAbove then
+        discard:SetPoint("BOTTOM" .. side, strip, "TOP" .. side, 0, L.SIDECAR_STRIP_BELOW + labelH)
+        label:SetPoint("BOTTOM" .. side, discard, "TOP" .. side, 2, 1)
+    else
+        label:SetPoint("TOP" .. side, strip, "BOTTOM" .. side, 2, -L.SIDECAR_STRIP_BELOW)
+        discard:SetPoint("TOP" .. side, strip, "BOTTOM" .. side, 0, -(L.SIDECAR_STRIP_BELOW + labelH))
+    end
+
+    -- ETA pill: on the far side of the last strip from the Mini.
+    local eta = sidecar.eta
+    local last = shownDiscard > 0 and discard or strip
+    eta:SetWidth(containerW)
+    eta:ClearAllPoints()
+    if stripAbove then
+        eta:SetPoint("BOTTOM" .. side, last, "TOP" .. side, 0, L.SIDECAR_STRIP_BELOW + (last == discard and labelH or 0))
+    else
+        eta:SetPoint("TOP" .. side, last, "BOTTOM" .. side, 0, -L.SIDECAR_STRIP_BELOW)
+    end
+    eta.text:ClearAllPoints()
+    eta.text:SetPoint("CENTER", eta, "CENTER", 0, 0)
 end
 
 -- layout: pass false in combat (anchors are left untouched).
@@ -394,7 +466,6 @@ function SidecarHUD:Render(sidecar, layout)
     local eta = sidecar.eta
     if etaText then
         eta.text:SetText(etaText)
-        eta:SetWidth(2 * L.SIDECAR_BADGE_PAD + eta.text:GetStringWidth())
         eta:Show()
     else
         eta:Hide()
@@ -402,6 +473,7 @@ function SidecarHUD:Render(sidecar, layout)
     -- The strip's real item buttons are protected in combat: they are only
     -- re-laid-out (in Layout) out of combat.
     sidecar.recent = recent
+    sidecar.discardItems = Pockets.API.GetAggregatedCategoryItems(Constants.CATEGORY.DISCARD)
 
     if layout ~= false then
         self:Layout(sidecar)
@@ -417,5 +489,7 @@ function SidecarHUD:SetShown(sidecar, shown)
         end
         sidecar.eta:Hide()
         sidecar.strip:Hide()
+        sidecar.discard:Hide()
+        sidecar.discardLabel:Hide()
     end
 end

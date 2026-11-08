@@ -2,7 +2,7 @@
 ## Title: Pockets
 ## Notes: Minimal, opinionated bag HUD with progressive disclosure, bag-full ETA, and automatic categorization (WoW Classic Anniversary, TBC-compatible)
 ## Author: Adaptogen <DADS>
-## Version: 1.2.1
+## Version: 1.3.0
 ## IconTexture: Interface\Icons\INV_Misc_Bag_10
 ## SavedVariables: PocketsDB
 ## SavedVariablesPerCharacter: PocketsCharDB
@@ -49,6 +49,7 @@ Core/LootLog.lua
 Core/CapacityEstimator.lua
 Core/Supplies.lua
 Core/InventoryState.lua
+Core/DiscardFirst.lua
 Core/StackConsolidator.lua
 
 # UI
@@ -90,5 +91,6 @@ Tests/ShellTests.lua
 Tests/MiniHUDTests.lua
 Tests/SidecarHUDTests.lua
 Tests/SuppliesTests.lua
+Tests/DiscardFirstTests.lua
 Tests/StackResolverTests.lua
 Tests/PositionStrategyTests.lua

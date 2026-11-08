@@ -68,6 +68,7 @@ local function GetResolvedRecentItems()
                     quantity = carriedTotal > 0 and carriedTotal or live.quantity,
                     texture = live.texture,
                     quality = live.quality,
+                    isQuestItem = live.isQuestItem or live.categoryID == Pockets.Constants.CATEGORY.QUEST,
                     isLocked = live.isLocked,
                     bagID = live.bagID,
                     slotID = live.slotID,
@@ -84,6 +85,9 @@ end
 -- already-precomputed state - performs no bag scan/categorization
 -- (UI_SPEC §6), safe to call on every hover.
 function API.GetCategoryItems(categoryID)
+    if categoryID == Pockets.Constants.CATEGORY.DISCARD then
+        return Pockets.Services.DiscardFirst:GetItems()
+    end
     if categoryID == Pockets.Constants.CATEGORY.RECENT then
         return GetResolvedRecentItems()
     end
@@ -116,7 +120,7 @@ end
 -- stays newest-first (recency is the point of that view), so it skips both
 -- aggregation and the A-Z sort applied to every other category.
 function API.GetAggregatedCategoryItems(categoryID)
-    if categoryID == Pockets.Constants.CATEGORY.RECENT then
+    if categoryID == Pockets.Constants.CATEGORY.RECENT or categoryID == Pockets.Constants.CATEGORY.DISCARD then
         return API.GetCategoryItems(categoryID)
     end
     local aggregates = Pockets.Services.InventoryState:AggregateRecords(API.GetCategoryItems(categoryID))
@@ -152,7 +156,9 @@ function API.GetCategorySummary()
     local summary = {}
     for _, categoryID in ipairs(Pockets.Constants.CATEGORY_ORDER) do
         local count
-        if categoryID == Pockets.Constants.CATEGORY.RECENT then
+        if categoryID == Pockets.Constants.CATEGORY.DISCARD then
+            count = #Pockets.Services.DiscardFirst:GetItems()
+        elseif categoryID == Pockets.Constants.CATEGORY.RECENT then
             count = #GetResolvedRecentItems()
         else
             count = 0

@@ -540,3 +540,28 @@ end
 function BagAPI:SetTooltipToBagItem(tooltip, bagID, slotIndex)
     tooltip:SetBagItem(bagID, slotIndex)
 end
+
+-- With a vendor window open (buy tab), right-click on a sellable bag item
+-- sells it (weapons/armor included - it never equips there). Sets or clears
+-- the sell cursor to match; returns true while the sell cursor is shown.
+-- Only the client-wide cursor APIs are used (no reliance on Blizzard's bag
+-- helpers, which differ between clients).
+function BagAPI:UpdateSellCursor(itemID)
+    local merchant = MerchantFrame and MerchantFrame:IsShown()
+        and (MerchantFrame.selectedTab == nil or MerchantFrame.selectedTab == 1)
+    local meta = merchant and itemID and Pockets.Adapters.ItemAPI:GetItemMetadata(itemID)
+    local sellable = meta and meta.status == "ready" and (meta.sellPrice or 0) > 0
+    if sellable then
+        if ShowMerchantSellCursor then
+            ShowMerchantSellCursor(1)
+        else
+            SetCursor("BUY_CURSOR")
+        end
+        return true
+    end
+    return false
+end
+
+function BagAPI:ResetCursor()
+    ResetCursor()
+end

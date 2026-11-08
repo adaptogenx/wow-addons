@@ -53,6 +53,8 @@ TestRunner:Register("Sidecar: supplies in model; column height maths", function(
     local lines = SidecarHUD.SupplyTooltip({ label = "Water", count = 3, bestName = "Crystal" })
     local ok = #model.supplies == 1 and SidecarHUD.ColumnHeight(0) == 0
         and SidecarHUD.ColumnHeight(1) == 24 and SidecarHUD.ColumnHeight(3) == 78
+        and SidecarHUD.GridColumns(2) == 1 and SidecarHUD.GridColumns(3) == 1 and SidecarHUD.GridColumns(4) == 2
+        and SidecarHUD.GridRows(2) == 2 and SidecarHUD.GridRows(3) == 3 and SidecarHUD.GridRows(5) == 3
         and lines[1] == "Water: 3" and lines[2] == "Best: Crystal"
     return ok, ok and "OK" or "bad sidecar supplies"
 end)

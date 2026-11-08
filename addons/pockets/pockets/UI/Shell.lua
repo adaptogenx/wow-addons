@@ -27,9 +27,6 @@ local Layout = Pockets.UI.Layout
 local Constants = Pockets.Constants
 local L = Constants.LAYOUT
 local PositionStrategy = Pockets.UI.PositionStrategy
-local function ScrollBlocked()
-    return Pockets.UI.ItemButtonPool:IsStructurallyBlocked()
-end
 local PHUI = Pockets.UI.PHUI
 
 Shell.STATE = {
@@ -554,7 +551,7 @@ function Shell:BuildShell()
     shell.scrollFrame = CreateFrame("ScrollFrame", "PocketsShellScrollFrame", shell.mainHost)
     shell.scrollFrame:SetPoint("TOPLEFT", shell, "TOPLEFT", EXP_SIDE + BODY_PAD, -(EXP_HEADER + L.SHELL_PADDING + BODY_PAD))
     shell.scrollFrame:SetPoint("BOTTOMRIGHT", shell.footer, "TOPRIGHT", -(EXP_SIDE - EXP_FOOTER_SIDE), L.SHELL_PADDING)
-    shell.scrollBar = Pockets.UI.ScrollBar:Create(shell.scrollFrame, { isBlocked = ScrollBlocked })
+    shell.scrollBar = Pockets.UI.ScrollBar:Create(shell.scrollFrame)
 
     shell.content = CreateFrame("Frame", nil, shell.scrollFrame)
     shell.content:SetWidth(BodyViewportWidth())
@@ -1960,6 +1957,7 @@ function Shell:RenderAllGrid(query)
     for _, categoryID in ipairs(Constants.CATEGORY_ORDER) do
         if not blocked then
             local isRecent = categoryID == Constants.CATEGORY.RECENT
+                or categoryID == Constants.CATEGORY.DISCARD
             local items = {}
             for _, item in ipairs(Pockets.API.GetAggregatedCategoryItems(categoryID)) do
                 if not hasQuery or Search:Matches(item, query) then

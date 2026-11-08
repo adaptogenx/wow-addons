@@ -63,6 +63,7 @@ function ItemButtonPool.ToButtonRecord(agg)
         name = agg.name,
         texture = agg.texture,
         quality = agg.quality,
+        isQuestItem = agg.isQuestItem,
         quantity = agg.totalQuantity,
         isLocked = representative and representative.isLocked,
         bagID = representative and representative.bagID,
@@ -221,9 +222,28 @@ local function WireItemButtonScripts(button)
             GameTooltip:SetPoint("TOPLEFT", Pockets.UI.Shell:GetActiveFrame(), "TOPRIGHT", 4, 0)
         end
         GameTooltip:Show()
+        self.pocketsHovered = true
+        self.sellCursorOn = self.interactive and BagAPI:UpdateSellCursor(self.itemID) or false
     end)
-    button:SetScript("OnLeave", function()
+    button:SetScript("OnLeave", function(self)
         GameTooltip:Hide()
+        self.pocketsHovered = false
+        if self.sellCursorOn then
+            BagAPI:ResetCursor()
+        end
+        self.sellCursorOn = false
+    end)
+    -- While hovered, keep the cursor in step with the vendor window (it can
+    -- open/close under the mouse, and Blizzard code may reset the cursor).
+    button:HookScript("OnUpdate", function(self)
+        if not self.pocketsHovered then
+            return
+        end
+        local want = self.interactive and BagAPI:UpdateSellCursor(self.itemID) or false
+        if self.sellCursorOn and not want then
+            BagAPI:ResetCursor() -- vendor closed under the mouse
+        end
+        self.sellCursorOn = want
     end)
 end
 
@@ -371,6 +391,42 @@ local function SetCount(button, quantity)
     end
 end
 
+local QUEST_EDGE = 1
+local function SetQuestEdge(button, show)
+    if show and not button.questFrame then
+        -- Dedicated overlay frame so one plain Alpha animation can pulse all
+        -- four edges together (and stops/restarts with Show/Hide).
+        local f = CreateFrame("Frame", nil, button)
+        f:SetAllPoints(button)
+        f:SetFrameLevel(button:GetFrameLevel() + 5)
+        f:EnableMouse(false)
+        local function Edge()
+            local t = f:CreateTexture(nil, "OVERLAY")
+            t:SetColorTexture(1, 0.82, 0.1, 0.6)
+            return t
+        end
+        local top, bottom, left, right = Edge(), Edge(), Edge(), Edge()
+        top:SetPoint("TOPLEFT"); top:SetPoint("TOPRIGHT"); top:SetHeight(QUEST_EDGE)
+        bottom:SetPoint("BOTTOMLEFT"); bottom:SetPoint("BOTTOMRIGHT"); bottom:SetHeight(QUEST_EDGE)
+        left:SetPoint("TOPLEFT"); left:SetPoint("BOTTOMLEFT"); left:SetWidth(QUEST_EDGE)
+        right:SetPoint("TOPRIGHT"); right:SetPoint("BOTTOMRIGHT"); right:SetWidth(QUEST_EDGE)
+        -- Gentle pulse, like Blizzard's quest-item border.
+        local group = f:CreateAnimationGroup()
+        group:SetLooping("BOUNCE")
+        local alpha = group:CreateAnimation("Alpha")
+        alpha:SetFromAlpha(1)
+        alpha:SetToAlpha(0.3)
+        alpha:SetDuration(1.2)
+        alpha:SetSmoothing("IN_OUT")
+        f:SetScript("OnShow", function() group:Play() end)
+        f:SetScript("OnHide", function() group:Stop() end)
+        button.questFrame = f
+    end
+    if button.questFrame then
+        button.questFrame:SetShown(show and true or false)
+    end
+end
+
 function ItemButtonPool:Configure(button, record)
     local interactive = record.interactive ~= false and record.bagID ~= nil and record.slotID ~= nil
 
@@ -393,6 +449,9 @@ function ItemButtonPool:Configure(button, record)
             button.IconBorder:Hide()
         end
     end
+    -- Quest items: our own soft yellow edge (IconBorder shows nothing
+    -- without a Blizzard atlas, so it can't carry this).
+    SetQuestEdge(button, record.isQuestItem)
     -- ContainerFrameItemButtonTemplate (unlike the old bare
     -- ItemButtonTemplate Pockets used before) ships several Blizzard
     -- attention/decoration overlays Pockets never asked for and never

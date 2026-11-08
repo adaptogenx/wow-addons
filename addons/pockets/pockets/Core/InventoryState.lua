@@ -47,6 +47,7 @@ local function BuildRecord(slot)
         record.classID = meta.classID
         record.subclassID = meta.subclassID
         record.minLevel = meta.minLevel
+        record.sellPrice = meta.sellPrice
         record.quality = record.quality or meta.quality
     end
 
@@ -234,6 +235,7 @@ function InventoryState:AggregateRecords(records)
                 texture = record.texture,
                 quality = record.quality,
                 categoryID = record.categoryID,
+                isQuestItem = record.isQuestItem or record.categoryID == Pockets.Constants.CATEGORY.QUEST,
                 totalQuantity = 0,
                 stacks = {},
             }

@@ -4,6 +4,24 @@ Player-facing changes, newest first. Written to paste into CurseForge release no
 Add an entry under **Unreleased** whenever a user-visible feature ships; on release,
 rename it to the version number.
 
+## 1.3.0
+
+### Quest item highlight
+- Quest items get a soft yellow border everywhere they appear, so they stand out from the rest of your bags.
+
+### Sell cursor at vendors
+- With a vendor window open, hovering a bag item shows the sell cursor, since right-click sells it (weapons and armor included, they won't equip).
+
+### Discard First
+- When your bags reach the red (90% full), Pockets suggests what to throw away first: the carried stacks worth the least to a vendor. They show as a "Discard first" row under the HUD and as a new "Discard First" category above Recent in the bag window.
+- Quest items, ammo, the Hearthstone, fishing poles, profession tools (skinning knife, mining pick, enchanting rods...), trade goods, recipes and items with unknown value are never suggested.
+
+### Scrolling in combat
+- The bag window can now be scrolled with the mouse wheel during combat.
+
+### Compact HUD badges
+- HUD badges (gold, ammo, food, water, shards) stack up to three high; any extras start a second column. The "time to full" estimate now sits below the recent items.
+
 ## 1.2.1
 
 ### Resizable bag window

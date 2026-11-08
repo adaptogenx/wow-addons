@@ -18,6 +18,7 @@ Constants.CAPACITY_CLASS = {
 
 -- Stable category IDs (TDD §5.2)
 Constants.CATEGORY = {
+    DISCARD = "discard_first",
     RECENT = "recent",
     EQUIPMENT = "equipment",
     CONSUMABLE = "consumable",
@@ -30,6 +31,7 @@ Constants.CATEGORY = {
 
 -- Display order for category flyout / full inventory (PRD §3.4)
 Constants.CATEGORY_ORDER = {
+    Constants.CATEGORY.DISCARD,
     Constants.CATEGORY.RECENT,
     Constants.CATEGORY.EQUIPMENT,
     Constants.CATEGORY.CONSUMABLE,
@@ -41,6 +43,7 @@ Constants.CATEGORY_ORDER = {
 }
 
 Constants.CATEGORY_LABEL = {
+    [Constants.CATEGORY.DISCARD] = "Discard First",
     [Constants.CATEGORY.RECENT] = "Recent",
     [Constants.CATEGORY.EQUIPMENT] = "Equipment",
     [Constants.CATEGORY.CONSUMABLE] = "Consumables",
@@ -56,6 +59,10 @@ Constants.CAPACITY_COLOR_THRESHOLDS = {
     YELLOW_AT = 0.70,
     RED_AT = 0.90,
 }
+
+-- "Discard first" kicks in when general bags are this full (the red zone).
+Constants.DISCARD_FIRST_AT = Constants.CAPACITY_COLOR_THRESHOLDS.RED_AT
+Constants.DISCARD_FIRST_LIMIT = 5
 
 -- Estimator states (TDD §5.4, §11.4)
 Constants.ESTIMATOR_STATE = {
@@ -112,6 +119,7 @@ Constants.SILVER_ICON = "Interface\\MoneyFrame\\UI-SilverIcon"
 Constants.COPPER_ICON = "Interface\\MoneyFrame\\UI-CopperIcon"
 
 Constants.CATEGORY_ICON = {
+    discard_first = "Interface\\Icons\\INV_Misc_Bag_09",
     recent = "Interface\\Icons\\INV_Scroll_02",
     equipment = 133126,
     consumable = 134756,
