@@ -70,6 +70,7 @@ for id in $(addon_ids); do
     done
     check "[$id] declares no addon dependencies" bash -c "! grep -iE '^## *(RequiredDeps|Dependencies|OptionalDeps|Dep[0-9]*):' '$root/$folder.toc'"
     check "[$id] has no shared-lib-only leftovers (no .DS_Store)" bash -c "[ -z \"\$(find '$root' -name .DS_Store)\" ]"
+    check "[$id] has no wow-ui-sim dev-test artifacts" bash -c "[ -z \"\$(find '$root' -maxdepth 1 \( -name tests -o -name sim-tests \))\" ] && ! grep -rIlE 'wow-ui-sim|A_Admin|WOW_SIM_' '$root'"
 done
 
 # No runtime dependency on the other addon, by identifier.
