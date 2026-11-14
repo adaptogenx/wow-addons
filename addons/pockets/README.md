@@ -1,161 +1,106 @@
-# Pockets
+# Pockets: Minimal Bag HUD
 
-A minimal, opinionated bag HUD for World of Warcraft Classic (Anniversary
-focus, TBC-compatible). Pockets
-answers "how full are my bags, how long until they're full, and what did I
-just pick up" without opening a traditional bag window.
+A compact bag HUD for WoW Classic with inventory categories, recent loot, gold, and bag-full estimates. Expand it when you need your inventory, collapse it when you don't.
 
-**Current status**: Phase 0 (repository/foundation) complete. See
-`Pockets_TDD.md` §29 for the phased implementation plan.
+## At a glance
 
-## Supported Clients
+- **Bag capacity**: used and free slots with a color-coded indicator.
+- **Time until full**: estimated from your recent activity.
+- **Recent items**: your most recently acquired items.
+- **Gold, ammo and supplies**: gold, ammo (quivers and pouches tracked separately), soul shards, water, and optionally food.
+- **Movable HUD**: small, and stays out of your way.
 
-One addon, one TOC (`## Interface: 11509, 20504, 16001`):
+## Inventory
 
-- WoW Classic Anniversary (11509) - primary
-- WoW TBC Classic (20504)
-- WoW Forever beta (16001)
+- **Categories**: Recent, Equipment, Consumables, Trade Goods, Quest Items, Ammunition, Junk, Other. View one grid or a category list.
+- **Search** your bags by item name as you type.
+- **Loot history**: timestamped log of items and money acquired.
+- **Normal item actions**: right-click to use, drag to move, Shift-click to split. Standard tooltips, plus how many of the item you carry.
+- **Discard First**: at 90% full, suggests the lowest-value stacks to throw away. Click one, then "Discard". It never suggests quest items, ammo, your Hearthstone, tools, recipes or items with unknown value.
+- **Vendors and mail**: sell cursor at vendors; right-click sells weapons and armor; right-click with a mail composer open attaches every stack.
+- **Combat-aware**: the bag window scrolls in combat. On Forever it pages by default, to avoid blocked-action errors.
+- **Resizable bag window**, movable apart from the HUD. Size is remembered per character.
 
-## Installation
+Supported: Classic Anniversary, TBC Classic, and Forever.
 
-### macOS (Automated)
+## Controls
 
-```bash
-./install.sh
-```
-
-Installs to every detected Anniversary (`_anniversary_`) and Forever beta
-(`_classic_beta_`) AddOns folder. Pass a path to install to just one.
-
-### Manual Installation (macOS & Windows)
-
-1. Copy the `pockets/` directory to your WoW AddOns folder:
-   - **Windows**: `World of Warcraft/_anniversary_/Interface/AddOns/` (`_classic_` for TBC, `_classic_beta_` for Forever)
-   - **Mac**: `/Applications/World of Warcraft/_anniversary_/Interface/AddOns/` (`_classic_` for TBC, `_classic_beta_` for Forever)
-2. Restart WoW or `/reload` if already in-game.
-3. Type `/pockets help`.
-
-## Quick Start
-
-```
-/pockets show     - Show/hide the compact HUD
-Shift-B           - Toggle the full categorized inventory view
-/pockets help     - List commands
-```
-
-Shift-B is bound on first login only if unbound; reassign it under
-Key Bindings > AddOns > Pockets. Known client limitations:
-[FOREVER_LIMITATIONS.md](FOREVER_LIMITATIONS.md).
-
-Hover or click the HUD outside combat to see the category summary; click
-works in combat too. Hovering or clicking a category reveals its items.
+- **Shift-B** opens or closes the full inventory. It is bound only if free; change it in Key Bindings.
+- **Click the HUD** to expand. **Hover a category** to browse its items outside combat.
 
 ## Commands
 
-- `/pockets show` - Show/hide the HUD
-- `/pockets help` - Show user commands
-- `/pockets help dev` - Show debug/testing commands
+`/pockets` (or `/pk`):
 
-### Debug Commands
+- `show`: show or hide the HUD
+- `view [grid|list]`: grid (default) or category list
+- `bags [on|off]`: clicking the HUD opens your regular bags instead (default off)
+- `panel [separate|attached|reset]`: drag the panel apart from the HUD (default), keep it attached, or reset position and size
+- `combatscroll [pages|smooth]`: Forever only, how the grid moves in combat
+- `food [on|off]`: food count (default off)
+- `supplies [on|off]`: soul shard and water counts
+- `recentpreview [on|off]`: large preview when hovering Recent items (default off)
+- `help`: list commands
 
-- `/pockets debug on|off` - Enable/disable debug mode
-- `/pockets debug verbose on|off` - Enable/disable verbose logging
-- `/pockets debug inventory` - Dump current inventory state
-- `/pockets debug categories` - Dump category summary
-- `/pockets debug estimator` - Dump capacity estimator state
-- `/pockets debug events` - Dump EventBus subscriber counts
+Use `/pockets bags on` to run Pockets as a HUD alongside your usual bag addon.
 
-### Test Commands
+## Part of the pH family
 
-- `/pockets test run` - Run the automated test suite
-- `/pockets test sample <used> <total> <secondsAgo>` - Inject a capacity sample
-- `/pockets test category <itemID>` - Print the category Pockets would assign an item
-- `/pockets test recent <itemID> <quantity>` - Inject a Recent Items entry
+Pockets shares a design with [pH: Per Hour Metrics](https://www.curseforge.com/wow/addons/ph-per-hour-metrics). Each works on its own.
 
-## Architecture
+---
 
-Pockets uses four runtime layers (see `Pockets_TDD.md` §3):
+## Development
+
+Everything above this line is the player-facing text, kept in sync with the [CurseForge page](https://www.curseforge.com/wow/addons/pockets-minimal-bag-hud). Update both on user-visible changes. Release notes live in [FEATURES.md](FEATURES.md).
+
+**Version** 1.3.0 · **Interface** 11509, 20504, 16001 · **SavedVariables** `PocketsDB`, `PocketsCharDB`
+
+**Install from source (macOS):** `./install.sh` installs to every detected client (`_anniversary_`, `_forever_`, `_classic_beta_`); `./install.sh <path>` to one AddOns folder.
+
+### Architecture
+
+Four runtime layers:
 
 ```
 WoW API Adapters (Adapters/)
       v
 Domain State / Services (Core/)
       v
-Public Interfaces + Event Bus (API.lua, Core/EventBus.lua)
+Public interface + Event Bus (API.lua, Core/EventBus.lua)
       v
 UI / Interaction (UI/)
 ```
 
-See [CLAUDE.md](CLAUDE.md) for module-by-module guidance and
-[UI_RULES.md](UI_RULES.md) for the compact-HUD-first interaction rules.
-
-## Development
-
-### Linting
-
-This project uses [luacheck](https://github.com/lunarmodules/luacheck) for
-static analysis, plus a repository-level static-check script for
-architectural rules that luacheck can't express.
-
-**Install luacheck:**
-```bash
-brew install luacheck
-```
-
-**Run linting/checks manually:**
-```bash
-luacheck pockets/
-./scripts/static-checks.sh
-```
-
-**Setup hooks:**
-```bash
-./setup-hooks.sh
-```
-
-This installs a pre-commit hook that runs luacheck and the static checks on
-staged `.lua` files. Blocks commit on failure; bypass with `git commit
---no-verify` (not recommended).
-
-### Testing
-
-See [TESTING_GUIDE.md](TESTING_GUIDE.md).
-
-### Packaging a release
-
-```bash
-./package-release.sh
-```
-
-Runs luacheck and static checks first, then produces
-`releases/pockets-<version>.zip`.
-
-## Files Structure
-
 ```
 pockets/
-├── Pockets.toc          - Addon manifest
-├── Bindings.xml         - Shift-B keybinding
-├── Init.lua             - Namespace bootstrap
-├── Constants.lua        - Shared constants (categories, colors, events)
-├── Events.lua           - WoW event wiring, startup sequence, slash commands
-├── API.lua              - Small public integration surface
-├── Debug.lua            - Debug/diagnostic commands
-├── Adapters/            - Isolated WoW API access (bags, items, combat, tooltip, bindings)
-├── Core/                - Domain services (no visible frames)
-├── UI/                  - HUD, flyouts, full inventory, search, tooltip counts
-└── Tests/                - In-addon test runner + domain tests
+├── Pockets.toc    Init.lua  Constants.lua  Events.lua  API.lua  Debug.lua
+├── Bindings.xml   Shift-B (not listed in the TOC)
+├── Adapters/      isolated WoW API access (bags, items, mail, money, combat, tooltip, bindings)
+├── Core/          domain services, no frames
+├── UI/            HUD, shell, search, loot log, item buttons, tooltip counts
+├── Shared/UI/     generated from shared/ui; never edit here
+└── Tests/         in-addon test runner and domain tests
 ```
 
-## Non-Goals (v1)
+Only `Adapters/BagAPI.lua` may call bag APIs directly. Only `_G.Pockets`, `PocketsDB` and `PocketsCharDB` may be written as globals.
 
-See `Pockets_PRD.md` §4 for the full list (bank, guild bank, auction house,
-mail, auto-sell, custom categories, advanced search, non-ammo specialized
-bags, skins/themes, plugin ecosystem, large config UI).
+### Commands for development
 
-## Reference Documents
+From the repo root (see the top-level [README](../../README.md)):
 
-- [Pockets_PRD.md](Pockets_PRD.md) - Product requirements
-- [Pockets_TDD.md](Pockets_TDD.md) - Technical design
-- [Pockets_UI_SPEC.md](Pockets_UI_SPEC.md) - UI implementation spec (fixed
-  geometry, icon sourcing, hover behavior, real item buttons)
+```bash
+scripts/lint.sh           # luacheck (0 warnings) + static checks
+scripts/test.sh           # offline + packaging tests
+scripts/build.sh pockets  # dist/pockets.zip
+```
+
+Also: `./scripts/static-checks.sh` (architecture rules luacheck cannot express) and `./setup-hooks.sh` (pre-commit hook). In-game tests: `/pockets test run` (not covered by CI). See [TESTING_GUIDE.md](TESTING_GUIDE.md).
+
+Releases: push a `pockets-v<version>` tag. The version must match the TOC and the `## <version>` section of FEATURES.md becomes the release notes.
+
+## Reference documents
+
+[CLAUDE.md](CLAUDE.md) · [AGENTS.md](AGENTS.md) · [UI_RULES.md](UI_RULES.md) · [Pockets_PRD.md](Pockets_PRD.md) · [Pockets_TDD.md](Pockets_TDD.md) · [Pockets_UI_SPEC.md](Pockets_UI_SPEC.md) · [Pockets_Forever_M1.md](Pockets_Forever_M1.md) · [Pockets_Forever_M2.md](Pockets_Forever_M2.md)
+
+Non-goals: bank, guild bank, auction house, auto-sell, custom categories, advanced search, skins, plugin ecosystem. See PRD §4.

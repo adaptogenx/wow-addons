@@ -49,3 +49,9 @@ Keep instructions close to their scope:
 * shared/AGENTS.md — shared library constraints.
 
 Avoid duplicating instructions across files.
+
+## Optional: wow-ui-sim (dev only)
+`scripts/sim-install.sh` then `scripts/sim-test.sh [ph|pockets|hmf]` runs `sim-tests/` headless. Local only; never in lint/test/build/release; never shipped. See `sim-tests/README.md`.
+
+## READMEs and CurseForge
+Each addon README has a player-facing section above a `## Development` divider. It mirrors the addon's CurseForge description (pH, Pockets). On user-visible changes, update the README player section and the CurseForge description. No relative links above the divider.

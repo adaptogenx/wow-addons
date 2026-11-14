@@ -96,9 +96,9 @@ omission to a noisy/fabricated number.
 
 ### WoW Addon Development Context
 
-- Lua 5.1. `Pockets.toc` declares `## Interface: 11509, 20504` - Anniversary
-  (11509) first since it's the primary target, TBC (20504) second for
-  compatibility. Update the Anniversary number when the client patches.
+- Lua 5.1. `Pockets.toc` declares `## Interface: 11509, 20504, 16001` - Anniversary
+  (11509) first since it's the primary target, TBC (20504) and Forever (16001)
+  for compatibility. Update the Anniversary number when the client patches.
 - `GetItemInfo`-style lookups are not guaranteed synchronous; always go
   through `Adapters/ItemAPI.lua`'s cache, which tracks a `pending` state.
 - Combat state (`InCombatLockdown()`) must be checked at the moment of
