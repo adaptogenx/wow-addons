@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: Quest XP Lab
+## Notes: Read-only Forever API validation lab for the pH quest XP forecast (/qxplab). No protected actions.
+## Author: Adaptogen <DADS>
+## Version: 0.1.0
+## SavedVariables: QuestXPLabDB
+
+Core.lua
+M0.lua
+M1.lua
+M2.lua
+M3.lua
+M4.lua
+Commands.lua
