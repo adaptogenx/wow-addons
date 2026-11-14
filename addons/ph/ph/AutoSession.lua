@@ -635,7 +635,8 @@ function pH_AutoSession:ClassifyActivity(event, ...)
         if type(message) ~= "string" then
             return nil
         end
-        local itemLink = message:match("You receive loot: (|c%x+|H.+|h.+|h|r)")
+        -- Link color prefix differs by client (|cffffffff vs |cnIQ2: on Forever); match from |H.
+        local itemLink = message:match("You receive loot: (.-|H.-|h%[.-%]|h)")
         if not itemLink then
             return nil
         end
