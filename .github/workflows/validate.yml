@@ -6,9 +6,9 @@ on:
   workflow_call:
     inputs:
       addons:
-        description: "Space-separated addon ids to package (ph pockets)"
+        description: "Space-separated addon ids to package (ph pockets hmf)"
         type: string
-        default: "ph pockets"
+        default: "ph pockets hmf"
       upload-artifacts:
         type: boolean
         default: true

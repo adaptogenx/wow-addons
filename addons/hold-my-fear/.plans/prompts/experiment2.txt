@@ -1,0 +1,11 @@
+Extend HMF_TargetingLab to investigate whether secure frames can acquire new hostile unit references during combat.
+
+* Preallocate four secure action buttons before combat.
+* Investigate SecureHandlerAttributeTemplate, secure state drivers, and supported secure attribute changes.
+* Detect newly encountered enemies through nameplate and combat-log events.
+* Attempt supported methods of associating these enemies with preallocated secure buttons during combat.
+* Do not use prohibited or tainted protected API calls as workarounds.
+* Log successful assignments, blocked operations, and combat-lockdown errors.
+* Clearly distinguish insecure GUID tracking from secure unit binding.
+
+Produce a short report identifying which approaches work in the current Forever client.

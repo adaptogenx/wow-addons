@@ -43,7 +43,8 @@ jobs:
       - name: Release notes
         run: |
           v="${{ steps.version.outputs.version }}"
-          f="addons/${{ inputs.addon }}/FEATURES.md"
+          dir=$(. scripts/lib.sh; addon_field "${{ inputs.addon }}" 2)
+          f="$dir/FEATURES.md"
           : > release-notes.md
           if [ -f "$f" ]; then
             awk -v v="$v" '$0 ~ "^## " && $2 == v {p=1; next} /^## / {p=0} p' "$f" > release-notes.md

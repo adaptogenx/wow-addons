@@ -1,0 +1,15 @@
+## Interface: 16001
+## Title: HMF API Lab
+## Notes: Optional Forever API feasibility lab for Hold My Fear (/hmflab). Read-only probes; no protected actions.
+## Author: Adaptogen <DADS>
+## Version: 0.1.0
+## SavedVariables: HMF_API_LabDB
+
+Core.lua
+M0.lua
+M1.lua
+Threshold.lua
+M2.lua
+M3.lua
+M4.lua
+Commands.lua

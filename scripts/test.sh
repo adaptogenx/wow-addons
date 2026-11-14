@@ -12,6 +12,12 @@ for t in "$REPO_ROOT"/addons/ph/tests/*.lua; do
 done
 ok "pH unit tests"
 
+info "Hold My Fear unit tests"
+for t in "$REPO_ROOT"/addons/hold-my-fear/tests/*.lua; do
+    (cd "$REPO_ROOT/addons/hold-my-fear" && lua "tests/$(basename "$t")" >/dev/null) || die "hold-my-fear test failed: $(basename "$t")"
+done
+ok "Hold My Fear unit tests"
+
 info "shared library + namespace tests"
 (cd "$REPO_ROOT" && lua tests/run.lua) || die "shared tests failed"
 

@@ -1,0 +1,44 @@
+## Interface: 11509, 20504, 16001
+## Title: Hold My Fear
+## Notes: Tracks multiple feared enemies and their debuffs, with one-click recasting per target (WoW Classic Anniversary / Forever, Warlock)
+## Author: Adaptogen <DADS>
+## Version: 0.1.0
+## IconTexture: Interface\Icons\Spell_Shadow_Possession
+## SavedVariables: HoldMyFearDB
+
+# Bootstrap (namespace + constants must load first)
+Init.lua
+Constants.lua
+
+# WoW API Adapters (isolate direct Blizzard API access)
+Adapters/UnitAPI.lua
+Adapters/AuraAPI.lua
+Adapters/CombatLogAPI.lua
+Adapters/ForeverAPI.lua
+
+# Domain services (no visible frames)
+Core/Tracker.lua
+Core/Encounter.lua
+Core/Focus.lua
+Core/Casts.lua
+
+# UI
+UI/HUD.lua
+UI/FocusButton.lua
+UI/CastButtons.lua
+
+# Cross-cutting event wiring
+Events.lua
+
+# Targeting lab (experiments 1-3, .plans/prompts/); /hmflab
+# Lab/Log.lua (disabled: suspected cause of Forever 'blocked action' prompt)
+# Lab/Window.lua (disabled: suspected cause of Forever 'blocked action' prompt)
+# Lab/Cast.lua (disabled: suspected cause of Forever 'blocked action' prompt)
+# Lab/Targeting.lua (exp 1, finished: nameplate tokens do not work)
+# Lab/FocusMouseover.lua (disabled: suspected cause of Forever 'blocked action' prompt)
+# Lab/Combat.lua (exp 2, disabled)
+# Lab/GuidCast.lua (exp 3, disabled)
+
+# Debug/test infrastructure
+Debug.lua
+Tests/TestRunner.lua

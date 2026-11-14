@@ -10,6 +10,13 @@ ADDONS=(
     "pockets|addons/pockets|addons/pockets/pockets/Shared/UI|addons/pockets/pockets/Pockets.toc|Pockets"
 )
 
+# Standalone addons: same row format, but no shared/ui staging (staged dir is "-").
+# Built/released by id (build.sh hmf) but NOT part of addon_ids, so sync/check/packaging loops that
+# assume Shared/UI never see them.
+STANDALONE_ADDONS=(
+    "hmf|addons/hold-my-fear|-|addons/hold-my-fear/holdmyfear/HoldMyFear.toc|HoldMyFear"
+)
+
 if [ -t 1 ]; then
     RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
 else
@@ -23,7 +30,7 @@ die()  { echo "${RED}✗ $*${NC}" >&2; exit 1; }
 # addon_field <id> <1-based field>
 addon_field() {
     local row
-    for row in "${ADDONS[@]}"; do
+    for row in "${ADDONS[@]}" "${STANDALONE_ADDONS[@]}"; do
         if [ "${row%%|*}" = "$1" ]; then
             echo "$row" | cut -d'|' -f"$2"
             return 0

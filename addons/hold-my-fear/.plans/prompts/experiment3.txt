@@ -1,0 +1,15 @@
+Extend HMF_TargetingLab to validate reliable one-click casting against specific tracked enemies.
+
+Test scenario: Two identical mobs are feared while the player targets a third enemy.
+
+* Track both mobs by GUID.
+* Assign each a stable HUD row and raid marker.
+* Provide a clickable Fear button for each mob.
+* Display the GUID, current unit token, and marker for each row.
+* Switch targets, move around, and allow nameplate indices to change.
+* Verify whether clicking each button casts Fear on the intended GUID.
+* Log intended GUID versus actual spellcast target GUID.
+* Detect incorrect targeting, stale bindings, and unavailable unit tokens.
+* Never silently cast on the wrong mob.
+
+Report whether reliable one-click GUID-specific casting is achievable and which secure targeting mechanism supports it.

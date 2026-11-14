@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build dist/<addon>.zip for each addon (or just the ones named).
-#   build.sh [ph] [pockets]
+#   build.sh [ph] [pockets] [hmf]   (hmf is standalone: only built when named)
 # Syncs shared/ui first, lints, then verifies the staged tree before and
 # after zipping. A stale staged file fails the build.
 set -eu
@@ -51,9 +51,11 @@ build_one() {
     local check
     check="$(mktemp -d)"
     unzip -q "$zip_path" -d "$check"
-    for src in "$SHARED_UI_SRC"/*.lua; do
-        cmp -s "$src" "$check/$folder/Shared/UI/$(basename "$src")" || { rm -rf "$check"; die "[$id] zip has stale/missing shared file $(basename "$src")"; }
-    done
+    if [ "$(addon_field "$id" 3)" != "-" ]; then
+        for src in "$SHARED_UI_SRC"/*.lua; do
+            cmp -s "$src" "$check/$folder/Shared/UI/$(basename "$src")" || { rm -rf "$check"; die "[$id] zip has stale/missing shared file $(basename "$src")"; }
+        done
+    fi
     [ -f "$check/$folder/$folder.toc" ] || { rm -rf "$check"; die "[$id] zip missing $folder.toc"; }
     rm -rf "$check"
     ok "built dist/$id.zip ($(du -h "$zip_path" | cut -f1 | tr -d ' '))"

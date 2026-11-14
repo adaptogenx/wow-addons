@@ -25,3 +25,9 @@ BASE=$(tr -d '[:space:]' < "$REPO_ROOT/scripts/luacheck-ph-baseline.txt")
 echo "$OUT" | grep -E ': (E|\(E)|invalid syntax' >/dev/null 2>&1 && die "ph: luacheck syntax errors"
 [ "$COUNT" -le "$BASE" ] || die "ph lint: $COUNT warnings > baseline $BASE (fix new warnings)"
 ok "ph lint: $COUNT warnings (baseline $BASE)"
+
+# Hold My Fear (standalone, no shared UI): zero warnings plus its own static checks.
+info "luacheck: hold-my-fear"
+(cd "$REPO_ROOT/addons/hold-my-fear" && luacheck holdmyfear --no-color --formatter plain) || die "hold-my-fear lint failed"
+ok "hold-my-fear lint clean"
+"$REPO_ROOT/addons/hold-my-fear/scripts/static-checks.sh" || die "hold-my-fear static checks failed"

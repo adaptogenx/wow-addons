@@ -1,0 +1,12 @@
+Build a minimal WoW Forever addon named HMF_TargetingLab to test secure spellcasting against nameplate unit tokens.
+
+* Pre-create SecureActionButtonTemplate buttons outside combat.
+* Bind buttons to nameplate1, nameplate2, and target.
+* Use Fear as the test spell.
+* Display each unit token, resolved GUID, and mob name.
+* Test casting while targeting a different enemy.
+* Log spellcast success/failure, GUID changes, and relevant API errors.
+* Do not modify secure attributes during combat.
+* Include /hmflab to toggle the test UI.
+
+Keep the implementation minimal. Document any Forever-specific API differences.

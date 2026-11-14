@@ -1,0 +1,26 @@
+# Tag `hmf-vX.Y.Z` to release Hold My Fear only. Never triggered by pH or Pockets changes.
+name: release-hmf
+
+on:
+  push:
+    tags: ["hmf-v*"]
+
+jobs:
+  validate:
+    uses: ./.github/workflows/validate.yml
+    with:
+      addons: hmf
+      upload-artifacts: false
+
+  release:
+    needs: validate
+    # The reusable release workflow publishes a GitHub Release, so the calling
+    # job must grant it write access.
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      addon: hmf
+      toc: addons/hold-my-fear/holdmyfear/HoldMyFear.toc
+      tag-prefix: hmf-v
+    secrets: inherit
