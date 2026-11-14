@@ -1060,13 +1060,23 @@ function pH_AutoSession:OnPlayerEnteringWorld()
         return
     end
 
-    if pH_SessionManager:GetActiveSession() then
-        return
+    local active = pH_SessionManager:GetActiveSession()
+    if active then
+        -- Already an instance session (e.g. /reload or zoning inside): keep it.
+        if active.instanceSession then
+            return
+        end
+        -- Overworld session in progress: close it and start a fresh one for the instance.
+        pH_SessionManager:StopSession()
     end
 
     local ok = pH_SessionManager:StartSession("auto", "instance.entry")
     if not ok then
         return
+    end
+    local started = pH_SessionManager:GetActiveSession()
+    if started then
+        started.instanceSession = true
     end
 
     if cfg.instanceStart.mode == INSTANCE_START_PAUSED then

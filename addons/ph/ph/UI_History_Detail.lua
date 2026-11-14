@@ -364,7 +364,7 @@ function pH_History_Detail:RenderItemsTab()
         -- Value
         local valueText = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         valueText:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", -10, yOffset)
-        valueText:SetText(pH_Ledger:FormatMoneyShort(itemData.expectedTotal))
+        valueText:SetText(pH_Ledger:FormatMoney(itemData.expectedTotal))
         valueText:SetJustifyH("RIGHT")
 
         yOffset = yOffset - 16
