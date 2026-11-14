@@ -3,7 +3,7 @@
 -- Only wraps APIs that actually differ between clients. Domain modules call
 -- pH_API and stay unaware of which client they run on.
 
--- luacheck: globals GetBuildInfo GetMoney UnitXP UnitXPMax UnitLevel GetMaxPlayerLevel GetNumFactions GetFactionInfo GetAddOnMetadata C_AddOns C_Reputation NUM_BAG_SLOTS NUM_REAGENTBAG_SLOTS hooksecurefunc UseContainerItem C_Spell C_Item GetItemInfo GetItemCount GetSpellInfo issecretvalue
+-- luacheck: globals GetBuildInfo GetMoney UnitXP UnitXPMax UnitLevel GetMaxPlayerLevel GetNumFactions GetFactionInfo GetAddOnMetadata C_AddOns C_Reputation NUM_BAG_SLOTS NUM_REAGENTBAG_SLOTS hooksecurefunc UseContainerItem C_Spell C_Item GetItemInfo GetItemCount GetSpellInfo issecretvalue pH_API C_QuestLog GetQuestLogRewardXP
 
 pH_API = {}
 
@@ -141,6 +141,63 @@ function pH_API:GetItemCount(item, includeBank)
         return GetItemCount(item, includeBank)
     end
     return 0
+end
+
+-- Quest log (C_QuestLog). All wrappers return nil when the client cannot give a usable value
+-- (missing API, error, or Secret Value) so callers can classify as unknown.
+local function QuestCall(fn, ...)
+    if type(fn) ~= "function" then return nil end
+    local ok, v = pcall(fn, ...)
+    if not ok or v == nil then return nil end
+    if issecretvalue and issecretvalue(v) then return nil end
+    return v
+end
+
+function pH_API:GetQuestLogEntryCount()
+    return SafeNumber(QuestCall(C_QuestLog and C_QuestLog.GetNumQuestLogEntries))
+end
+
+-- Returns { questID, title, level, isHeader, isTask, isHidden } or nil.
+function pH_API:GetQuestLogEntry(index)
+    local t = QuestCall(C_QuestLog and C_QuestLog.GetInfo, index)
+    if type(t) ~= "table" then return nil end
+    return {
+        questID = SafeNumber(t.questID), title = t.title, level = SafeNumber(t.level),
+        isHeader = t.isHeader and true or false, isTask = t.isTask and true or false,
+        isHidden = t.isHidden and true or false,
+    }
+end
+
+-- Array of { numFulfilled, numRequired, finished } or nil.
+function pH_API:GetQuestObjectives(questID)
+    local objs = QuestCall(C_QuestLog and C_QuestLog.GetQuestObjectives, questID)
+    if type(objs) ~= "table" then return nil end
+    local out = {}
+    for i, o in ipairs(objs) do
+        out[i] = {
+            numFulfilled = SafeNumber(o.numFulfilled), numRequired = SafeNumber(o.numRequired),
+            finished = o.finished and true or false,
+        }
+    end
+    return out
+end
+
+-- true / false, or nil when unknown.
+function pH_API:IsQuestReady(questID)
+    local v = QuestCall(C_QuestLog and C_QuestLog.ReadyForTurnIn, questID)
+    if v == nil then v = QuestCall(C_QuestLog and C_QuestLog.IsComplete, questID) end
+    if v == nil then return nil end
+    return v == true or v == 1
+end
+
+function pH_API:IsQuestRepeatable(questID)
+    local v = QuestCall(C_QuestLog and C_QuestLog.IsRepeatableQuest, questID)
+    if v == nil then return nil end
+    return v == true or v == 1
+end
+
+function pH_API:GetQuestRewardXP(questID)
+    return SafeNumber(QuestCall(GetQuestLogRewardXP, questID))
 end
 
 -- True if v is a Secret Value (unusable for arithmetic/comparison/indexing).

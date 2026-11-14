@@ -5,7 +5,7 @@
     Account-wide: pH_DB_Account (sessions). Per-character: pH_Settings (UI state).
 ]]
 
--- luacheck: globals pH_DB pH_DB_Account pH_Settings pH_AutoSession GetAddOnMetadata
+-- luacheck: globals pH_DB pH_DB_Account pH_Settings pH_AutoSession pH_QuestForecast GetAddOnMetadata
 
 -- Create main addon frame
 local pH_MainFrame = CreateFrame("Frame", "pH_MainFrame")
@@ -222,6 +222,11 @@ pH_MainFrame:SetScript("OnEvent", function(self, event, ...)
 
         -- Initialize event system (registers additional events)
         pH_Events:Initialize(pH_MainFrame)
+
+        -- Quest XP forecast (runtime-only; drives HUD tooltip/tile)
+        if pH_QuestForecast then
+            pH_QuestForecast:Initialize()
+        end
 
         -- Initialize auto-session management
         if pH_AutoSession then

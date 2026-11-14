@@ -4,7 +4,7 @@
     Shows real-time session metrics in accounting-style layout.
 ]]
 
--- luacheck: globals pH_Insights pH_Tooltip pH_Settings pH_History pH_Ledger pH_SessionManager pH_Index SlashCmdList pH_AutoSession
+-- luacheck: globals pH_Insights pH_Tooltip pH_Settings pH_History pH_Ledger pH_SessionManager pH_Index SlashCmdList pH_AutoSession pH_QuestForecast
 
 local _, addon = ...
 local PHUI = addon.UI.PHUI
@@ -171,6 +171,28 @@ local function BuildXPEtaLine(data)
     return string.format("To level: %s xp (%s)", FormatInt(remainingXP), etaText)
 end
 
+-- Quest log forecast lines (Ready + In progress only; not-started XP is never shown).
+local function BuildQuestForecastLines(f)
+    local lines = {}
+    if not f or not f.hasData then
+        return lines
+    end
+    lines[#lines + 1] = { string.format("Ready to turn in: %s xp (%d)", FormatInt(f.readyXP), f.readyCount), 0.86, 0.82, 0.70 }
+    if f.progressCount > 0 then
+        lines[#lines + 1] = { string.format("In progress: %s xp (%d)", FormatInt(f.progressXP), f.progressCount), 0.8, 0.8, 0.8 }
+    end
+    lines[#lines + 1] = { string.format("Quest log total: %s xp", FormatInt(f.total)), 0.8, 0.8, 0.8 }
+    if f.readyToLevel then
+        lines[#lines + 1] = { "Ready quests will level you", PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3] }
+    elseif f.potentialToLevel then
+        lines[#lines + 1] = { "Finishing in-progress quests will level you", PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3] }
+    end
+    if f.unmeasured and f.unmeasured > 0 then
+        lines[#lines + 1] = { string.format("%d quest(s) with unmeasured progress not counted", f.unmeasured), 0.62, 0.58, 0.50 }
+    end
+    return lines
+end
+
 local function BuildXPSessionAvgLine(data)
     local sessionRate = data and tonumber(data.sessionPerHour) or 0
     return string.format("Session avg: %s/hr", FormatInt(sessionRate))
@@ -308,21 +330,34 @@ local function ShowMicroMetricTooltip(anchor, metricKey, state)
     end
     if metricKey == "xp" then
         local xpData = state.tooltipData or {}
+        -- Pace
         GameTooltip:AddLine(BuildXPSessionAvgLine(xpData), 0.86, 0.82, 0.70)
         GameTooltip:AddLine(BuildXPRecentAvgLine(xpData), 0.8, 0.8, 0.8)
-        GameTooltip:AddLine(BuildXPEtaLine(state.tooltipData), 0.8, 0.8, 0.8)
-        GameTooltip:AddLine(BuildXPSourcesHeaderLine(state.metrics), 0.8, 0.8, 0.8)
+        if xpData.etaAdjusted then
+            GameTooltip:AddLine("Recent pace adjusted for burst XP", 0.62, 0.58, 0.50)
+        end
+        -- Level
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine(BuildXPEtaLine(state.tooltipData), 0.86, 0.82, 0.70)
+        local forecastLines = BuildQuestForecastLines(state.forecast)
+        for i = 1, #forecastLines do
+            local l = forecastLines[i]
+            GameTooltip:AddLine(l[1], l[2], l[3], l[4])
+        end
+        -- Earned this session
+        GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
+        GameTooltip:AddLine(BuildXPSourcesHeaderLine(state.metrics), 0.86, 0.82, 0.70)
         GameTooltip:AddLine(BuildXPMobSourceLine(state.metrics), 0.8, 0.8, 0.8)
         GameTooltip:AddLine(BuildXPQuestSourceLine(state.metrics), 0.8, 0.8, 0.8)
         local otherLine = BuildXPOtherSourceLine(state.metrics)
         if otherLine then
             GameTooltip:AddLine(otherLine, 0.8, 0.8, 0.8)
         end
-        if xpData.etaAdjusted then
-            GameTooltip:AddLine("Recent pace adjusted for burst XP", 0.8, 0.8, 0.8)
-        end
         GameTooltip:AddLine(" ", 0.62, 0.58, 0.50)
         GameTooltip:AddLine("Sparkline: recent rate samples (last 30 min).", 0.62, 0.58, 0.50, true)
+        if state.forecast and state.forecast.hasData then
+            GameTooltip:AddLine("* = XP waiting in your quest log (forecast, not earned).", 0.62, 0.58, 0.50, true)
+        end
     elseif metricKey == "rep" then
         RenderRepTooltip(state.tooltipData)
     else
@@ -400,6 +435,7 @@ local function UpdateMicroBars(session, metrics)
                 sessionAvgRate = metrics.xpPerHour or 0
                 recentAvgRate = metrics.xpRecentPerHourBucketed or 0
                 state.tooltipData = BuildXPEtaData(metrics)
+                state.forecast = pH_QuestForecast and pH_QuestForecast:Get() or nil
             elseif metricKey == "rep" then
                 sessionAvgRate = metrics.repPerHour or 0
                 recentAvgRate = metrics.repRecentPerHourBucketed or 0
@@ -437,6 +473,8 @@ local function UpdateMicroBars(session, metrics)
                 local newText = FormatRateForMicroBar(metricKey, state.displayRate)
                 if metricKey == "rep" and state.hasProjected then
                     newText = newText .. "*"
+                elseif metricKey == "xp" and state.forecast and state.forecast.hasData then
+                    newText = newText .. "*"
                 end
                 if state.lastUpdatedText ~= newText then
                     state.valueText:SetText(newText)
@@ -446,13 +484,18 @@ local function UpdateMicroBars(session, metrics)
                 -- Set active colors (full opacity)
                 state.icon:SetVertexColor(1, 1, 1)  -- Full color, no tinting
                 state.icon:SetAlpha(1.0)  -- Full opacity
-                state.valueText:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
+                if metricKey == "xp" and state.forecast and state.forecast.readyToLevel then
+                    state.valueText:SetTextColor(PH_ACCENT_GOOD[1], PH_ACCENT_GOOD[2], PH_ACCENT_GOOD[3])
+                else
+                    state.valueText:SetTextColor(PH_TEXT_PRIMARY[1], PH_TEXT_PRIMARY[2], PH_TEXT_PRIMARY[3])
+                end
                 local colorKey = colorKeys[metricKey]
                 RefreshSparkline(state, metricKey, session, MICROBAR_COLORS[colorKey].fill)
             else
                 -- Inactive: gray out (reduced opacity)
                 local inactiveText = "0"
-                if metricKey == "rep" and state.hasProjected then
+                if (metricKey == "rep" and state.hasProjected)
+                    or (metricKey == "xp" and state.forecast and state.forecast.hasData) then
                     inactiveText = "0*"
                 end
                 state.valueText:SetText(inactiveText)
