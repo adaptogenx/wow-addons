@@ -4,7 +4,7 @@
 # CurseForge is skipped unless these exist (per addon, so each addon keeps
 # its own project):
 #   secret  CF_API_TOKEN
-#   var     CF_PROJECT_ID_PH / CF_PROJECT_ID_POCKETS
+#   var     CF_PROJECT_ID_PH / CF_PROJECT_ID_POCKETS / CF_PROJECT_ID_HMF
 #   var     CF_GAME_VERSION_IDS   (JSON array of CurseForge game-version ids)
 name: release
 
@@ -75,12 +75,14 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_PROJECT_ID_PH: ${{ vars.CF_PROJECT_ID_PH }}
           CF_PROJECT_ID_POCKETS: ${{ vars.CF_PROJECT_ID_POCKETS }}
+          CF_PROJECT_ID_HMF: ${{ vars.CF_PROJECT_ID_HMF }}
           CF_GAME_VERSION_IDS: ${{ vars.CF_GAME_VERSION_IDS }}
         run: |
           # Pick strictly per addon: never fall back to another addon's project.
           case "${{ inputs.addon }}" in
             ph) CF_PROJECT_ID="$CF_PROJECT_ID_PH" ;;
             pockets) CF_PROJECT_ID="$CF_PROJECT_ID_POCKETS" ;;
+            hmf) CF_PROJECT_ID="$CF_PROJECT_ID_HMF" ;;
             *) CF_PROJECT_ID="" ;;
           esac
           if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_PROJECT_ID" ] || [ -z "$CF_GAME_VERSION_IDS" ]; then
